@@ -74,6 +74,21 @@ pr_test_mkstub() {
   chmod +x "$path"
 }
 
+# assert_pid_gone <pid> <msg>
+# Three tests across two files assert that a process-group sweep disposed of a
+# grandchild, so the shape is written once. The grace second is not decoration:
+# the sweep is a SIGKILL the parent does not wait on, so the kernel may not have
+# reaped the target by the time the runner returns. The kill -9 keeps a failure
+# from leaking a 30-300s sleeper into the rest of the suite.
+assert_pid_gone() {
+  local pid="$1" msg="$2"
+  sleep 1
+  if kill -0 "$pid" 2> /dev/null; then
+    kill -9 "$pid" 2> /dev/null
+    pr_fail "$msg (pid $pid still alive)"
+  fi
+}
+
 # pr_test_hold_lock <lock-file> <release-file>
 # pr_test_release_lock <release-file>
 #

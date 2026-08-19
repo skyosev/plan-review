@@ -33,6 +33,16 @@ pr_reason() {
 # taking the prompt on stdin; agy cannot, so the cap is enforced here.
 PR_MAX_ARG_BYTES=131072
 
+# Restated here, not sourced: adapters are standalone by contract and can be run
+# by hand under the four-argument contract, where nothing has vetted the
+# environment. libexec/plan-review-round.sh enforces the same shape for the
+# runner path -- deliberately in two places, like PR_MAX_ARG_BYTES above.
+PR_TIMEOUT_SECS="${PR_TIMEOUT_SECS:-900}"
+if [[ ! "$PR_TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "agy adapter: PR_TIMEOUT_SECS must be a positive whole number, got: $PR_TIMEOUT_SECS" >&2
+  exit 1
+fi
+
 PR_AGY_MODEL="${PR_AGY_MODEL:-}"
 if [[ -z "$PR_AGY_MODEL" ]]; then
   echo "agy adapter: PR_AGY_MODEL must name a model (agy models)" >&2
@@ -91,6 +101,21 @@ args=(
   --add-dir "$workdir"
   --model "$PR_AGY_MODEL"
   --output-format json
+  # agy's own deadline, derived from the runner's and always strictly inside it.
+  # Left unset it defaults to 5m0s -- a third of PR_TIMEOUT_SECS -- and cuts a
+  # long review short. Measured against agy 1.1.15 in probe P1
+  # (process note 2026-08-19, "agy print-timeout and invalid-model"): the expiry comes back
+  # as exit 1 with .status ERROR and .error "timeout waiting for response", which
+  # is what the classifier below recognises. The surveyed Go orchestrator is where
+  # the question came from, not the evidence -- its own note says the expiry exits
+  # 0, which is text mode, not the json mode we run in.
+  #
+  # Milliseconds, not seconds: integer seconds collapse to equality at
+  # PR_TIMEOUT_SECS=1, which is a supported value, and if the two deadlines
+  # coincide timeout(1) can reap agy before it writes its final line -- trading
+  # a diagnosable exit for a SIGKILL. The 10% margin is what it costs. P1b
+  # confirmed the ms unit is accepted at 810000ms.
+  --print-timeout "$((PR_TIMEOUT_SECS * 900))ms"
 )
 [[ -n "$session_in" ]] && args+=(--conversation "$session_in")
 args+=(-p "$prompt")

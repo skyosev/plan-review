@@ -56,6 +56,15 @@ source "$PR_ROOT/lib/config.sh"
 PR_TIMEOUT_SECS="${PR_TIMEOUT_SECS:-900}"
 PR_KILL_GRACE_SECS="${PR_KILL_GRACE_SECS:-15}"
 
+# Unconditional, and BEFORE the preflight block: PR_SKIP_PREFLIGHT=1 turns that
+# block off, and adapters/agy.sh does integer arithmetic on this value to derive
+# its own --print-timeout. GNU timeout accepts `1.5`; $((1.5 * 900)) is a syntax
+# error, so the two agree on the shape only if it is enforced here.
+if [[ ! "$PR_TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "PR_TIMEOUT_SECS must be a positive whole number of seconds, got: $PR_TIMEOUT_SECS" >&2
+  exit 2
+fi
+
 repo="" plan_rel="" fresh=0 preset=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -247,25 +256,27 @@ write_result() {
   local reviewer="$1"
   jq -n --arg status "$2" --arg detail "$3" --arg verdict "$4" \
         --arg session "$5" --arg model "$6" --arg effort "$7" --arg cli "$8" \
-        --argjson discard "${9:-false}" \
-        '{$status, $detail, $verdict, $session, $model, $effort, $cli, $discard}' \
+        --argjson discard "${9:-false}" --argjson timed_out "${10:-false}" \
+        '{$status, $detail, $verdict, $session, $model, $effort, $cli, $discard, $timed_out}' \
     > "$round_dir/.result-$reviewer"
 }
 
-# read_result <reviewer> <status-var> <session-var> <discard-var>
+# read_result <reviewer> <status-var> <session-var> <discard-var> <timed-out-var>
 # The only values the parent branches on, in one jq rather than one each.
 #
 # `discard` is read as "true or nothing". A truncated or unparseable record
 # leaves every variable empty, which means keep -- the safe direction, since the
 # copy exists to be looked at when something went wrong.
 read_result() {
-  local -n _status="$2" _session="$3" _discard="$4"
+  local -n _status="$2" _session="$3" _discard="$4" _timed_out="$5"
   # Cleared first: `read` leaves a variable alone when it has nothing to read,
   # and these are reused across the loop, so an unreadable record would silently
   # inherit the previous reviewer's answer.
-  _status="" _session="" _discard=""
-  { IFS= read -r _status; IFS= read -r _session; IFS= read -r _discard; } < <(
-    jq -r '.status, .session, (.discard == true)' < "$round_dir/.result-$1")
+  _status="" _session="" _discard="" _timed_out=""
+  { IFS= read -r _status; IFS= read -r _session; IFS= read -r _discard
+    IFS= read -r _timed_out; } < <(
+    jq -r '.status, .session, (.discard == true), (.timed_out == true)' \
+      < "$round_dir/.result-$1")
 }
 
 # What an exit code is allowed to be reported as.
@@ -289,9 +300,25 @@ exit_detail() {
 }
 
 # --- run one reviewer -------------------------------------------------------
-# Each reviewer runs under timeout(1), which places the adapter in its own
-# process group and signals the WHOLE group on expiry. That reaps builds the CLI
-# spawned, which `kill $pid` would orphan.
+# `timeout` puts ITSELF in a new process group and sends TERM to that whole
+# group on expiry, then SIGKILL after PR_KILL_GRACE_SECS -- but only while the
+# direct child is still alive. Measured 2026-08-19: an adapter that handles
+# TERM and exits is reaped at once, timeout returns 124, and a TERM-ignoring
+# grandchild survives indefinitely. `bwrap --die-with-parent` does not save
+# agy and claude either; without --unshare-pid it is PR_SET_PDEATHSIG on the
+# immediate command, not tree cleanup. So the group is swept below, by hand.
+#
+# The sweep runs BEFORE any artifact is read, and that ordering is the point.
+# adapters/agent.sh points the CLI's stdout straight at review_out and every
+# adapter's descendants inherit the round log, so a survivor can still append
+# after its adapter is gone. Killing the group is what makes the file final.
+#
+# The price: descendants no longer get PR_KILL_GRACE_SECS, only the direct
+# child does. Buffered review text, log lines and vendor session state can be
+# lost mid-write. Accepted -- output that arrives after the adapter has gone
+# cannot be attributed to the round recording it, and 15s per leaking reviewer
+# is a high price for a partial line. (The Go orchestrator in the process-note
+# survey reaches group signalling the same way; the measurement above is ours.)
 #
 # Do not reach for `setsid` here: plain `setsid cmd &` forks and the parent exits
 # immediately, so `wait` returns 0 in milliseconds and the reviewer is judged
@@ -340,18 +367,26 @@ run_reviewer() {
 
   printf '\n\n\n' > "$meta_out"
 
-  local session_in timed_out=0 rc=0
+  local session_in timed_out=0 timed_out_json=false rc=0
   session_in="$(pr_session_get "$session_map" "$reviewer")"
 
+  # Backgrounded so $! names timeout's pid, which IS the group id. Backgrounding
+  # does not change stdin: the explicit `< "$prompt_file"` overrides bash's
+  # /dev/null default for background jobs. Nothing here closes a descriptor, so
+  # the session lock is still inherited.
   TMPDIR="$(pr_sandbox_tmp "$session_key" "$reviewer")" \
   timeout --kill-after="$PR_KILL_GRACE_SECS" "$PR_TIMEOUT_SECS" \
     bash "$adapter" \
       "$(pr_sandbox_repo "$session_key" "$reviewer")" \
       "$session_in" "$review_out" "$meta_out" "$reason_out" \
-      < "$prompt_file" >> "$log" 2>&1
+      < "$prompt_file" >> "$log" 2>&1 &
+  local timeout_pid=$!
+  wait "$timeout_pid"
   rc=$?
   # 124 = TERM deadline reached; 137 = the KILL grace also elapsed.
-  [[ "$rc" -eq 124 || "$rc" -eq 137 ]] && timed_out=1
+  [[ "$rc" -eq 124 || "$rc" -eq 137 ]] && timed_out=1 timed_out_json=true
+  # Harmless when nothing survived: the group is already empty.
+  [[ "$timed_out" -eq 1 ]] && kill -KILL -- "-$timeout_pid" 2> /dev/null
 
   # Judge on output, not exit code alone: Cursor exits 2 on a denied tool call
   # while still producing a correct review (D7).
@@ -420,7 +455,8 @@ run_reviewer() {
 
   write_result "$reviewer" "$status" "$detail" \
     "$(pr_parse_verdict "$review_out")" \
-    "${meta[0]-}" "${meta[1]-}" "${meta[2]-}" "${meta[3]-}" "$discard"
+    "${meta[0]-}" "${meta[1]-}" "${meta[2]-}" "${meta[3]-}" "$discard" \
+    "$timed_out_json"
 }
 
 # --- fan out ----------------------------------------------------------------
@@ -441,9 +477,9 @@ wait
 ok_count=0
 for reviewer in "${reviewers[@]}"; do
   # round.json is written straight from the child's record, so no field list is
-  # restated here. Only the two values the parent actually branches on are read.
+  # restated here. Only the values the parent actually branches on are read.
   pr_round_record_reviewer "$round_dir" "$reviewer" "$round_dir/.result-$reviewer"
-  read_result "$reviewer" status session discard
+  read_result "$reviewer" status session discard timed_out_flag
   if [[ "$discard" == true ]]; then
     # Housekeeping, never a verdict on the round: a round that produced three
     # good reviews must not be reported broken because a temp copy would not
@@ -455,14 +491,21 @@ for reviewer in "${reviewers[@]}"; do
       pr_round_add_warning "$round_dir" "$discard_warning"
     fi
   fi
-  if [[ "$status" == ok ]]; then
+  # R1, widened: a handle survives only a clean, on-time run. Forfeiting on
+  # failure is the original rule -- the next round retries clean instead of
+  # resuming a handle that may be exactly what broke. A timeout forfeits too,
+  # whatever the status: a timed-out reviewer with partial output is still
+  # recorded ok -- output is what we judge on -- but its vendor-side session
+  # state was written by a process the sweep killed mid-run, which is precisely
+  # what R1 exists to prevent. Hence timed_out is tested, not just status.
+  if [[ "$timed_out_flag" != true && "$status" == ok ]]; then
     pr_session_set "$session_map" "$reviewer" "$session"
-    ok_count=$((ok_count + 1))
   else
-    # R1: forfeit the handle on failure so the next round retries clean instead
-    # of resuming a handle that may be exactly what broke.
     pr_session_del "$session_map" "$reviewer"
   fi
+  # Counted separately from the handle rule above: a timed-out-but-usable review
+  # still counts toward the round, as it always has.
+  [[ "$status" == ok ]] && ok_count=$((ok_count + 1))
   rm -f "$round_dir/.result-$reviewer" "$round_dir/.meta-$reviewer" \
         "$round_dir/.reason-$reviewer" "$round_dir/.prompt-$reviewer.txt"
 done

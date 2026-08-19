@@ -118,6 +118,58 @@ pr_doctor_check_cache_root")"
 # a timeout that actually execs its argument rather than swallowing it.
 stub_timeout() { pr_test_mkstub "$1/timeout" 'shift; exec "$@"'; }
 
+# A command substitution is held open by any descendant that inherited stdout,
+# so a wall-clock cap on the command does not bound the substitution. Measured
+# 2026-08-19: `out="$(timeout 5 timeout 1 ./fakever.sh)"` returned after 30s --
+# the grandchild's own lifetime -- while the same command redirected to a file
+# returned at once.
+test_doctor_run_is_not_held_open_by_a_grandchild() {
+  local d out start elapsed pid; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  # Through pr_test_mkstub for its absolute $BASH shebang: this file runs cases
+  # with a stub directory as the entire PATH, where /usr/bin/env is not present.
+  pr_test_mkstub "$d/bin/slowver" '( trap "" TERM; sleep 30 ) &
+echo $! > "$PR_TEST_GC_PIDFILE"
+echo "9.9.9"
+exit 0'
+  # Exported, not an assignment prefix on a function call -- see the note on
+  # doctor_run above for why that distinction is not worth relying on.
+  export PR_TEST_GC_PIDFILE="$d/gc.pid"
+  start="$SECONDS"
+  out="$(doctor_run "$d/bin:$PATH" \
+    'out="$(pr_doctor_run 15 slowver 2>&1)"; printf "got:%s\n" "$out"')"
+  elapsed=$((SECONDS - start))
+  unset PR_TEST_GC_PIDFILE
+  assert_contains "$out" "got:9.9.9" "the version line came back"
+  (( elapsed < 10 )) || pr_fail "pr_doctor_run took ${elapsed}s; a grandchild held it open"
+
+  assert_pid_gone "$(< "$d/gc.pid")" "grandchild survived pr_doctor_run; the group was not swept"
+}
+
+# pr_doctor_run captures to files, and merging both streams into one would be
+# shorter -- but pr_doctor_version_of word-splits the first line looking for a
+# digit, so a CLI that prints a deprecation notice on stderr would have its
+# notice parsed as the version and compared against docs/verified-versions.txt.
+# The streams stay separate for that reason; this pins it.
+test_version_parsing_ignores_stderr() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/noisy" 'echo "1.0.0-deprecated, use newtool" >&2
+echo "noisy 2.5.0"
+exit 0'
+  out="$(doctor_run "$d/bin:$PATH" 'printf "ver:%s\n" "$(pr_doctor_version_of noisy)"')"
+  assert_contains "$out" "ver:2.5.0" "the version came from stdout"
+  assert_not_contains "$out" "ver:1.0.0-deprecated" "a stderr token is not the version"
+}
+
+# The other half of the same contract: a call site that asks for both streams
+# still gets both, so the auth and model-list checks keep seeing CLI errors.
+test_callers_can_still_merge_stderr() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/noisy" 'echo "on stderr" >&2; echo "on stdout"; exit 0'
+  out="$(doctor_run "$d/bin:$PATH" 'printf "got:%s\n" "$(pr_doctor_run 10 noisy 2>&1)"')"
+  assert_contains "$out" "on stderr" "2>&1 at the call site still merges"
+  assert_contains "$out" "on stdout" "stdout survives the merge"
+}
+
 test_codex_auth_reports_the_status_line_on_success() {
   local d; d="$(pr_test_tmpdir)"
   pr_test_mkstub "$d/bin/codex" 'echo "Logged in using ChatGPT"; exit 0'
@@ -231,27 +283,26 @@ test_agy_progress_line_is_not_counted_as_a_model() {
   assert_contains "$out" "counts 1 0 0" "a pass"
 }
 
-# The cap agy applies to itself, inside ours. It is reported as context rather
-# than counted: nothing is broken, but a reviewer that stops at 5 minutes under a
-# 15-minute deadline is otherwise diagnosed only after a round ends early.
-test_agy_print_timeout_default_is_reported_before_the_round() {
+# The adapter passes --print-timeout now, so the doctor asserts the flag still
+# exists rather than reporting a default the adapter no longer relies on.
+test_agy_still_accepting_print_timeout_is_a_pass() {
   local d; d="$(pr_test_tmpdir)"
   pr_test_mkstub "$d/bin/agy" \
     'printf "  --print-timeout                 Timeout for print mode wait (default 5m0s)\n"'
   stub_timeout "$d/bin"
   local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_print_timeout')"
-  assert_contains "$out" "defaults to 5m0s" "reads the default out of the help text"
-  assert_contains "$out" "inside PR_TIMEOUT_SECS" "says what it is inside of"
-  assert_contains "$out" "counts 0 0 0" "context, not a result"
+  assert_contains "$out" "still accepts --print-timeout" "the flag is there"
+  assert_contains "$out" "counts 1 0 0" "a pass, not context"
 }
 
-test_a_moved_print_timeout_flag_warns_rather_than_passing_silently() {
+# A dropped flag is a failure, not a warning: agy silently falls back to 5m0s.
+test_a_moved_print_timeout_flag_fails() {
   local d; d="$(pr_test_tmpdir)"
   pr_test_mkstub "$d/bin/agy" 'printf "  --print                 Run a single prompt\n"'
   stub_timeout "$d/bin"
   local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_print_timeout')"
-  assert_contains "$out" "could not read agy's --print-timeout default" "says what it lost"
-  assert_contains "$out" "counts 0 1 0" "a warning"
+  assert_contains "$out" "no longer lists --print-timeout" "says what it lost"
+  assert_contains "$out" "counts 0 0 1" "a failure"
 }
 
 test_agy_failure_says_there_is_no_login_subcommand() {

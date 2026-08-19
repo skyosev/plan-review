@@ -1,0 +1,1 @@
+{"is_error":true,"num_turns":28,"stop_reason":"tool_use","session_id":"sess-redacted","permission_denials":[{"tool_name":"Bash","tool_use_id":"<redacted>","tool_input":"<redacted>"}],"terminal_reason":"budget_exhausted","subtype":"error_max_budget_usd","type":"result","result":"<redacted>"}

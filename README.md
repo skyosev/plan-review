@@ -300,6 +300,13 @@ A model recorded as `X (requested: Y)` means the CLI swapped the model out mid-r
 measured with Cursor, which announces it only as prose in its own output. The pin did
 not answer, so that round is not comparable to one that ran on it.
 
+A reviewer that **fails or times out forfeits its own resume handle**, and only its
+own — the next round starts that one reviewer clean while everyone else resumes. That
+holds even when a timed-out reviewer produced usable partial output and is recorded
+`ok`: the review is kept, but the vendor-side session state behind the handle was
+written by a process the runner killed mid-run, so resuming it is not safe. `--fresh`
+is never the fix for a single reviewer; it discards every handle.
+
 `--fresh` starts a new baseline. It drops the resume handles *and* omits the diff,
 your previous critique and the rationale from the prompt, so the reviewer sees only
 the plan as it stands. Round numbering carries on; nothing is deleted.
@@ -336,6 +343,34 @@ lives.
 roots, so a sibling directory would not be writable at all.
 
 ## When a round does not finish
+
+`PR_TIMEOUT_SECS` (default 900) caps each reviewer. It must be a **positive whole
+number of seconds**: GNU `timeout` would accept `1.5`, but `adapters/agy.sh` derives
+its own deadline from this value with integer arithmetic, so a fractional or zero
+value is refused with exit 2 before the round starts. The check runs in the runner
+rather than in preflight, because `PR_SKIP_PREFLIGHT=1` turns preflight off;
+`adapters/agy.sh` repeats it for its own sake, since an adapter can be run by hand.
+
+`PR_KILL_GRACE_SECS` (default 15) is the interval between the TERM `timeout` sends on
+expiry and the SIGKILL that follows. It applies to the **adapter itself and not to its
+descendants**: `timeout` stops escalating as soon as the direct child is reaped, so an
+adapter that handles TERM politely used to leave a TERM-ignoring grandchild behind
+forever. On a timeout the runner now kills the reviewer's whole process group, before it
+reads any artifact — which is what makes the review file final, but also means a
+descendant mid-write loses whatever it had buffered. A reviewer that exits on its own is
+not swept; the deadline is what triggers it.
+
+**agy runs under a deadline of its own**, derived by the adapter as 90% of
+`PR_TIMEOUT_SECS` and passed as `--print-timeout`. Left unset, agy would apply its own
+`5m0s` default *inside* the runner's 900s and cut a long review short with nothing to
+say why. Passed explicitly and strictly inside the outer deadline, its expiry arrives
+as a named error the adapter reports (`agy: print timeout expired`) instead of as a
+SIGKILL. The cost is a tenth of agy's budget.
+
+**claude says why a session ended.** When a claude round produces no review, the
+recorded reason carries the `terminal_reason` claude reported — `budget_exhausted`
+when a spend cap bound, and whatever else the CLI names. The value is echoed rather
+than translated, so a reason the CLI invents tomorrow is still reported today.
 
 One `(repo, plan)` pair is one **session**, and at most one round of a session runs at
 a time. The runner takes an `flock` on `<session>/.lock` before it reads anything, and
@@ -410,3 +445,7 @@ The decision record — what was tried, what each CLI was measured doing, and wh
 went the way it did — is kept as process notes in a separate repository, and is not
 published with the code. Comments that rest on one cite it by date and title rather
 than by path, so the citation stays true wherever those notes live.
+
+Anything captured from a CLI is sanitised before it enters a process note: session and
+conversation identifiers, generated text, paths, account metadata and usage figures all
+come out, and only the fields a conclusion rests on stay verbatim.

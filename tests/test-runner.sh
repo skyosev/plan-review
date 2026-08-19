@@ -64,6 +64,27 @@ run_round() {
     bash "$RUNNER" round --repo "$target" --plan docs/plan.md
 }
 
+# PR_TIMEOUT_SECS feeds bash arithmetic in adapters/agy.sh, which GNU timeout's
+# accepted `1.5` would break with a syntax error deep inside a reviewer. The
+# check is in the runner, not preflight, because PR_SKIP_PREFLIGHT=1 turns
+# preflight off.
+test_fractional_timeout_is_refused() {
+  local d out rc; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  out="$(PR_TIMEOUT_SECS=1.5 run_round "$d/target" "$d/cache" \
+    "codex=$FAKES/fake-ok.sh" 2>&1)"; rc=$?
+  assert_exit_code "$rc" 2 "refused before the round started"
+  assert_contains "$out" "PR_TIMEOUT_SECS" "names the variable"
+  assert_file_missing "$d/target/.plan-review" "no round directory was left behind"
+}
+
+test_fractional_timeout_is_refused_even_with_preflight_skipped() {
+  local d out rc; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  out="$(PR_SKIP_PREFLIGHT=1 PR_TIMEOUT_SECS=0 run_round "$d/target" "$d/cache" \
+    "codex=$FAKES/fake-ok.sh" 2>&1)"; rc=$?
+  assert_exit_code "$rc" 2 "zero is not a positive integer"
+  assert_contains "$out" "PR_TIMEOUT_SECS" "names the variable"
+}
+
 test_round_one_produces_a_review_per_reviewer() {
   local d; d="$(pr_test_tmpdir)"; make_target "$d/target"
   run_round "$d/target" "$d/cache" "codex=$FAKES/fake-ok.sh" "agy=$FAKES/fake-ok.sh" > "$d/out.txt" 2>&1
@@ -130,12 +151,24 @@ test_timeout_reaps_the_whole_process_group() {
   assert_contains "$(jq -r '.reviewers.codex.detail' < "$art/round-1/round.json")" "timed out" "reason"
 
   assert_file_exists "$pidfile" "fake adapter recorded its grandchild pid"
-  child_pid="$(cat "$pidfile")"
-  sleep 1
-  if kill -0 "$child_pid" 2>/dev/null; then
-    kill -9 "$child_pid" 2>/dev/null
-    pr_fail "grandchild $child_pid survived the timeout; the process group was not reaped"
-  fi
+  assert_pid_gone "$(cat "$pidfile")" "grandchild survived the timeout; the process group was not reaped"
+}
+
+# The companion to the case above, for the adapter shape that defeats
+# --kill-after: a child that handles TERM and exits, leaving a grandchild that
+# ignores it. Measured 2026-08-19 -- rc=124 after 1s, grandchild alive 5s later.
+test_timeout_reaps_descendants_of_a_polite_adapter() {
+  local d art pidfile child_pid; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  pidfile="$d/child.pid"
+  PR_TEST_CHILD_PIDFILE="$pidfile" PR_TIMEOUT_SECS=3 PR_KILL_GRACE_SECS=2 \
+    run_round "$d/target" "$d/cache" \
+    "codex=$FAKES/fake-term-handling-with-child.sh" > /dev/null 2>&1
+  art="$(ls -d "$d/target/.plan-review/"*/)"
+  assert_contains "$(jq -r '.reviewers.codex.detail' < "$art/round-1/round.json")" \
+    "timed out" "recorded as a timeout"
+
+  assert_file_exists "$pidfile" "the fake adapter recorded its grandchild pid"
+  assert_pid_gone "$(cat "$pidfile")" "grandchild outlived its adapter; the group was not swept"
 }
 
 test_status_file_records_progress_events() {
@@ -592,6 +625,26 @@ test_a_lock_that_cannot_be_opened_is_not_reported_as_a_busy_session() {
   assert_exit_code "$rc" 2 "refused"
   assert_contains "$out" "could not open the session lock" "names the real failure"
   assert_not_contains "$out" "already running" "and never blames a phantom round"
+}
+
+# Starts from a STORED handle and proves it is deleted. Asserting that no new
+# handle was written would pass against the bug: pr_session_set ignores an empty
+# id on purpose, so the stale one would survive silently.
+test_a_timed_out_reviewer_forfeits_its_stored_handle() {
+  local d key art; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  key="$(pr_session_key "$(cd "$d/target" && pwd)" docs/plan.md)"
+  art="$(pr_artifact_dir "$(cd "$d/target" && pwd)" "$key")"
+  mkdir -p "$art"
+  echo '{"codex":"handle-from-an-earlier-round"}' > "$art/session-map.json"
+
+  PR_TIMEOUT_SECS=2 PR_KILL_GRACE_SECS=1 \
+    run_round "$d/target" "$d/cache" \
+    "codex=$FAKES/fake-slow-with-output.sh" > /dev/null 2>&1
+
+  assert_eq "$(jq -r '.reviewers.codex.status' < "$art/round-1/round.json")" "ok" \
+    "partial output is still kept and still ok"
+  assert_eq "$(jq -r '.codex // "GONE"' < "$art/session-map.json")" "GONE" \
+    "the stale handle was retired"
 }
 
 # --- sandbox retention ------------------------------------------------------

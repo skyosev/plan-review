@@ -71,13 +71,53 @@ pr_doctor_have() { command -v "$1" > /dev/null 2>&1; }
 # Run with a wall-clock cap when timeout(1) exists, plain otherwise. The auth
 # checks reach the network; a hung one must not hang the doctor. timeout's own
 # absence is reported by pr_doctor_check_utils, so this degrades rather than dies.
+#
+# Output goes to a FILE, never straight into the caller's command substitution.
+# Measured 2026-08-19: a probe whose grandchild inherits stdout holds `$(...)`
+# open for the grandchild's whole life, and the outer `timeout` is blocked in
+# the same substitution, so a second cap does not rescue it. The file breaks the
+# descriptor chain; the group sweep then disposes of the grandchild itself,
+# which the file alone does not. The Go orchestrator surveyed in the process
+# notes reaches the same place with cmd.WaitDelay -- that is where the question
+# came from, not the evidence.
+#
+# The two streams go to SEPARATE files and are replayed on the streams they came
+# from. A single `2>&1` capture would be shorter, but it silently rewrites every
+# call site: `pr_doctor_run ... 2>&1` and `pr_doctor_run ... 2>/dev/null` would
+# both mean "merged", and pr_doctor_version_of -- which word-splits the first
+# line looking for a digit -- can then return a token from a deprecation notice
+# instead of the version. Replaying keeps the choice where the caller makes it.
+#
+# The sweep is inside the timeout branch on purpose: GNU timeout puts ITSELF in
+# a new process group, so its pid is the group id. The fallback child shares
+# this shell's group and `-$pid` would name nothing of ours.
+#
+# Builtins only, and that is a hard constraint, not a preference:
+# tests/test-doctor.sh runs Tier B checks with a stub directory as the ENTIRE
+# PATH. No mktemp, no cat. `rm` may be missing too, which is why the names are
+# stable per-process: cleanup is best-effort, and a PATH without rm reuses the
+# same two files rather than accumulating them.
 pr_doctor_run() {
   local secs="$1"; shift
+  local out="${TMPDIR:-/tmp}/pr-doctor-run.$$" err="${TMPDIR:-/tmp}/pr-doctor-err.$$"
+  local pid rc
   if pr_doctor_have timeout; then
-    timeout "$secs" "$@"
+    timeout "$secs" "$@" > "$out" 2> "$err" &
+    pid=$!
+    wait "$pid"; rc=$?
+    kill -KILL -- "-$pid" 2> /dev/null
   else
-    "$@"
+    "$@" > "$out" 2> "$err"
+    rc=$?
   fi
+  printf '%s\n' "$(< "$out")"
+  # Guarded so an empty stderr stays empty rather than becoming a blank line,
+  # which a call site's `2>&1` would otherwise splice into the captured output.
+  [[ -s "$err" ]] && printf '%s\n' "$(< "$err")" >&2
+  # Here rather than at the exits: pr_doctor_preflight calls this from the round
+  # path too, and the doctor's own early exits skip anything wired to its tail.
+  pr_doctor_have rm && rm -f "$out" "$err"
+  return "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -423,31 +463,23 @@ pr_doctor_check_agy_auth() {
   return 1
 }
 
-# agy carries a deadline of its own INSIDE the runner's. Measured 2026-08-17
-# against agy 1.1.13: `--print-timeout` defaults to 5m0s, and adapters/agy.sh
-# does not pass the flag, so that default is what a round actually runs under --
-# a third of PR_TIMEOUT_SECS. It was found in another project's source comment
-# rather than in anything of ours, which is the argument for printing it here:
-# an invisible cap is diagnosed after a round that stopped early, not before it.
-#
-# Reported, never enforced. Whether --print-timeout bounds total wall clock or an
-# idle wait is unmeasured (spike S3, probe P1), and nothing should be derived
-# from a number whose meaning is unknown. This is offline: `agy --help` makes no
-# network call and costs nothing.
+# agy carries a deadline of its own INSIDE the runner's. adapters/agy.sh now
+# passes it explicitly, derived from PR_TIMEOUT_SECS, so what matters here is no
+# longer the default -- it is whether the flag we pass is still accepted. A
+# renamed or dropped flag would make agy fall back to its own 5m0s and cut long
+# reviews short with no signal. Offline: `agy --help` makes no network call.
 pr_doctor_check_agy_print_timeout() {
   pr_doctor_have agy || return 0
-  local out default
+  local out
   out="$(pr_doctor_run 15 agy --help 2>&1)"
-  default="$(sed -n 's/.*--print-timeout[^(]*(default \([^)]*\)).*/\1/p' <<< "$out" | head -1)"
-  if [[ -n "$default" ]]; then
-    pr_d_info "agy's own --print-timeout defaults to $default and adapters/agy.sh does"
-    pr_d_info "not set it, so that deadline applies inside PR_TIMEOUT_SECS (${PR_TIMEOUT_SECS:-900}s)."
+  if [[ "$out" == *"--print-timeout"* ]]; then
+    pr_d_pass "agy still accepts --print-timeout (adapters/agy.sh derives it from PR_TIMEOUT_SECS)"
     return 0
   fi
-  pr_d_warn "could not read agy's --print-timeout default out of \`agy --help\`"
-  pr_d_info "The flag or its help text has moved. The adapter relies on that default,"
-  pr_d_info "so a changed one silently changes when a review gets cut short."
-  return 0
+  pr_d_fail "agy no longer lists --print-timeout in its help"
+  pr_d_info "adapters/agy.sh passes that flag. Without it agy falls back to its own"
+  pr_d_info "5m0s default, which silently cuts long reviews short."
+  return 1
 }
 
 # The only reviewer with a structured auth status. Judged on the loggedIn field
@@ -628,7 +660,10 @@ pr_doctor_check_pins() {
 # which is why the number is what gets compared.
 pr_doctor_version_of() {
   local out tok
-  out="$("$1" --version 2>/dev/null)" || return 1
+  # Through pr_doctor_run, not a bare substitution: a CLI that leaves a
+  # descendant on stdout would otherwise hang the whole doctor on a --version
+  # call. 10s is generous for a version string.
+  out="$(pr_doctor_run 10 "$1" --version 2>/dev/null)" || return 1
   out="${out%%$'\n'*}"
   # Unquoted on purpose: word splitting is the parse. Globbing is off for the
   # duration so a version string could not be expanded against the filesystem.

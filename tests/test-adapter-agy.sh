@@ -46,6 +46,48 @@ STUB
 
 export PR_AGY_MODEL=gemini-3.1-pro-high
 
+# The runner validates this too, but an adapter run by hand has no runner.
+test_a_fractional_timeout_is_refused_by_the_adapter() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  echo "prompt" | PR_TIMEOUT_SECS=1.5 PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 1 "refuses a fractional deadline"
+  assert_file_missing "$d/bin/agy-argv.txt" "the CLI was never invoked"
+}
+
+test_a_zero_timeout_is_refused_by_the_adapter() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  echo "prompt" | PR_TIMEOUT_SECS=0 PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 1 "zero is not a positive integer"
+  assert_file_missing "$d/bin/agy-argv.txt" "the CLI was never invoked"
+}
+
+# agy carries a deadline of its own inside the runner's. Left at its 5m default
+# it cuts a review short with no way to tell that from an auto-deny; passed
+# explicitly and below PR_TIMEOUT_SECS, the expiry is ours to recognise.
+test_print_timeout_is_derived_from_the_runner_deadline() {
+  local d argv; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  echo "prompt" | PR_TIMEOUT_SECS=900 PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  argv="$(< "$d/bin/agy-argv.txt")"
+  assert_contains "$argv" "--print-timeout" "the flag is passed"
+  assert_contains "$argv" "810000ms" "derived as 90% of PR_TIMEOUT_SECS, in ms"
+}
+
+# The strict ordering has to hold at the boundary too: at 1s the seconds-based
+# arithmetic would make the two deadlines equal and timeout(1) could reap agy
+# before it writes its final line.
+test_print_timeout_stays_below_a_one_second_deadline() {
+  local d argv; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  echo "prompt" | PR_TIMEOUT_SECS=1 PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  argv="$(< "$d/bin/agy-argv.txt")"
+  assert_contains "$argv" "900ms" "strictly inside a 1s outer deadline"
+}
+
 test_an_unset_model_pin_is_refused() {
   local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
   echo "prompt" | PR_AGY_MODEL= PATH="$d/bin:$PATH" \

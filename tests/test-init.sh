@@ -44,8 +44,11 @@ esac"
 }
 stub_agy() {
   local models="${3:-gemini-3.1-pro-high	Gemini 3.1 Pro (High)}"
+  # --help lists --print-timeout because pr_doctor_check_agy_print_timeout now
+  # FAILS when it does not -- adapters/agy.sh passes that flag.
   pr_test_mkstub "$1/agy" "printf '%s\n' \"\$*\" >> '$2'
 [[ \"\$1\" == models ]] && printf '%s\n' 'Fetching available models...' '$models'
+[[ \"\$1\" == --help ]] && printf '%s\n' '  --print-timeout   Timeout for print mode wait (default 5m0s)'
 exit 0"
 }
 stub_claude() {

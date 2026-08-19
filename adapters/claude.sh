@@ -157,14 +157,21 @@ result="$(jq -c 'select(.type == "result")' "$stream" 2>/dev/null | tail -1)"
 # expression reports every successful run as an error. Spelled out, it still
 # defaults to true when the field is missing entirely, which is the fail-closed
 # direction.
+#
+# terminal_reason is one more scalar in the same expression, no extra process. It
+# goes BEFORE .result, which stays last because it is multi-line and read with
+# `cat`. `// ""` is what makes an absent field read as "not reported" rather than
+# shifting every later line -- the same failure mode the tab-separated record had
+# in libexec/plan-review-round.sh.
 { IFS= read -r is_error; IFS= read -r session; IFS= read -r denials
-  IFS= read -r subtype;  review="$(cat)"; } < <(
+  IFS= read -r subtype;  IFS= read -r terminal_reason; review="$(cat)"; } < <(
   jq -r '(if .is_error == false then "false" else "true" end),
          (.session_id // ""),
          ((.permission_denials // []) | length | tostring),
          (.subtype // ""),
+         (.terminal_reason // ""),
          (.result // "")' <<< "$result" 2>/dev/null)
-: "${is_error:=true}" "${session:=}" "${denials:=}" "${subtype:=}"
+: "${is_error:=true}" "${session:=}" "${denials:=}" "${subtype:=}" "${terminal_reason:=}"
 
 # The pin is a request; the init line is the answer. They differ legitimately
 # when the pin is an alias -- `sonnet` resolves to `claude-sonnet-5` -- which is
@@ -205,7 +212,27 @@ fi
 if [[ "$is_error" == "true" || -z "$review" ]]; then
   echo "claude adapter: no usable review (is_error=$is_error, exit=$rc)." >&2
   [[ -n "${review:-$subtype}" ]] && printf '%s\n' "${review:-$subtype}" >&2
-  pr_reason "claude reported is_error=$is_error and no review (exit $rc)"
+  # claude names why the session ended, and that value is REPORTED rather than
+  # matched against a list. Measured against claude 2.1.235 in probe P4
+  # (process note 2026-08-19, "claude terminal_reason"): the field is on
+  # every result frame -- `completed` on a clean success, `budget_exhausted` when
+  # a spend cap binds. The surveyed Go orchestrator special-cases the single value
+  # `prompt_too_long` for a filled context window; P4 did NOT reproduce that value,
+  # both legs having hit the budget cap first, so a branch on the literal string
+  # would be a citation standing in for a measurement.
+  # Echoing the field diagnoses prompt_too_long too, if that is ever what arrives.
+  #
+  # No tripwire on the field: if a release stops emitting it, `// ""` above makes
+  # this fall back to the generic message and nothing else changes.
+  #
+  # The message must NOT suggest --fresh: a failed reviewer already forfeits its
+  # own handle in libexec/plan-review-round.sh, while --fresh would discard every
+  # reviewer's handle and the history baseline. Nor does it state that rule --
+  # R1 is the runner's, an adapter that asserts it becomes a lie if it changes.
+  #
+  # One line, not a branch: `${var:+...}` drops the clause when the field is
+  # absent, which is the same "absent reads as not reported" the `// ""` gives.
+  pr_reason "claude reported is_error=$is_error${terminal_reason:+, terminal_reason=$terminal_reason} and no review (exit $rc)"
   exit 1
 fi
 

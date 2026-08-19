@@ -15,6 +15,13 @@ install_stubs() {
   local result="${5-# claude review\n<!-- VERDICT: MINOR -->\n<!-- FILES-INSPECTED: src/a.ts -->}"
   local denials="${6:-0}"
   local emit_init="${7:-yes}"
+  # Eighth, defaulting to empty so every existing caller is unaffected. Measured
+  # 2026-08-19 against claude 2.1.235 (probe P4): the real CLI emits
+  # terminal_reason on EVERY result frame, `completed` on a clean success -- so
+  # the default below is `completed`, not an omitted key.
+  # `${8-...}`, not `${8:-...}`: the dropped-field case passes "" deliberately,
+  # and the colon form would treat that as "unset" and hand back the default.
+  local terminal_reason="${8-completed}"
   mkdir -p "$bindir"
 
   cat > "$bindir/bwrap" <<STUB
@@ -41,9 +48,11 @@ if [[ "$emit_init" == yes ]]; then
       claude_code_version:"2.1.233",session_id:"sess-abc-123",cwd:"/w"}'
 fi
 jq -nc --argjson e "$is_error" --arg r "\$(printf '$result')" --argjson d "$denials" \
+       --arg tr "$terminal_reason" \
   '{type:"result",subtype:(if \$e then "error" else "success" end),is_error:\$e,
     result:(if \$r == "" then null else \$r end),session_id:"sess-abc-123",
-    permission_denials:[range(\$d)|{tool:"Bash"}],total_cost_usd:0.05}'
+    permission_denials:[range(\$d)|{tool:"Bash"}],total_cost_usd:0.05}
+   + (if \$tr == "" then {} else {terminal_reason: \$tr} end)'
 exit 0
 STUB
   chmod +x "$bindir/bwrap" "$bindir/claude"
@@ -315,6 +324,61 @@ test_the_review_is_written_to_the_review_file_never_to_stdout() {
   local d; d="$(setup)"; run_adapter "$d"
   assert_contains "$(cat "$d/r.md")" "VERDICT: MINOR" "review in the review file"
   assert_not_contains "$(cat "$d/out.txt")" "VERDICT: MINOR" "diagnostics only on stdout"
+}
+
+# --- terminal_reason (U3, probe P4) -----------------------------------------
+
+# claude 2.1.235 names why a session ended in its result frame. Reporting that
+# value is what turns "no usable review" into something an operator can act on.
+# The value is echoed rather than matched against a list: P4 observed
+# `completed` and `budget_exhausted`; `prompt_too_long` is the surveyed Go
+# orchestrator's claim and was NOT reproduced, so nothing here special-cases it.
+test_the_terminal_reason_is_named_in_the_failure_reason() {
+  local d reason; d="$(pr_test_tmpdir)"
+  install_stubs "$d/bin" claude-sonnet-5 bypassPermissions true "" 0 yes budget_exhausted
+  mkdir -p "$d/work"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/claude.sh" \
+    "$d/work" "sess-abc-123" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  reason="$(< "$d/reason.txt")"
+  assert_contains "$reason" "budget_exhausted" "names what claude said ended it"
+  [[ "$reason" != *"--fresh"* ]] || pr_fail "--fresh discards every reviewer's handle"
+}
+
+# The stub above proves the code handles the shape we assembled; only this proves
+# it handles the shape claude actually sent. Sanitised at capture time -- session
+# id, review text and the denial payload redacted, key set and terminal_reason
+# value untouched.
+test_the_captured_frame_is_recognised() {
+  local d reason; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  # Replace the stub's result line with the fixture, leaving the init line alone.
+  cat > "$d/bin/claude" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then echo "2.1.235 (Claude Code)"; exit 0; fi
+cat > /dev/null
+jq -nc '{type:"system",subtype:"init",model:"claude-sonnet-5",
+         permissionMode:"bypassPermissions",claude_code_version:"2.1.235",
+         session_id:"sess-redacted",cwd:"/w"}'
+cat "$PR_ROOT/tests/fixtures/claude/result-budget-exhausted.json"
+exit 0
+STUB
+  chmod +x "$d/bin/claude"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/claude.sh" \
+    "$d/work" "sess-redacted" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  reason="$(< "$d/reason.txt")"
+  assert_contains "$reason" "budget_exhausted" "the real frame is recognised too"
+}
+
+# A release that stops emitting the field must degrade to today's generic reason
+# rather than leaving an empty parenthetical or shifting the later reads.
+test_a_frame_without_the_field_keeps_the_generic_reason() {
+  local d reason; d="$(pr_test_tmpdir)"
+  install_stubs "$d/bin" claude-sonnet-5 bypassPermissions true "" 0 yes ""
+  mkdir -p "$d/work"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/claude.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  reason="$(< "$d/reason.txt")"
+  assert_contains "$reason" "is_error=true" "the generic reason survives"
+  [[ "$reason" != *"terminal_reason"* ]] || pr_fail "named a field the frame did not carry"
 }
 
 pr_run_tests
