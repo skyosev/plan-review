@@ -1,0 +1,57 @@
+# The CLI versions the adapters were verified against.
+#
+# `plan-review doctor` compares each tool's current version against the
+# value here and WARNS on any difference. Exact match, not a floor: compatibility
+# was measured at exactly these versions, and nothing tells us a newer release
+# preserves the behaviour the adapters depend on. A warning is not a refusal to
+# run -- a newer CLI usually works.
+#
+# What drift actually threatens, per adapter:
+#   codex   the banner. adapters/codex.sh parses `sandbox:`, `model:`,
+#           `reasoning effort:` and `session id:` out of stderr, and refuses to
+#           trust a review when the sandbox line is missing or unexpected. A
+#           banner change is a failed round, not a wrong one.
+#   agent   the mid-run model-switch notice, which Cursor emits only as prose
+#           ("Switched to ..."). Reworded, the adapter would record a model that
+#           did not answer.
+#   agy     the --output-format json envelope: status, response, conversation_id.
+#   claude  the --output-format stream-json `init` line: model, permissionMode,
+#           claude_code_version. adapters/claude.sh refuses to record a review
+#           when that line is missing or reports a permission mode it did not
+#           ask for, so a stream change is a failed round, not a wrong one.
+#           Also at risk: --safe-mode, which is what stops the TARGET repo's
+#           .claude/settings.json hooks executing inside the jail.
+#
+# Format: <tool> <version>. One per line, # starts a comment.
+# Update it after re-running the probes recorded in the process notes.
+
+# Verified during Task 0 / spike S1, against the banner and flag behaviour
+# documented in adapters/codex.sh.
+codex 0.147.0
+
+# Verified against the sandbox and model-switch behaviour documented in
+# adapters/agent.sh. Measured again on 2026-08-17, at this same version: `agent
+# about --format json` answers with cliVersion (and userEmail, which the doctor
+# never echoes), and `agent status --format json` answers with isAuthenticated.
+# lib/doctor.sh uses both -- identity and auth are structured now, and the
+# 60-second --list-models call is left to pin validation alone.
+agent 2026.08.11-e8db854
+
+# Recorded 2026-08-17, from the acceptance run recorded in the process notes. Weaker
+# provenance than the two above: the earlier probes established what agy's
+# --sandbox does NOT confine, but never recorded the version they ran against, so
+# this is "the version the loop has been exercised on", not "the version the
+# escape was measured on".
+#
+# Also measured 2026-08-17 at this version: `agy --help` documents
+# --print-timeout with a default of 5m0s. adapters/agy.sh does not pass the flag,
+# so agy stops itself well inside PR_TIMEOUT_SECS. `plan-review doctor`
+# reports the default; what the deadline actually bounds is not yet measured.
+agy 1.1.13
+
+# Verified 2026-08-17 by spike S2, whose probes are recorded in the process
+# notes. Every behaviour adapters/claude.sh depends on was
+# measured at this version, including the negative results: no effort is reported
+# in either output format, and the repo-hook suppression by --safe-mode was
+# confirmed against a control run that let the hook fire.
+claude 2.1.233

@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# A stub flock that announces it was reached, then becomes the real one.
+#
+# It exists for one test: proving that `complete` re-reads round.json AFTER
+# taking the lock. The marker is touched before flock can block, so a harness
+# holding the lock knows the process under test has finished its first read and
+# is now waiting -- which is the only moment at which mutating round.json tests
+# anything.
+set -uo pipefail
+: > "${PR_TEST_FLOCK_MARKER:?PR_TEST_FLOCK_MARKER must be set}"
+exec "${PR_TEST_REAL_FLOCK:?PR_TEST_REAL_FLOCK must be set}" "$@"

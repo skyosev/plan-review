@@ -1,0 +1,875 @@
+#!/usr/bin/env bash
+set -uo pipefail
+PR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$PR_ROOT/tests/helpers.sh"
+
+# Each case runs the checks in a fresh bash so the pass/warn/fail counters start
+# at zero, and appends a `counts <pass> <warn> <fail>` line for the assertions.
+#
+# `set -uo pipefail` inside the snippet on purpose: libexec/plan-review-doctor.sh runs
+# under -u, so an unguarded ${PR_SOMETHING} in lib/doctor.sh must break a test
+# here rather than only the real script.
+#
+# PATH is the first argument, not a prefix assignment, because bash's rules for
+# whether an assignment before a *function* call persists afterwards are not worth
+# relying on. $BASH is absolute, so overriding PATH cannot stop the interpreter
+# being found.
+doctor_run() {
+  local path="$1" snippet="$2"
+  PATH="$path" "$BASH" -c "set -uo pipefail
+source '$PR_ROOT/lib/paths.sh'
+source '$PR_ROOT/lib/doctor.sh'
+$snippet
+printf 'counts %s %s %s\n' \"\$PR_DOCTOR_PASS\" \"\$PR_DOCTOR_WARN\" \"\$PR_DOCTOR_FAIL\"" 2>&1
+}
+
+
+# Presence is all check_utils tests, so an empty executable file is a truthful
+# stub for it.
+mkpresent() {
+  mkdir -p "${1%/*}"
+  : > "$1"
+  chmod +x "$1"
+}
+
+# --- Tier A: machine -------------------------------------------------------
+
+test_missing_core_utilities_fail_and_name_themselves() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_utils')"
+  assert_contains "$out" "missing core utilities" "absence is a failure"
+  assert_contains "$out" "jq" "the missing tool is named"
+  assert_contains "$out" "counts 0 0 1" "one failure, no passes"
+}
+
+test_present_core_utilities_pass_as_one_check() {
+  local d u; d="$(pr_test_tmpdir)"
+  # $PR_DOCTOR_UTILS, not a second copy: this test's whole claim is that the
+  # WHOLE set passes as one check, which a stale literal would silently narrow.
+  for u in $(PATH="$PATH" "$BASH" -c "source '$PR_ROOT/lib/doctor.sh'; printf '%s' \"\$PR_DOCTOR_UTILS\""); do
+    mkpresent "$d/bin/$u"
+  done
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_utils')"
+  assert_contains "$out" "counts 1 0 0" "one pass for the whole set"
+}
+
+test_absent_reviewer_cli_points_at_the_roster_escape_hatch() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_cli codex')"
+  assert_contains "$out" "codex not on PATH" "names the CLI"
+  assert_contains "$out" "PR_ADAPTER_MAP" "offers dropping the reviewer instead"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+test_bash_floor_is_five_and_this_bash_clears_it() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_bash')"
+  assert_contains "$out" "counts 1 0 0" "the interpreter running the suite passes"
+  assert_contains "$out" "need 5 or newer" "states the floor it enforced"
+}
+
+test_missing_bwrap_explains_why_agy_needs_it() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_bwrap_jail')"
+  assert_contains "$out" "bwrap (bubblewrap) not on PATH" "names the dependency"
+  assert_contains "$out" "only write barrier" "says why it is not optional"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# The jail case needs mkdir and rmdir, so it runs on a real PATH with the stub
+# shadowing bwrap. No risk of a real reviewer CLI leaking in: this check never
+# invokes one.
+test_broken_jail_is_distinguished_from_missing_bwrap() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/bwrap" 'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1'
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_bwrap_jail')"
+  assert_contains "$out" "installed but the jail those reviewers run in does not work" \
+    "installed-but-broken is its own diagnosis"
+  assert_contains "$out" "apparmor_restrict_unprivileged_userns" \
+    "points at the actual cause on 24.04"
+  assert_contains "$out" "Permission denied" "quotes what bwrap said"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+test_working_jail_passes() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/bwrap" 'exit 0'
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_bwrap_jail')"
+  assert_contains "$out" "counts 1 0 0" "a working jail is one pass"
+}
+
+test_unwritable_cache_root_fails() {
+  local d; d="$(pr_test_tmpdir)"
+  : > "$d/not-a-dir"
+  local out
+  out="$(doctor_run "$PATH" "PR_CACHE_ROOT='$d/not-a-dir/sub'
+pr_doctor_check_cache_root")"
+  assert_contains "$out" "sandbox root not writable" "a file in the way is a failure"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# --- Tier B: auth and pins -------------------------------------------------
+
+# pr_doctor_run wraps the CLI in timeout(1) when it exists, so the stub PATH needs
+# a timeout that actually execs its argument rather than swallowing it.
+stub_timeout() { pr_test_mkstub "$1/timeout" 'shift; exec "$@"'; }
+
+test_codex_auth_reports_the_status_line_on_success() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/codex" 'echo "Logged in using ChatGPT"; exit 0'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_codex_auth')"
+  assert_contains "$out" "codex authenticated (Logged in using ChatGPT)" \
+    "echoes what the CLI said"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
+test_codex_auth_failure_names_the_fix() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/codex" 'echo "Not logged in" >&2; exit 1'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_codex_auth')"
+  assert_contains "$out" "not authenticated" "a failure, in words"
+  assert_contains "$out" "codex login" "names the remediation"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# One stub for all three things the doctor asks Cursor. Which subcommand a test
+# exercises is the point of that test; the others answer plausibly so a check
+# never fails for a reason the test did not intend.
+#
+# `about` returns a userEmail because the real one does — that is what the
+# never-echo assertion below is testing against.
+mkagent() {
+  local path="$1" authed="${2:-true}" models="${3:-gpt-5.2 - GPT-5.2}"
+  pr_test_mkstub "$path" "case \"\$1\" in
+  about)  echo '{\"cliVersion\":\"2026.08.11-e8db854\",\"userEmail\":\"a@b.c\"}' ;;
+  status) echo '{\"isAuthenticated\":$authed}' ;;
+  --list-models) printf '%s\n' 'Available models' '$models' ;;
+esac"
+}
+
+# `agent` is a generic name. Presence on PATH says nothing about which tool it is,
+# and adapters/agent.sh would run whatever it finds with Cursor's flags.
+test_cursor_identity_comes_from_a_structured_field_not_the_binary_name() {
+  local d; d="$(pr_test_tmpdir)"
+  mkagent "$d/bin/agent"
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agent_identity')"
+  assert_contains "$out" "agent is the Cursor CLI, version 2026.08.11-e8db854" \
+    "cliVersion identifies it"
+  # A doctor's output gets pasted into issues, and `agent about` returns the
+  # account address right next to the version.
+  assert_not_contains "$out" "a@b.c" "the account email is never echoed"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
+test_an_impostor_named_agent_is_caught_before_the_round() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agent" 'echo "usage: agent [options]" >&2; exit 1'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agent_identity')"
+  assert_contains "$out" "does not answer 'agent about --format json'" "names the probe"
+  assert_contains "$out" "different tool with the same name" "says what it suspects"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# Judged on isAuthenticated, not on the exit code — agy's lesson, applied to the
+# CLI that now has a structured answer for it.
+test_cursor_auth_is_judged_on_the_status_subcommand() {
+  local d; d="$(pr_test_tmpdir)"
+  mkagent "$d/bin/agent" true
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agent_auth')"
+  assert_contains "$out" "Cursor authenticated" "the status field is the probe"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
+test_unauthenticated_cursor_fails_despite_a_zero_exit() {
+  local d; d="$(pr_test_tmpdir)"
+  mkagent "$d/bin/agent" false
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agent_auth')"
+  assert_contains "$out" "isAuthenticated=false" "quotes the field it judged on"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# The model list is no longer the auth probe, but it is still the pin check's
+# source of truth, and its parser is the fiddly part. Tested directly rather than
+# through a check, so a failure here names the parser.
+test_model_list_parser_counts_ids_and_skips_prose() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out
+  out="$(doctor_run "$d/bin" 'printf "header=%s auto=%s agy=%s two=%s\n" \
+    "$(pr_doctor_count_ids "Available models")" \
+    "$(pr_doctor_count_ids "auto - Auto (default)")" \
+    "$(pr_doctor_count_ids "Fetching available models...
+gemini-3.1-pro-high	Gemini 3.1 Pro (High)")" \
+    "$(pr_doctor_count_ids "Available models
+
+auto - Auto (default)
+gpt-5.2 - GPT-5.2")"')"
+  # `auto` has no dash and no dot in it: counting only id-shaped tokens would drop
+  # a real model, which is why the separator clause exists.
+  assert_contains "$out" "header=0 auto=1 agy=1 two=2" \
+    "prose lines carry neither a separator nor punctuation"
+}
+
+test_agy_progress_line_is_not_counted_as_a_model() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agy" \
+    'printf "Fetching available models...\ngemini-3.1-pro-high\tGemini 3.1 Pro (High)\n"'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_agy_auth')"
+  assert_contains "$out" "agy answered: 1 models available" \
+    "the progress line has no id in it"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
+# The cap agy applies to itself, inside ours. It is reported as context rather
+# than counted: nothing is broken, but a reviewer that stops at 5 minutes under a
+# 15-minute deadline is otherwise diagnosed only after a round ends early.
+test_agy_print_timeout_default_is_reported_before_the_round() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agy" \
+    'printf "  --print-timeout                 Timeout for print mode wait (default 5m0s)\n"'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_print_timeout')"
+  assert_contains "$out" "defaults to 5m0s" "reads the default out of the help text"
+  assert_contains "$out" "inside PR_TIMEOUT_SECS" "says what it is inside of"
+  assert_contains "$out" "counts 0 0 0" "context, not a result"
+}
+
+test_a_moved_print_timeout_flag_warns_rather_than_passing_silently() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agy" 'printf "  --print                 Run a single prompt\n"'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_print_timeout')"
+  assert_contains "$out" "could not read agy's --print-timeout default" "says what it lost"
+  assert_contains "$out" "counts 0 1 0" "a warning"
+}
+
+test_agy_failure_says_there_is_no_login_subcommand() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agy" 'echo "token expired" >&2; exit 1'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_agy_auth')"
+  assert_contains "$out" "no login subcommand" "does not invent a headless fix"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+test_pin_that_does_not_exist_is_a_failure() {
+  local d; d="$(pr_test_tmpdir)"
+  mkagent "$d/bin/agent"
+  stub_timeout "$d/bin"
+  local out
+  out="$(doctor_run "$d/bin" "PR_AGENT_MODEL=nope-9
+pr_doctor_check_pins")"
+  assert_contains "$out" "PR_AGENT_MODEL=nope-9 is not in agent --list-models" \
+    "a set-but-absent pin fails"
+  assert_contains "$out" "counts 0 0 1" "the pin check fetches its own list now"
+}
+
+test_pin_present_in_the_list_passes_on_an_exact_first_field() {
+  local d; d="$(pr_test_tmpdir)"
+  # `gpt-5.2-fast` must not satisfy a pin of `gpt-5.2`: the match is on the whole
+  # first field, not a prefix.
+  mkagent "$d/bin/agent" true 'gpt-5.2-fast - GPT-5.2 Fast
+gpt-5.2 - GPT-5.2'
+  stub_timeout "$d/bin"
+  local out
+  out="$(doctor_run "$d/bin" "PR_AGENT_MODEL=gpt-5.2
+pr_doctor_check_pins")"
+  assert_contains "$out" "PR_AGENT_MODEL=gpt-5.2 exists" "exact match found"
+  assert_contains "$out" "counts 1 0 0" "no failures"
+}
+
+test_prefix_of_a_real_model_is_still_a_failure() {
+  local d; d="$(pr_test_tmpdir)"
+  mkagent "$d/bin/agent" true 'gpt-5.2-fast - GPT-5.2 Fast'
+  stub_timeout "$d/bin"
+  local out
+  out="$(doctor_run "$d/bin" "PR_AGENT_MODEL=gpt-5.2
+pr_doctor_check_pins")"
+  assert_contains "$out" "is not in agent --list-models" "prefixes do not match"
+}
+
+# --offline must stay offline. The pin check is the one place that still reaches
+# the network, and libexec/plan-review-doctor.sh sets this flag to stop it.
+test_offline_pin_check_makes_no_model_list_call() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agent" "printf 'called\n' >> '$d/called.txt'"
+  stub_timeout "$d/bin"
+  local out
+  out="$(doctor_run "$d/bin" "PR_DOCTOR_OFFLINE=1
+PR_AGENT_MODEL=gpt-5.2
+pr_doctor_check_pins")"
+  assert_file_missing "$d/called.txt" "the CLI was never invoked"
+  assert_contains "$out" "not checked: no model list" "and the pin is reported unchecked"
+}
+
+# The pins have no config file, so an unset one is the normal state of a fresh
+# shell. Failing on it would fire for everyone, always, and train the reader to
+# ignore the output.
+test_unset_pins_are_reported_without_failing() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_pins')"
+  assert_contains "$out" "PR_AGENT_MODEL unset" "says so"
+  assert_contains "$out" "PR_AGY_MODEL unset" "for both"
+  assert_contains "$out" "counts 0 0 0" "neither a pass nor a failure"
+}
+
+test_invalid_codex_effort_fails_before_the_backend_does() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out
+  out="$(doctor_run "$d/bin" "PR_CODEX_EFFORT=hgih
+pr_doctor_check_codex_effort")"
+  assert_contains "$out" "is not one of" "rejects the typo"
+  assert_contains "$out" "400" "explains what would otherwise happen"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+test_valid_codex_effort_passes() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out
+  out="$(doctor_run "$d/bin" "PR_CODEX_EFFORT=xhigh
+pr_doctor_check_codex_effort")"
+  assert_contains "$out" "counts 1 0 0" "xhigh is a real tier"
+}
+
+# --- Tier C: version drift -------------------------------------------------
+
+# One parser for three formats. If this breaks, the drift check silently reports
+# "could not read a version" for a CLI that answered perfectly well.
+test_version_parser_handles_all_three_cli_formats() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/codex" 'echo "codex-cli 0.147.0"'
+  pr_test_mkstub "$d/bin/agent" 'echo "2026.08.11-e8db854"'
+  pr_test_mkstub "$d/bin/agy"   'echo "1.1.13"'
+  local out
+  out="$(doctor_run "$d/bin" 'printf "%s %s %s\n" \
+    "$(pr_doctor_version_of codex)" \
+    "$(pr_doctor_version_of agent)" \
+    "$(pr_doctor_version_of agy)"')"
+  assert_contains "$out" "0.147.0 2026.08.11-e8db854 1.1.13" \
+    "label stripped where there is one, kept intact where there is not"
+}
+
+test_matching_versions_pass() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/codex" 'echo "codex-cli 0.147.0"'
+  printf '# comment\n\ncodex 0.147.0\n' > "$d/versions.txt"
+  local out
+  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions")"
+  assert_contains "$out" "codex 0.147.0 matches the verified version" "a match"
+  assert_contains "$out" "counts 1 0 0" "comments and blank lines are skipped"
+}
+
+test_version_drift_warns_and_does_not_fail() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/codex" 'echo "codex-cli 0.148.0"'
+  printf 'codex 0.147.0\n' > "$d/versions.txt"
+  local out
+  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions")"
+  assert_contains "$out" "codex is 0.148.0; the adapters were verified against 0.147.0" \
+    "names both versions"
+  assert_contains "$out" "fails closed" "explains what drift threatens"
+  assert_contains "$out" "counts 0 1 0" "a warning, never a failure"
+}
+
+# A missing CLI is already one FAIL in Tier A. Counting it again here would report
+# one problem as two and inflate the summary.
+test_absent_tool_is_not_double_counted_by_the_drift_check() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  printf 'codex 0.147.0\n' > "$d/versions.txt"
+  local out
+  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions")"
+  assert_contains "$out" "counts 0 0 0" "silent about a tool Tier A already failed"
+}
+
+test_missing_versions_file_warns_rather_than_failing() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out
+  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/nope.txt'
+pr_doctor_check_versions")"
+  assert_contains "$out" "no verified-versions file" "says what is missing"
+  assert_contains "$out" "counts 0 1 0" "a warning"
+}
+
+test_the_shipped_versions_file_matches_its_own_format() {
+  # Guards the real file against a typo that would make every check warn.
+  local out
+  out="$(doctor_run "$PATH" "PR_ROOT='$PR_ROOT'
+while read -r tool want rest; do
+  [[ -z \"\$tool\" || \"\$tool\" == \\#* ]] && continue
+  [[ -n \"\$want\" ]] || echo \"BAD: \$tool has no version\"
+  [[ -z \"\$rest\" ]] || echo \"BAD: \$tool has trailing junk: \$rest\"
+done < '$PR_ROOT/docs/verified-versions.txt'")"
+  assert_not_contains "$out" "BAD:" "every non-comment line is <tool> <version>"
+}
+
+# --- Tier D: target repo ---------------------------------------------------
+
+mkrepo() {
+  local repo="$1"
+  mkdir -p "$repo"
+  git -C "$repo" init -q 2>/dev/null
+  git -C "$repo" config user.email t@example.com
+  git -C "$repo" config user.name Test
+  printf '# plan\n' > "$repo/plan.md"
+}
+
+test_artifacts_ignored_is_checked_by_rule_not_by_grepping_gitignore() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  # Deliberately NOT .gitignore: the rule is equally binding here, and a grep of
+  # .gitignore would report a false failure.
+  mkdir -p "$d/repo/.git/info"
+  printf '.plan-review/\n' > "$d/repo/.git/info/exclude"
+  local out; out="$(doctor_run "$PATH" "pr_doctor_check_artifacts_ignored '$d/repo'")"
+  assert_contains "$out" "counts 1 0 0" "an exclude-file rule counts"
+}
+
+test_unignored_artifacts_directory_fails_with_the_fix() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  local out; out="$(doctor_run "$PATH" "pr_doctor_check_artifacts_ignored '$d/repo'")"
+  assert_contains "$out" "is NOT ignored" "a failure"
+  assert_contains "$out" ">> $d/repo/.gitignore" "prints the exact command"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+test_non_repository_target_fails_before_the_other_repo_checks() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/plain"
+  local out; out="$(doctor_run "$PATH" "pr_doctor_check_repo '$d/plain'")"
+  assert_contains "$out" "is not a git repository" "named plainly"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+test_plan_reached_through_a_symlink_out_of_the_repo_is_rejected() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  printf '# elsewhere\n' > "$d/outside.md"
+  ln -s "$d/outside.md" "$d/repo/linked.md"
+  local out; out="$(doctor_run "$PATH" "pr_doctor_check_plan '$d/repo' linked.md")"
+  assert_contains "$out" "resolves outside the repository" \
+    "the same containment rule the runner applies"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+test_empty_plan_is_rejected() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  : > "$d/repo/empty.md"
+  local out; out="$(doctor_run "$PATH" "pr_doctor_check_plan '$d/repo' empty.md")"
+  assert_contains "$out" "the plan is empty" "nothing to review is a failure"
+}
+
+test_readable_plan_passes() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  local out; out="$(doctor_run "$PATH" "pr_doctor_check_plan '$d/repo' plan.md")"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
+# pr_doctor_check_rounds needs lib/paths.sh for the session key, lib/round.sh for
+# the lifecycle rule and lib/lock.sh to probe the session, so the snippet sources
+# all three the way libexec/plan-review-doctor.sh does.
+rounds_run() {
+  local repo="$1" plan="$2"
+  doctor_run "$PATH" "PR_ROOT='$PR_ROOT'
+source '$PR_ROOT/lib/lock.sh'
+source '$PR_ROOT/lib/round.sh'
+pr_doctor_check_rounds '$repo' '$plan'"
+}
+
+seed_round() {
+  local repo="$1" plan="$2" state="$3" key dir
+  key="$(cd "$repo" && pwd)"
+  key="$( PR_ROOT="$PR_ROOT" "$BASH" -c "source '$PR_ROOT/lib/paths.sh'
+pr_session_key '$key' '$plan'" )"
+  dir="$repo/.plan-review/$key/round-1"
+  mkdir -p "$dir"
+  printf '{"round":1,"state":"%s"}\n' "$state" > "$dir/round.json"
+  printf '%s' "$dir"
+}
+
+test_no_previous_rounds_passes() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  local out; out="$(rounds_run "$d/repo" plan.md)"
+  assert_contains "$out" "the next round will be round 1" "nothing in the way"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
+test_round_awaiting_integration_is_reported_as_the_blocker() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  seed_round "$d/repo" plan.md awaiting_integration > /dev/null
+  local out; out="$(rounds_run "$d/repo" plan.md)"
+  assert_contains "$out" "round 1 is awaiting_integration; round 2 is blocked" \
+    "answers why the next round will not start"
+  assert_contains "$out" "plan-review complete" "names the command that clears it"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# The runner's guard is an allow-list, so a crashed round blocks exactly as hard
+# as one awaiting integration. The doctor has to agree with it.
+test_crashed_round_also_blocks() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  seed_round "$d/repo" plan.md reviewing > /dev/null
+  local out; out="$(rounds_run "$d/repo" plan.md)"
+  assert_contains "$out" "in state 'reviewing' and cannot be left behind" \
+    "a crashed round is not silently buried"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+test_completed_round_clears_the_way() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  seed_round "$d/repo" plan.md complete > /dev/null
+  local out; out="$(rounds_run "$d/repo" plan.md)"
+  assert_contains "$out" "round 1 is complete; round 2 can start" "a pass"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
+# --- the session lock -------------------------------------------------------
+#
+# round.json cannot tell these two apart. Its state is written once, so
+# `reviewing` reads the same whether a runner is working right now or died three
+# days ago -- and the two need opposite advice.
+
+test_a_crashed_round_with_nothing_running_gets_the_abort_command() {
+  local d rd out; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  rd="$(seed_round "$d/repo" plan.md reviewing)"
+  out="$(rounds_run "$d/repo" plan.md)"
+  assert_contains "$out" "Nothing is running" "says the runner did not finish"
+  assert_contains "$out" "plan-review abort --round $rd" "an executable remedy"
+}
+
+test_a_held_session_is_reported_as_running_rather_than_reclaimable() {
+  local d rd out; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  rd="$(seed_round "$d/repo" plan.md reviewing)"
+  pr_test_hold_lock "${rd%/*}/.lock" "$d/release"
+  out="$(rounds_run "$d/repo" plan.md)"
+  pr_test_release_lock "$d/release"
+  assert_contains "$out" "a review is running in this session" "the lock, not the state"
+  assert_contains "$out" "$PR_TEST_HOLDER" "and who started it"
+  assert_contains "$out" "wait for it to finish" "the right advice"
+  assert_not_contains "$out" "plan-review abort" "never offer to reclaim a live round"
+}
+
+test_awaiting_integration_offers_abandoning_as_well_as_finishing() {
+  local d rd out; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  rd="$(seed_round "$d/repo" plan.md awaiting_integration)"
+  out="$(rounds_run "$d/repo" plan.md)"
+  assert_contains "$out" "plan-review complete --round $rd" "finish it"
+  assert_contains "$out" "plan-review abort --round $rd" "or abandon it"
+}
+
+# --- Preflight -------------------------------------------------------------
+
+preflight_run() {
+  local path="$1" env_line="$2" map="$3"
+  PATH="$path" "$BASH" -c "set -uo pipefail
+PR_ROOT='$PR_ROOT'
+source '$PR_ROOT/lib/doctor.sh'
+$env_line
+pr_doctor_preflight '$map'
+echo \"rc=\$?\"" 2>&1
+}
+
+# The load-bearing case. tests/test-runner.sh runs the whole suite against fake
+# adapters with reviewer names like `codex`; a preflight keyed on the NAME would
+# demand three real CLIs and three vendor logins to run an offline test suite.
+test_preflight_requires_nothing_of_an_adapter_this_repo_does_not_ship() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(preflight_run "$d/bin" '' "codex=$d/fake-ok.sh agy=$d/fake-ok.sh")"
+  assert_contains "$out" "rc=0" "fakes carry no requirements, whatever they are named"
+  assert_not_contains "$out" "not on PATH" "and say nothing"
+}
+
+test_preflight_demands_the_cli_for_a_shipped_adapter() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out
+  out="$(preflight_run "$d/bin" '' "codex=$PR_ROOT/adapters/codex.sh")"
+  assert_contains "$out" "codex not on PATH" "the real adapter needs the real CLI"
+  assert_contains "$out" "rc=1" "and that is a refusal"
+}
+
+test_preflight_catches_the_unset_cursor_pin() {
+  local d; d="$(pr_test_tmpdir)"
+  mkagent "$d/bin/agent"
+  local out
+  out="$(preflight_run "$d/bin" 'unset PR_AGENT_MODEL' \
+    "agent=$PR_ROOT/adapters/agent.sh")"
+  assert_contains "$out" "PR_AGENT_MODEL is unset" "caught before the sandbox copy"
+  assert_contains "$out" "rc=1" "a refusal"
+}
+
+test_preflight_is_silent_when_the_roster_is_satisfied() {
+  local d; d="$(pr_test_tmpdir)"
+  mkagent "$d/bin/agent"
+  local out
+  out="$(preflight_run "$d/bin" 'PR_AGENT_MODEL=some-model' \
+    "agent=$PR_ROOT/adapters/agent.sh")"
+  assert_eq "$out" "rc=0" "no output at all on success"
+}
+
+# Presence on PATH is not identity. The preflight matches the substring rather
+# than parsing with jq, so it needs nothing on PATH but the CLI it is asking
+# about — which is why this case runs on the stub directory alone.
+test_preflight_rejects_an_agent_that_is_not_the_cursor_cli() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agent" 'echo "usage: agent [options]" >&2; exit 1'
+  local out
+  out="$(preflight_run "$d/bin" 'PR_AGENT_MODEL=some-model' \
+    "agent=$PR_ROOT/adapters/agent.sh")"
+  assert_contains "$out" "does not answer 'agent about --format json'" "names the probe"
+  assert_contains "$out" "rc=1" "a refusal, before the sandbox copy"
+}
+
+# bwrap is only agy's problem, so a roster without agy must not require it.
+test_preflight_only_probes_the_jail_when_agy_is_in_the_roster() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/codex"
+  local out
+  out="$(preflight_run "$d/bin" '' "codex=$PR_ROOT/adapters/codex.sh")"
+  assert_eq "$out" "rc=0" "no bwrap on PATH, and no complaint about it"
+}
+
+test_preflight_refuses_an_agy_roster_without_bwrap() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/agy"
+  local out
+  out="$(preflight_run "$d/bin" 'PR_AGY_MODEL=some-model' \
+    "agy=$PR_ROOT/adapters/agy.sh")"
+  assert_contains "$out" "refuse to run without it" "the fail-closed rule holds"
+  assert_contains "$out" "agy" "and names which reviewer needs it"
+  assert_contains "$out" "rc=1" "a refusal"
+}
+
+# --- roster awareness -------------------------------------------------------
+
+# claude used to be checked by pr_doctor_check_optional_cli, whose whole premise
+# was a fixed default roster it was not in. With the roster derived from
+# PR_ORCHESTRATOR it is a reviewer in three configurations out of four, so its
+# absence is a plain FAIL like any other reviewer's -- the bug being that a WARN
+# used to greenlight a machine whose next round could not run.
+test_an_absent_claude_is_a_failure_like_any_other_reviewer() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_cli claude')"
+  assert_contains "$out" "claude not on PATH" "names the CLI"
+  assert_contains "$out" "self-updates with \`claude update\`" "and how to get it"
+  assert_contains "$out" "counts 0 0 1" "a failure, not context"
+}
+
+test_claude_auth_fails_when_the_cli_is_absent() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_claude_auth')"
+  assert_contains "$out" "claude not on PATH" "no longer a silent pass"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# A skipped check is printed, not omitted: absence from the report reads as an
+# oversight, and it is uncounted because there was nothing to pass or fail.
+test_a_skip_is_printed_but_counts_as_nothing() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_d_skip "codex is the orchestrator, not a reviewer"')"
+  assert_contains "$out" "[SKIP] codex is the orchestrator" "the line is there"
+  assert_contains "$out" "counts 0 0 0" "and changes no count"
+}
+
+# The argument is the roster, not the orchestrator: only the pins of CLIs that
+# are actually reviewing are reported. Telling someone PR_AGENT_MODEL is REQUIRED
+# when Cursor is not in the round is false.
+test_only_the_rosters_own_pins_are_checked() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  out="$(doctor_run "$d/bin" 'pr_doctor_check_pins agent')"
+  assert_contains "$out" "PR_AGENT_MODEL unset" "Cursor is reviewing, so its pin is required"
+  assert_not_contains "$out" "PR_AGY_MODEL" "agy is not in this roster"
+
+  out="$(doctor_run "$d/bin" 'pr_doctor_check_pins "codex agy"')"
+  assert_contains "$out" "PR_AGY_MODEL unset" "agy is"
+  assert_not_contains "$out" "PR_AGENT_MODEL" "and Cursor now is not"
+}
+
+# The argument is optional so a caller with no roster still checks all four.
+test_check_pins_without_an_orchestrator_checks_everything() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  out="$(doctor_run "$d/bin" 'pr_doctor_check_pins')"
+  assert_contains "$out" "PR_AGENT_MODEL unset" "Cursor pin reported"
+  assert_contains "$out" "PR_AGY_MODEL unset" "agy pin reported"
+}
+
+# Judged on the loggedIn field, not the exit code -- agy's lesson.
+test_claude_auth_is_judged_on_the_json_field() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/claude" \
+    'echo "{\"loggedIn\":true,\"authMethod\":\"claude.ai\",\"subscriptionType\":\"max\",\"email\":\"a@b.c\"}"'
+  stub_timeout "$d/bin"
+  # PATH keeps the real jq: this check parses its CLI's JSON, so a stub-only PATH
+  # would test the absence of jq rather than the parse.
+  local out
+  out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_claude_auth')"
+  assert_contains "$out" "claude authenticated (claude.ai, max)" "reports method and plan"
+  # A doctor's output gets pasted into issues; the account address must not be in it.
+  assert_not_contains "$out" "a@b.c" "the account email is never echoed"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
+test_claude_auth_failure_is_detected_despite_a_zero_exit() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/claude" 'echo "{\"loggedIn\":false}"; exit 0'
+  stub_timeout "$d/bin"
+  local out
+  out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_claude_auth')"
+  assert_contains "$out" "not authenticated" "exit 0 is not a success signal"
+  assert_contains "$out" "claude auth login" "names the fix"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# A different enum from codex's: no `none`, no `minimal`.
+test_claude_effort_enum_differs_from_codex() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/claude"
+  local out
+  out="$(doctor_run "$d/bin" 'PR_CLAUDE_EFFORT=minimal pr_doctor_check_claude_effort')"
+  assert_contains "$out" "is not one of" "minimal is valid for codex, not here"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+  out="$(doctor_run "$d/bin" 'PR_CLAUDE_EFFORT=xhigh pr_doctor_check_claude_effort')"
+  assert_contains "$out" "valid tier" "xhigh is accepted"
+  assert_contains "$out" "reports no effective effort" "and flagged as unverifiable"
+}
+
+# Unlike Cursor and agy, whose pins the runner cannot do without.
+test_preflight_does_not_require_a_model_pin_for_claude() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/claude"; mkpresent "$d/bin/bwrap"
+  local out
+  out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  assert_not_contains "$out" "PR_CLAUDE_MODEL" "the init line reports the resolved model"
+}
+
+test_preflight_refuses_a_claude_roster_without_the_cli() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/bwrap"
+  local out
+  out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  assert_contains "$out" "claude not on PATH" "names the missing CLI"
+  assert_contains "$out" "rc=1" "a refusal"
+}
+
+# claude has no sandbox flag of its own, so it needs the jail exactly as agy does.
+test_preflight_probes_the_jail_for_claude_too() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/claude"
+  local out
+  out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  assert_contains "$out" "refuse to run without it" "fails closed without bwrap"
+  assert_contains "$out" "claude" "names which reviewer needs it"
+  assert_contains "$out" "rc=1" "a refusal"
+}
+
+# --- plan-review doctor, driven by the resolved adapter map ----------------
+#
+# The cases above test lib/doctor.sh with a stub PATH. These test the entry
+# point's own decisions -- which checks run at all -- and so they use the real
+# PATH and --offline. What they assert is the gating, never the outcome of a
+# check that depends on this machine.
+
+DOCTOR="$PR_ROOT/bin/plan-review"
+
+mkrepo_with_config() {  # mkrepo_with_config <dir> <config-json>
+  local d="$1"
+  mkdir -p "$d"
+  git -C "$d" init -q
+  printf '%s\n' "$2" > "$d/config.json"
+  mkdir -p "$d/.plan-review"
+  mv "$d/config.json" "$d/.plan-review/config.json"
+  printf '.plan-review/\n' > "$d/.gitignore"
+}
+
+# The jail check used to be unconditional, on the premise that one of agy and
+# claude is always reviewing. A config naming only codex makes that false, and
+# an unconditional check would FAIL a machine for missing bwrap on a round that
+# never needed it.
+test_a_codex_only_roster_does_not_check_the_bubblewrap_jail() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
+  out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
+  assert_contains "$out" "no reviewer here needs the bubblewrap jail" "skipped, and said so"
+  assert_not_contains "$out" "bwrap jail works" "the probe did not run"
+}
+
+test_an_agy_roster_does_check_the_bubblewrap_jail() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkrepo_with_config "$d/repo" '{"reviewers": ["agy"]}'
+  out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
+  assert_contains "$out" "bwrap" "agy has no other write barrier"
+}
+
+# Keyed on the adapter path, so a fake mounted under a real reviewer's name
+# carries no vendor requirement -- the rule pr_doctor_preflight already follows.
+test_a_fake_adapter_under_a_real_name_demands_no_vendor_login() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
+  out="$(PR_ORCHESTRATOR=none PR_ADAPTER_MAP="agy=/tmp/fake-ok.sh" \
+         bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
+  assert_contains "$out" "does not ship" "named as unknown to this repo"
+  assert_contains "$out" "no reviewer here needs the bubblewrap jail" "and carries no requirement"
+}
+
+test_show_config_prints_json_and_writes_nothing() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkrepo_with_config "$d/repo" '{"reviewers": ["codex"], "pins": {"codex": {"effort": "low"}}}'
+  out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --show-config 2>&1)"
+  assert_eq "$(jq -r '.pins.codex.effort_source' <<<"$out")" "config" "provenance is the point"
+  assert_eq "$(jq -r '.adapter_map.codex' <<<"$out")" "$PR_ROOT/adapters/codex.sh" \
+    "and the roster it would run"
+  assert_eq "$(ls "$d/repo/.plan-review")" "config.json" "nothing was written"
+}
+
+test_a_preset_without_a_repo_is_a_usage_error() {
+  local out rc
+  out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --preset quick 2>&1)"; rc=$?
+  assert_exit_code "$rc" 2 "refused, like --plan without --repo"
+  assert_contains "$out" "needs --repo" "says what is missing"
+}
+
+# A doctor report is usually read somewhere other than the machine that produced
+# it, so it has to say which runner produced it.
+test_the_header_names_the_runner_s_revision() {
+  local out version
+  source "$PR_ROOT/lib/version.sh"
+  version="$(pr_version "$PR_ROOT")"
+  out="$(PR_ORCHESTRATOR=none bash "$DOCTOR" doctor --offline 2>&1)"
+  assert_contains "$out" "$version" "the header carries the same string as \`plan-review version\`"
+}
+
+pr_run_tests

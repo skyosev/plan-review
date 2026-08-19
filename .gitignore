@@ -1,0 +1,4 @@
+.plan-review/
+*.log
+.vscode/
+docs/process/

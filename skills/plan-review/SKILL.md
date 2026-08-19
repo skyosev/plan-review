@@ -1,0 +1,252 @@
+---
+name: plan-review
+description: Use when the user wants a Markdown plan critically reviewed by multiple agent CLIs and the feedback integrated - runs rounds of independent CLI review, verifies their claims against the repo, and writes per-reviewer rationale
+---
+
+# Plan Review Loop
+
+Runs a plan past independent reviewer CLIs, then integrates their feedback critically.
+You are the **Integrator**: you decide what is true and what gets accepted. The
+reviewers are inputs, not authorities.
+
+**Announce at start:** "Using the plan-review skill. Starting round N."
+
+## Before the first round
+
+Confirm you have: the target repo root, the plan's repo-relative path. Derive nothing
+else from the user — everything else comes from the repo.
+
+Two things are yours to set once, and they apply to every command below:
+
+```bash
+if [[ -n "${PR_HOME:-}" ]]; then PR="$PR_HOME/bin/plan-review"
+else PR="$(command -v plan-review 2>/dev/null || true)"; fi
+[[ -x "$PR" ]] || {
+  echo 'plan-review runner not found. Set PR_HOME to a plan-review checkout, or run' >&2
+  echo '/path/to/plan-review/bin/plan-review install, then retry.' >&2
+  exit 2; }
+
+export PR_ORCHESTRATOR=<codex|agent|agy|claude> # the CLI YOU are running as
+```
+
+`PR_HOME` wins over `PATH`, so a development checkout can be chosen on a machine that
+already has one installed. If neither finds the runner, **stop and tell the user**. Do
+not clone the repository and do not install anything: writing into someone's `PATH`
+unasked is not yours to do, and a round improvised without the runner produces something
+that looks like a review and is not one.
+
+`PR_ORCHESTRATOR` names **your own** CLI, never a reviewer's. It has no default and
+both commands below refuse to run without it. `agent` is Cursor, `agy` is Antigravity,
+`claude` is Claude Code, `codex` is Codex. If you are unsure which of these you are,
+ask the user rather than guessing — the whole roster is derived from this answer.
+
+**Then look for a project config before you export anything:**
+
+```bash
+ls <repo>/.plan-review/config.json
+```
+
+If there is none, there is a command that writes one — **suggest it, do not run it**:
+
+```bash
+PR_ORCHESTRATOR=<yours> "$PR" init --repo <repo> [--pin agy=<id>] [--pin agent=<id>]
+```
+
+It writes into the user's repository and edits their tracked `.gitignore`, which is theirs to
+decide. Give them the command, say that it configures the reviewers that are installed and
+leaves the doctor green, and carry on with pins of your own if they would rather not.
+
+If it exists, **do not export the pins it already sets** — an exported `PR_*_MODEL` or
+`PR_*_EFFORT` overrides the config every time, so exporting out of habit makes the
+project's own settings dead. Read what it resolves to instead:
+
+```bash
+"$PR" doctor --repo <repo> --show-config
+```
+
+That prints the roster, the pins, the criteria files and where each value came from
+(`config`, `preset:<name>`, `env`), runs no checks, costs nothing and writes nothing.
+Export a pin only to override the config deliberately, and say so to the user when you
+do. With no config, set the pins yourself as below.
+
+Then run the doctor once:
+
+```bash
+"$PR" doctor --repo <repo> --plan <rel-path>
+```
+
+It costs nothing and takes seconds. It checks the dependencies, that the reviewer CLIs in
+*this round's* roster are authenticated, that the pins name models that actually exist,
+that the project config parses, that `.plan-review/` is gitignored in the target repo, and
+whether an unfinished round is blocking the next one. A CLI that is not reviewing is
+reported as `SKIP`.
+
+- A **FAIL** is a round that would not work. Fix it or drop that reviewer from the roster
+  before starting; do not start a round hoping it resolves itself.
+- A **WARN** about version drift means a reviewer CLI has moved since its adapter was
+  verified. Report it to the user. It is not a reason to stop, but if a round then aborts
+  with a sandbox-header error, that warning was the cause.
+- `.plan-review/` not gitignored is a FAIL with the fix printed. Apply it and say so.
+
+## The roster
+
+Four adapters ship — `codex`, `agent`, `agy`, `claude`. Who reviews is decided in this
+order: `PR_ADAPTER_MAP`, then the project config's `reviewers` list, then **all of them
+except yours**. You do not assemble the last of those; set `PR_ORCHESTRATOR` and the
+runner derives it. If a user asks why one particular CLI is not reviewing and there is no
+config, the answer is that it is the one reading this.
+
+A config's list is obeyed exactly, **including one that names your own CLI**. That is not
+refused any more: the old check compared CLI names, while independence is lost on model
+identity, and nothing here can learn which model is orchestrating. Do not work around such
+a list; report it to the user with the point below.
+
+Three things to watch that the runner cannot check for you:
+
+- **Your own model.** If a reviewer runs the same model you are running, the user paid
+  twice for one perspective. Say so and recommend a different pin.
+- **Model families, not CLI names.** Cursor pinned to a `claude-opus-*` id in a roster
+  that also contains `claude` is two prices for one perspective. Pin Cursor to a
+  different family in that case. After a round, two reviewers whose recorded models are
+  the exact same string produce a warning in `round.json`; report it.
+- **Cost, when `claude` is a reviewer.** Claude Code hands a reviewer its full tool
+  surface, including subagents. The jail confines writes and the environment scrub
+  closes the messaging channel, but neither bounds spend — `PR_TIMEOUT_SECS` (default
+  900) is the only thing that does.
+
+## Running a round
+
+With a project config, the pins are already in it:
+
+```bash
+"$PR" round --repo <repo> --plan <rel-path> [--preset <name>]
+```
+
+Without one, set the pins yourself:
+
+```bash
+PR_CODEX_EFFORT=<none|minimal|low|medium|high|xhigh|max> \
+PR_AGENT_MODEL=<an id from `agent --list-models`> \
+PR_AGY_MODEL=<an id from `agy models`> \
+  "$PR" round --repo <repo> --plan <rel-path>
+```
+
+Set only the pins for reviewers actually in your roster. `--preset` selects one of the
+config's presets; `PR_PRESET` is the same thing, and setting both to *different* names is
+refused rather than silently resolved.
+
+`PR_AGENT_MODEL` and `PR_AGY_MODEL` are required whenever Cursor or agy is reviewing —
+neither CLI reports which model answered, so without a pin the round could not record
+what reviewed the plan. Their ids already include the effort tier
+(`claude-opus-5-thinking-high`, `gemini-3.1-pro-high`); there is no separate effort
+setting for them. codex has `PR_CODEX_EFFORT` and claude has `PR_CLAUDE_EFFORT`, and
+both of those CLIs report their own effective model, so their pins are optional.
+
+Keep every pin identical across the rounds of one plan. Changing a model or effort
+mid-loop makes the rounds incomparable, and resumed sessions carry context produced at
+the old setting. If the user asks to change one, say that it resets comparability and
+recommend `--fresh` alongside it.
+
+Add `--fresh` when the plan has changed enough that reviewer memory is a liability, or
+when your own context was compacted or summarised since the last round (see "After a
+context reset"). It drops the resume handles *and* omits the diff, the previous critique
+and the rationale from the prompt, so reviewers see the plan as it now stands. Numbering
+carries on and nothing is deleted.
+
+Pass the round directory to the completion command as an **absolute** path; it rejects
+relative paths, which would resolve against the wrong working directory.
+
+The runner blocks. While it runs you may poll progress:
+
+```bash
+cat <repo>/.plan-review/<key>/round-N/status.jsonl | jq -r '"\(.reviewer): \(.state)"'
+```
+
+## After the round
+
+1. **Read every review in full.** Do not summarise them to yourself first — a digest
+   cannot be verified.
+
+2. **Verify factual claims against the real repo**, not against the sandbox copies and
+   not against the plan. When a reviewer says "X is at file:line", open it. Reviewers
+   assert wrong things confidently; this step is the point of the loop.
+
+3. **Surface contradictions to the user.** When two reviewers recommend incompatible
+   directions, present both with your recommendation and wait. Never pick silently.
+
+4. **Ask the user about anything genuinely ambiguous** — mid-integration is the right
+   time, not after.
+
+5. **Edit the plan** with what you accepted.
+
+6. **Write one rationale document per reviewer**, at
+   `<repo>/.plan-review/<key>/round-N/rationale-<reviewer>.md`. For each point that
+   reviewer raised: accepted / rejected / deferred, and why. Where you rejected a
+   factual claim, state what you checked and what you found. Write only that
+   reviewer's points in its file — never mention what another reviewer said.
+
+7. **Mark the round complete.** Use the command; it takes an absolute round
+   directory and refuses to complete a round whose successful reviewers have no
+   rationale, so a skipped step 6 fails loudly instead of silently.
+
+```bash
+"$PR" complete --round <repo>/.plan-review/<key>/round-N
+```
+
+   Until this succeeds the runner will refuse to start round N+1.
+
+8. **Report verdicts to the user** and ask whether to run another round. Never decide
+   this yourself — reviewers drift agreeable across rounds, so converging verdicts are
+   not a reliable stop signal.
+
+If a verdict reads `UNPARSEABLE`, say so explicitly. Do not guess what the reviewer
+meant.
+
+## Failure handling
+
+- One or two reviewers failed: integrate the rest, tell the user which failed and why.
+- All failed: the runner exits 1 and preserves the round directory. Report the status
+  file contents; do not retry blindly.
+- The runner refuses with `PR_ORCHESTRATOR is unset`: you did not name your own CLI. Fix
+  the variable; do not work around it with `PR_ADAPTER_MAP`.
+- The runner says a review of this plan **is already running**: another round holds the
+  session. Wait for it. Do not start a second one, and never delete `.lock` — unlinking
+  it releases nothing and lets both rounds write into the same directory.
+- The runner says a previous round **is in state 'reviewing' and nothing is running**:
+  its runner died without finishing. Show the user the round directory, and run the
+  command the message prints once they agree:
+
+  ```bash
+  "$PR" abort --round <repo>/.plan-review/<key>/round-N
+  ```
+
+  It deletes nothing; the round stays readable. If `abort` refuses because the session is
+  locked, reviewers spawned by the dead runner are still writing — report that and wait
+  rather than forcing anything.
+- The runner exits 2 naming a key in `config.json`: the project config is invalid and no
+  round was started. Show the user the message — it names the offending key — and fix the
+  config or ask them to. Do not route around it with `PR_SKIP_CONFIG=1`.
+- A round warns that the configuration changed since the last one: the pins, roster or
+  criteria moved mid-loop, and resumed sessions still carry context built under the old
+  settings. Report it and recommend `--fresh`.
+- The runner aborts with a sandbox-header error: a CLI default changed. Stop and tell
+  the user to re-run the verification probes in the brainstorm doc.
+- `agy` or `claude` fails with a `bwrap` error: that is the adapter refusing to run a
+  reviewer whose CLI does not confine its own writes. This is correct behaviour, not a
+  bug. Report it and continue with the other reviewers; do not work around it by editing
+  the adapter.
+- A reviewer's recorded model reads `<something> (requested: <pin>)`: the CLI swapped the
+  model out mid-run and the adapter caught it. The pin did not answer. Say so when
+  reporting verdicts — that round is not comparable to one run on the pinned model.
+
+## After a context reset
+
+Rounds continue in-conversation using what you remember. If your context was compacted,
+summarised or otherwise truncated since the last round, that memory is unreliable:
+**re-read the previous round directory from disk before writing any rationale**, or
+start over with `--fresh`. Say which you did.
+
+## Round ceiling
+
+At round 4 and beyond, ask the user to confirm before running. Three rounds is the
+soft ceiling.

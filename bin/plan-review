@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# The one executable. Everything this project does is reached through it, and it
+# is the only file that must survive being symlinked: `plan-review install` puts
+# a link to this file on PATH, and links nothing else.
+#
+# Usage: plan-review <command> [options]
+#
+# It resolves itself, then execs. Exec rather than source, so that exit codes and
+# signals stay the implementation's own: `init` ends by running the doctor, so
+# init's status IS the doctor's, and init's own 130/143 traps
+# (libexec/plan-review-init.sh) mean what they say only when nothing wraps them.
+
+set -uo pipefail
+
+usage() {
+  cat <<'EOF'
+usage: plan-review <command> [options]
+
+  round      run one review round over a repo and a plan
+  doctor     check that a round could run here
+  init       write a repo's .plan-review/config.json
+  complete   mark a round complete once the rationales are written
+  abort      mark a round aborted when nothing is working on it any more
+
+  install    link this command into a directory on PATH
+  version    print this checkout's revision
+  help       this text
+
+`plan-review <command> --help` prints that command's own options.
+
+PR_ORCHESTRATOR is required by round, doctor and init: it names the CLI driving
+the work, or `none` when a human is.
+EOF
+}
+
+subcommand="${1-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$subcommand" in
+  help|-h|--help) usage; exit 0 ;;
+  round|doctor|init|complete|abort|install|version) ;;
+  *) echo "plan-review: unknown command: $subcommand" >&2; usage >&2; exit 2 ;;
+esac
+
+# bash cannot read a symlink target without help, so resolution needs readlink --
+# and `readlink -f` for relative targets and multi-hop chains, which is what an
+# install directory full of links is made of. A missing readlink is the doctor's
+# kind of diagnosis, delivered here because the doctor cannot run without it.
+command -v readlink > /dev/null 2>&1 || {
+  echo "plan-review: readlink is required to resolve this command's own path" >&2
+  exit 2; }
+
+self="$(readlink -f "${BASH_SOURCE[0]}")" || {
+  echo "plan-review: cannot resolve ${BASH_SOURCE[0]}" >&2; exit 2; }
+PR_ROOT="$(cd "${self%/*}/.." && pwd)" || exit 2
+
+# `readlink -f` resolves happily when only the final component is missing, so a
+# successful resolution above says nothing about this checkout being whole. What
+# is under PR_ROOT has to be checked, every time.
+incomplete() {  # incomplete <path> <what is wrong with it>
+  echo "plan-review: $1 is $2" >&2
+  echo "plan-review: $PR_ROOT does not look like a complete checkout" >&2
+  exit 2
+}
+
+if [[ "$subcommand" == version ]]; then
+  # Sourced rather than exec'd: this one is a library call with no exit code of
+  # its own, and the doctor's header prints the same string from the same place.
+  target="$PR_ROOT/lib/version.sh"
+  [[ -r "$target" ]] || incomplete "$target" "missing or not readable"
+  source "$target"
+  pr_version
+  exit 0
+fi
+
+target="$PR_ROOT/libexec/plan-review-$subcommand.sh"
+[[ -x "$target" ]] || incomplete "$target" "missing or not executable"
+
+exec "$target" "$@"
