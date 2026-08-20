@@ -21,15 +21,29 @@ mk_case() {
   # HEAD `main`: the subject here is the bootstrap, not which branch the developer
   # happens to be standing on. `-B`, because it must also work when that is `main`.
   git -C "$d/src" checkout -q -B main
-  # A silent no-op `npx` in EVERY case, not just the skill ones. The stub
-  # directory is first on PATH, so this is what keeps the suite offline: without
-  # it the installer's skill step finds the real npx behind the stubs and runs a
-  # real `npx -y skills add ... -g`, which reaches the network and writes into
-  # the developer's own global harness directories. Cases that care about npx
-  # overwrite this with stub_npx, which writes to the same path. A no-op makes
-  # the skill step "succeed" and its verification warn -- both non-fatal, so no
-  # assertion outside the skill cases moves.
+  # The skill step reaches out to two kinds of third-party program, and EVERY
+  # case runs it -- not just the skill ones -- so both holes are closed here
+  # rather than case by case. The stub directory is first on PATH, which is what
+  # makes that possible.
+  #
+  # `npx`: without a stub the installer finds the real one behind the empty stub
+  # directory and runs a real `npx -y skills add ... -g`, which reaches the
+  # network and writes into the developer's own global harness directories. A
+  # silent no-op makes the skill step "succeed" and its verification warn --
+  # both non-fatal, so no assertion outside the skill cases moves.
+  #
+  # The four harness CLIs: three of them are only ever `command -v`'d, but
+  # `agent` is EXECUTED, by cursor_identity_ok. Measured unstubbed: `agent about
+  # --format json` takes ~1.5s and returns live account state, on roughly ten of
+  # the fourteen Task 1 cases, in a suite whose stated property is that it is
+  # offline and takes seconds.
+  #
+  # Cases that care about either override them -- stub_npx and stub_harness_clis
+  # write to these same paths, and three cases then replace `agent` again on top
+  # of that. Order is what makes those overrides win, so nothing here may move
+  # below them.
   pr_test_mkstub "$d/stub/npx" 'exit 0'
+  stub_harness_clis "$d/stub"
   printf '%s' "$d"
 }
 
@@ -277,13 +291,16 @@ run_with_skills() {   # <case-dir> [flags...]
 # skill_name_for claims; a case that wants a miss returns a subset.
 ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Antigravity CLI"]}]'
 
-# tests/helpers.sh has no skip. Four cases need a real `node` to exercise a JSON
-# parse -- npx implies node in production, but the suite must not fail on a
-# machine that has neither.
+# tests/helpers.sh has no skip. Six cases need a real `node`: four to exercise a
+# JSON parse, and two more because install_skill requires node before it will run
+# npx at all, so without it there is no add to make an assertion about. npx
+# implies node in production, but the suite must not fail on a machine that has
+# neither.
 say_skipped() { printf '  SKIP %s: node is not installed\n' "$PR_CURRENT_TEST"; }
 
 test_one_add_covers_every_detected_harness() {
   local d out log checkout; d="$(mk_case)"
+  command -v node > /dev/null 2>&1 || { say_skipped; return 0; }
   stub_harness_clis "$d/stub"
   stub_npx "$d/stub" "$ALL_LINKED"
   : > "$d/npx.log"
@@ -373,6 +390,7 @@ test_no_skill_takes_npm_out_of_the_install_path() {
 
 test_the_removal_line_appears_only_when_a_skill_was_installed() {
   local d out; d="$(mk_case)"
+  command -v node > /dev/null 2>&1 || { say_skipped; return 0; }
   stub_harness_clis "$d/stub"
   stub_npx "$d/stub" "$ALL_LINKED"
   : > "$d/npx.log"
