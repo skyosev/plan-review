@@ -241,6 +241,8 @@ pr_doctor_check_bwrap_jail() {
     pr_d_info "exposes no sandbox flag at all, so bubblewrap is the only write barrier"
     pr_d_info "either reviewer has. Both adapters refuse to run without it. Dropping"
     pr_d_info "them from the roster is the other way out."
+    pr_d_info "macOS has no bubblewrap and no equivalent is wired up yet, so there it is"
+    pr_d_info "the ONLY way out: plan-review init --repo <dir> --reviewers codex,agent"
     return 1
   fi
 

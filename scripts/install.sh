@@ -38,6 +38,13 @@ PR_SKILL_INSTALLED=0
 # Under `curl | bash`, stdin IS this script. Nothing below may read it, and git
 # must never stop to ask for a credential. Exported once rather than per command,
 # so it also covers the git that plan-review itself runs inside the checkout.
+#
+# The exemption, stated once so a call added later is not read against a rule it
+# was never under: the command substitutions here -- `readlink -f /`, `uname -s`,
+# `dirname` and the three `git` queries -- carry no redirect because none of them
+# reads stdin. Everything that could gets `< /dev/null` at the call site. A new
+# call belongs in one of those two groups, and if it is not obvious which, it is
+# the second.
 export GIT_TERMINAL_PROMPT=0
 
 # stdout only. Gating on `[ -t 1 ] || [ -t 2 ]` would paint a redirected stdout
@@ -217,8 +224,8 @@ upgrade_checkout() {
 # with two separate global directories, and lib/doctor.sh:141 identifies agy as
 # the Antigravity *CLI*.
 #
-# THE DISPLAY NAMES ARE UNCONFIRMED. Task 2 Step 10 confirms them against a real
-# `skills ls -g --json` and corrects this table. A wrong one is self-diagnosing
+# THE DISPLAY NAMES ARE UNCONFIRMED. Task 2 Step 11 item 3 confirms them against a
+# real `skills ls -g --json` and corrects this table. A wrong one is self-diagnosing
 # rather than silent: verify_skill prints both what it wanted and what came back,
 # so the fix is a copy-paste. No offline test can check any of these -- a stub
 # reproduces whatever name it is given, which is how `antigravity` survived a
@@ -277,7 +284,11 @@ install_skill() {
   # a bare `npx` with no node behind it is not a thing anyone has.
   if ! command -v npx > /dev/null 2>&1 || ! command -v node > /dev/null 2>&1; then
     warn "npx and node are needed for the skill, and one of them is not on PATH."
-    say  "  install it later with: npx skills add $(q "$checkout") -g -a <harness>"
+    # A concrete id, not a <harness> placeholder: pasted, `<harness>` is a
+    # redirect and the line dies on "harness: No such file or directory". The
+    # whole reason q() exists is that these lines get pasted.
+    say  "  install it later with: npx skills add $(q "$checkout") -g -a claude-code"
+    say  "  repeat -a for each one you use: claude-code, codex, cursor, antigravity-cli"
     return 0
   fi
   for cli in claude codex agent agy; do

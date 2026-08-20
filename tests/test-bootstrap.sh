@@ -39,7 +39,7 @@ mk_case() {
   # offline and takes seconds.
   #
   # Cases that care about either override them -- stub_npx and stub_harness_clis
-  # write to these same paths, and three cases then replace `agent` again on top
+  # write to these same paths, and two cases then replace `agent` again on top
   # of that. Order is what makes those overrides win, so nothing here may move
   # below them.
   pr_test_mkstub "$d/stub/npx" 'exit 0'

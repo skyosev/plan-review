@@ -79,6 +79,8 @@ test_missing_bwrap_explains_why_agy_needs_it() {
   local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_bwrap_jail')"
   assert_contains "$out" "bwrap (bubblewrap) not on PATH" "names the dependency"
   assert_contains "$out" "only write barrier" "says why it is not optional"
+  assert_contains "$out" "macOS" "and the platform that can never satisfy it is named"
+  assert_contains "$out" "--reviewers codex,agent" "with the roster that works there"
   assert_contains "$out" "counts 0 0 1" "a failure"
 }
 

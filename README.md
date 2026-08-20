@@ -8,7 +8,7 @@ between three terminals.
 
 `bash` 5+, `git`, `jq`, `rsync`, GNU coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`,
 and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well, if `agy` or `claude` is in the
-roster — see the paragraph below and "Reviewer roster".
+roster — see the `bwrap` note below and "Reviewer roster".
 
 5 is what `make doctor` enforces and it is a support statement rather than a measured
 requirement: nothing here uses a construct newer than `bash` 4 (`${x^^}`, `mapfile`,
@@ -121,6 +121,10 @@ That clones to `~/.local/share/plan-review`, links `~/.local/bin/plan-review`, i
 into every harness it finds, and finishes with an offline doctor listing what is still missing —
 which on a fresh machine is most of it. `--ref <branch|tag>`, `--bin-dir <dir>` and `--no-skill`
 are the options; pass them as `| bash -s -- --no-skill`. `PR_INSTALL_DIR` moves the checkout.
+
+The skill step runs `npx -y skills`, the [skills](https://skills.sh) CLI — a third-party package
+fetched from npm at run time and executed as you, unsandboxed, at whatever version is current that
+day. `--no-skill` skips it and keeps npm out of the install entirely.
 
 **Exit 0 means the runner is linked.** It does not mean a round can run — that needs the
 Requirements above, which the doctor names and your package manager installs — and it does not
