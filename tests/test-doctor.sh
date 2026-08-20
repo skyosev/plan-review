@@ -40,6 +40,8 @@ test_missing_core_utilities_fail_and_name_themselves() {
   local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_utils')"
   assert_contains "$out" "missing core utilities" "absence is a failure"
   assert_contains "$out" "jq" "the missing tool is named"
+  assert_contains "$out" "brew install" "and macOS is told how to fix it"
+  assert_not_contains "$out" "Linux-only" "and is not told to give up"
   assert_contains "$out" "counts 0 0 1" "one failure, no passes"
 }
 
