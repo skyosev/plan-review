@@ -148,7 +148,9 @@ pr_doctor_check_bash() {
 
 # `wc` is here for lib/prompt.sh's pr_prompt_bytes: the argv cap agy runs into is
 # a BYTE limit, and bash's ${#var} counts characters under a UTF-8 locale.
-# `flock` is the session lock (lib/lock.sh) and is util-linux, not coreutils.
+# `flock` is the session lock (lib/lock.sh). Not coreutils: util-linux on Linux,
+# and on macOS the separate discoteq `flock` formula, which is a different
+# program with the same name -- see the macOS note in docs/process/BACKLOG.md.
 # This list does NOT reach a round: pr_doctor_preflight never calls
 # pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
 PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock"
@@ -164,8 +166,10 @@ pr_doctor_check_utils() {
   fi
   pr_d_fail "missing core utilities: ${missing[*]}"
   pr_d_info "Debian/Ubuntu: sudo apt install jq rsync git coreutils diffutils util-linux"
-  pr_d_info "sha256sum, timeout and readlink -f are GNU behaviours; macOS ships none"
-  pr_d_info "of them by default, so plan-review is Linux-only in practice."
+  pr_d_info "macOS: brew install jq rsync coreutils flock, then put the GNU names first:"
+  pr_d_info "  PATH=\"\$(brew --prefix)/opt/coreutils/libexec/gnubin:\$PATH\""
+  pr_d_info "without that PATH line coreutils installs as greadlink and gtimeout, and this"
+  pr_d_info "check still fails. flock is its own formula; util-linux is keg-only."
   return 1
 }
 
@@ -237,6 +241,8 @@ pr_doctor_check_bwrap_jail() {
     pr_d_info "exposes no sandbox flag at all, so bubblewrap is the only write barrier"
     pr_d_info "either reviewer has. Both adapters refuse to run without it. Dropping"
     pr_d_info "them from the roster is the other way out."
+    pr_d_info "macOS has no bubblewrap and no equivalent is wired up yet, so there it is"
+    pr_d_info "the ONLY way out: plan-review init --repo <dir> --reviewers codex,agent"
     return 1
   fi
 

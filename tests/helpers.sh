@@ -121,7 +121,15 @@ pr_test_release_lock() {
 
 pr_run_tests() {
   local fn
-  PR_TEST_TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/pr-test-XXXXXX")"
+  # The property every test needs from this root is that it EQUALS what the
+  # runner will print for the same path, and the runner normalises its own paths
+  # through `cd && pwd`. So normalise here the same way rather than patching the
+  # differences one at a time: `cd` collapses the doubled slash macOS's
+  # trailing-slash $TMPDIR produces (measured on Darwin 25, 2026-08-20 -- the
+  # single failure in test-runner.sh's stuck-round case), and `-P` resolves the
+  # /var -> private/var symlink macOS's $TMPDIR sits under, which is the other
+  # half of the same finding.
+  PR_TEST_TMPROOT="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/pr-test-XXXXXX")" && pwd -P)"
   # `compgen -A function` already returns names sorted, so this replaces a
   # declare|awk|grep|sort pipeline -- four forks per test file, in a harness whose
   # header promises no external dependencies.

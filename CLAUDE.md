@@ -32,6 +32,15 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   exit codes and signals stay the implementation's own.
 - `libexec/plan-review-*.sh` — one entry point per subcommand; they source `lib/` and own
   argument parsing and exit statuses.
+- `scripts/install.sh` — the curl-pipe bootstrap, and the only file outside `bin/` that
+  users run directly. **The one file that must run under bash 3.2**, because it is what
+  tells a macOS user their bash is too old. It clones and then **calls** `plan-review
+  install` and `plan-review doctor --offline`; it re-derives none of their rules, because
+  the second derivation is the one that goes stale. It checks `readlink -f` and bash 5
+  before cloning — without those the doctor cannot start, so there is nothing to delegate
+  to. Its skill step is non-fatal by design: the promise is the runner. Covered by
+  `tests/test-bootstrap.sh`, which drives it against a throwaway local git repo via
+  `PR_INSTALL_SOURCE`.
 - `lib/*.sh` — sourcing is side-effect free everywhere; nothing runs until a `pr_*`
   function is called.
 - `adapters/<reviewer>.sh` — one per reviewer CLI. **Standalone**: they source nothing,

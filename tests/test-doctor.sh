@@ -40,6 +40,8 @@ test_missing_core_utilities_fail_and_name_themselves() {
   local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_utils')"
   assert_contains "$out" "missing core utilities" "absence is a failure"
   assert_contains "$out" "jq" "the missing tool is named"
+  assert_contains "$out" "brew install" "and macOS is told how to fix it"
+  assert_not_contains "$out" "Linux-only" "and is not told to give up"
   assert_contains "$out" "counts 0 0 1" "one failure, no passes"
 }
 
@@ -77,6 +79,8 @@ test_missing_bwrap_explains_why_agy_needs_it() {
   local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_bwrap_jail')"
   assert_contains "$out" "bwrap (bubblewrap) not on PATH" "names the dependency"
   assert_contains "$out" "only write barrier" "says why it is not optional"
+  assert_contains "$out" "macOS" "and the platform that can never satisfy it is named"
+  assert_contains "$out" "--reviewers codex,agent" "with the roster that works there"
   assert_contains "$out" "counts 0 0 1" "a failure"
 }
 

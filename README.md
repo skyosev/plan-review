@@ -6,20 +6,55 @@ between three terminals.
 
 ## Requirements
 
-`bash` 5+, `jq`, `rsync`, `git`, GNU coreutils (`sha256sum`, `timeout`, `readlink -f`),
-`bwrap` (bubblewrap), and the reviewer CLIs on `PATH`. Which of `codex`, `agent`, `agy`
-and `claude` you need depends on who is orchestrating — see "Reviewer roster".
+`bash` 5+, `git`, `jq`, `rsync`, GNU coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`,
+and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well, if `agy` or `claude` is in the
+roster — see the `bwrap` note below and "Reviewer roster".
 
 5 is what `make doctor` enforces and it is a support statement rather than a measured
 requirement: nothing here uses a construct newer than `bash` 4 (`${x^^}`, `mapfile`,
 `printf %()T`), so 4.4 would very likely run — it is simply never tested. Its practical job
-is catching macOS's `/bin/bash` 3.2. macOS lacks the GNU utilities above as well, so this is
-Linux-only in practice.
+is catching macOS's `/bin/bash` 3.2. The one exception is `scripts/install.sh`, which runs
+under 3.2 on purpose, because it is the file that has to deliver that message.
+
+**macOS** ships `/bin/bash` 3.2 and none of the GNU utilities. Install the reviewer CLIs however
+their vendors say to, and `git` with the Xcode command line tools; the rest is one brew command,
+plus the `PATH` line that makes it count:
+
+    brew install bash coreutils flock jq rsync
+    PATH="$(brew --prefix)/opt/coreutils/libexec/gnubin:$PATH"
+
+`bash`, `coreutils` and `flock` are the measured ones — 3.2 is refused, `sha256sum` and `timeout`
+do not exist, and there is no system `flock` at all. `readlink -f` is the exception this list was
+originally built around: on Darwin 25 the stock `/usr/bin/readlink` accepts `-f` (measured
+2026-08-20), so on a current macOS the bootstrap's `readlink` refusal never fires and bash 3.2 is
+the one that does. `jq` and `rsync` are here because they are the supported baseline, not because
+the system versions are known to break: `lib/sandbox.sh` asks `rsync` for `-a --delete --exclude`
+and nothing more, and nobody has measured what macOS's own copy does with them. If yours works,
+keeping it is fine.
+
+The second line is not optional: coreutils installs as `gtimeout`, `gsha256sum` and so on, and the
+runner calls the unprefixed names. `flock` is its own formula — `util-linux` is keg-only, and
+installing it does not put `flock` on `PATH`.
 
 `bwrap` is not optional if `agy` or `claude` is in the roster: it is those reviewers' only write
 barrier, and both adapters refuse to run without it. A project config naming neither — `"reviewers":
 ["codex"]` — needs no `bwrap` at all, and the doctor skips the check rather than failing the machine
 for it.
+
+`bwrap` is Linux-only, and no macOS equivalent is wired up yet, so on macOS the roster is
+`codex` and `agent` — both of which confine themselves. All four CLIs still work there as
+orchestrators and as skill targets; only reviewing is affected.
+
+**What has actually been run on macOS** is one manual pass, on 2026-08-20, on Darwin 25 with the
+packages above: `plan-review doctor`, and one real round in which `codex` and `agent` each
+produced a review — read reviewer by reviewer out of `round.json`, because a round succeeds when
+one reviewer does. After that pass's fixes landed, the full `make test` was re-run on
+the same Mac and passed. Getting there took four macOS-only corrections, all on this branch: the
+trailing slash macOS puts on `$TMPDIR`, BSD `wc`'s space-padded counts, BSD `ln`'s missing `-r`,
+and BSD `readlink -f` erroring on a path whose last component does not exist where GNU
+canonicalises it — `lib/paths.sh` now emulates the GNU reading, so a missing plan or criteria
+file is reported as missing rather than as escaping its directory. Nothing about macOS is checked
+automatically, so treat it as verified once rather than supported continuously.
 
 ## Reviewer roster
 
@@ -94,11 +129,49 @@ reviewer session. `PR_SKIP_PREFLIGHT=1` turns it off.
 
 ## Install
 
-`bin/plan-review` is the whole command. Everything else is reached through it, and it is the only
-file worth putting on your `PATH`:
+    curl -fsSL https://raw.githubusercontent.com/skyosev/plan-review/main/scripts/install.sh | bash
+
+That clones to `~/.local/share/plan-review`, links `~/.local/bin/plan-review`, installs the skill
+into every harness it finds, and finishes with an offline doctor listing what is still missing —
+which on a fresh machine is most of it. `--ref <branch|tag>`, `--bin-dir <dir>` and `--no-skill`
+are the options; pass them as `| bash -s -- --no-skill`. `PR_INSTALL_DIR` moves the checkout.
+
+The skill step runs `npx -y skills`, the [skills](https://skills.sh) CLI — a third-party package
+fetched from npm at run time and executed as you, unsandboxed, at whatever version is current that
+day. `--no-skill` skips it and keeps npm out of the install entirely.
+
+**Exit 0 means the runner is linked.** It does not mean a round can run — that needs the
+Requirements above, which the doctor names and your package manager installs — and it does not
+mean the skill is available either, because the skill step warns rather than failing.
+
+Two things are checked before anything is cloned: that `readlink -f` works and that `bash` is 5 or
+newer. Without them nothing here can start, including the doctor, so there would be no report to
+give you. It says which brew command fixes it.
+
+A pipe reports **bash's** exit status, so a `curl` that dies before emitting anything looks like
+success. The script guards against running a truncated download — everything happens in `main "$@"`
+on the last line — but it cannot report the download failure. If you want that:
+
+    bash -o pipefail -c 'curl -fsSL https://raw.githubusercontent.com/skyosev/plan-review/main/scripts/install.sh | bash'
+
+Re-running is the upgrade: it fast-forwards the checkout and re-installs the skill. It refuses a
+dirty tree, a diverged one, a foreign `origin` and a directory it did not create, and it never
+removes anything it did not make. To remove what it did make:
+
+    rm ~/.local/bin/plan-review
+    rm -rf ~/.local/share/plan-review
+
+The skill is separate, because removing it is **global and by name** — it takes out whatever
+`plan-review` skill is registered, whether this installer put it there or you did. Run it only if
+you let the installer install one, which the installer's own last line tells you:
+
+    npx skills remove -g plan-review
+
+**By hand instead**, if you want the checkout in your own source tree:
 
     git clone <this repo> ~/code/plan-review
     ~/code/plan-review/bin/plan-review install      # links ~/.local/bin/plan-review
+    npx skills add ~/code/plan-review -g -a claude-code -a codex
 
 `install` makes one symlink and then runs `plan-review version` through that link to prove it works.
 `--bin-dir <dir>` puts it elsewhere. It refuses any destination that is already occupied rather than
@@ -109,12 +182,17 @@ checkout and the command breaks. Repair is `rm` on the stale link, then `install
 location. Installing is a convenience in any case — `~/code/plan-review/bin/plan-review doctor`
 works without it.
 
-The skill is installed separately, by [skills](https://skills.sh):
+Name whichever harnesses you use in `skills add`. What it installs is a snapshot taken at that
+moment, and nothing here reports an installed skill's revision, so run `npx skills update` when you
+update the checkout.
 
-    npx skills add ~/code/plan-review -g -a claude-code -a codex
+On macOS, `agy` and `claude` cannot review yet (see Requirements), and `plan-review init` treats a
+reviewer that cannot review as a refusal rather than a silent omission. So name the roster — and
+pin Cursor, which refuses to run without a model because it reports none, so `round.json` could
+not otherwise say what reviewed the plan (`agent --list-models`, or export `PR_AGENT_MODEL`):
 
-Name whichever harnesses you use. What it installs is a snapshot taken at that moment, and nothing
-here reports an installed skill's revision, so run `npx skills update` when you update the checkout.
+    PR_ORCHESTRATOR=claude plan-review init --repo <dir> \
+        --reviewers codex,agent --pin agent=<model-id>
 
 ## Use
 
