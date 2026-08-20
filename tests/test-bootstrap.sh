@@ -288,7 +288,10 @@ run_with_skills() {   # <case-dir> [flags...]
 }
 
 # What a fully linked install looks like. The display names are the ones
-# skill_name_for claims; a case that wants a miss returns a subset.
+# skill_name_for claims -- confirmed against a real `skills ls -g --json` at
+# 1.5.18 on macOS 2026-08-20, all four exact -- and they are hard-coded here, so
+# a correction to that table needs this string corrected with it or the suite
+# goes on passing against the old world. A case that wants a miss returns a subset.
 ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Antigravity CLI"]}]'
 
 # tests/helpers.sh has no skip. Six cases need a real `node`: four to exercise a

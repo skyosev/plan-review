@@ -23,15 +23,18 @@ plus the `PATH` line that makes it count:
     brew install bash coreutils flock jq rsync
     PATH="$(brew --prefix)/opt/coreutils/libexec/gnubin:$PATH"
 
-`bash`, `coreutils` and `flock` are the measured ones — 3.2 is refused, `readlink -f` and
-`sha256sum` do not exist, and there is no system `flock` at all. `jq` and `rsync` are here because
-they are the supported baseline, not because the system versions are known to break: `lib/sandbox.sh`
-asks `rsync` for `-a --delete --exclude` and nothing more, and nobody has measured what macOS's own
-copy does with them. If yours works, keeping it is fine.
+`bash`, `coreutils` and `flock` are the measured ones — 3.2 is refused, `sha256sum` and `timeout`
+do not exist, and there is no system `flock` at all. `readlink -f` is the exception this list was
+originally built around: on Darwin 25 the stock `/usr/bin/readlink` accepts `-f` (measured
+2026-08-20), so on a current macOS the bootstrap's `readlink` refusal never fires and bash 3.2 is
+the one that does. `jq` and `rsync` are here because they are the supported baseline, not because
+the system versions are known to break: `lib/sandbox.sh` asks `rsync` for `-a --delete --exclude`
+and nothing more, and nobody has measured what macOS's own copy does with them. If yours works,
+keeping it is fine.
 
-The second line is not optional: coreutils installs as `greadlink`, `gtimeout` and so on, and
-`bin/plan-review` resolves itself with plain `readlink -f`. `flock` is its own formula —
-`util-linux` is keg-only, and installing it does not put `flock` on `PATH`.
+The second line is not optional: coreutils installs as `gtimeout`, `gsha256sum` and so on, and the
+runner calls the unprefixed names. `flock` is its own formula — `util-linux` is keg-only, and
+installing it does not put `flock` on `PATH`.
 
 `bwrap` is not optional if `agy` or `claude` is in the roster: it is those reviewers' only write
 barrier, and both adapters refuse to run without it. A project config naming neither — `"reviewers":
@@ -41,6 +44,14 @@ for it.
 `bwrap` is Linux-only, and no macOS equivalent is wired up yet, so on macOS the roster is
 `codex` and `agent` — both of which confine themselves. All four CLIs still work there as
 orchestrators and as skill targets; only reviewing is affected.
+
+**What has actually been run on macOS** is one manual pass, on 2026-08-20, on Darwin 25 with the
+packages above: `plan-review doctor`, and one real round in which `codex` and `agent` each
+produced a review — read reviewer by reviewer out of `round.json`, because a round succeeds when
+one reviewer does. `make test` is not proven there. That pass found one failing expectation (a test
+that compares a path against `$TMPDIR`, which macOS exports with a trailing slash); the fix is on
+this branch and has not been re-run on a Mac. Nothing about macOS is checked automatically, so
+treat it as verified once rather than supported continuously.
 
 ## Reviewer roster
 

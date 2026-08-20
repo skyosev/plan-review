@@ -120,8 +120,15 @@ pr_test_release_lock() {
 }
 
 pr_run_tests() {
-  local fn
-  PR_TEST_TMPROOT="$(mktemp -d "${TMPDIR:-/tmp}/pr-test-XXXXXX")"
+  local fn root
+  # macOS exports TMPDIR with a trailing slash, so an uninspected ${TMPDIR}
+  # mints a root containing `//`. mktemp keeps the doubled slash verbatim while
+  # the runner normalises its own paths through `cd && pwd`, and a test that
+  # compares the two strings then fails on the slash alone -- measured on
+  # Darwin 25, 2026-08-20, as the single failure in test-runner.sh's
+  # stuck-round case.
+  root="${TMPDIR:-/tmp}"
+  PR_TEST_TMPROOT="$(mktemp -d "${root%/}/pr-test-XXXXXX")"
   # `compgen -A function` already returns names sorted, so this replaces a
   # declare|awk|grep|sort pipeline -- four forks per test file, in a harness whose
   # header promises no external dependencies.

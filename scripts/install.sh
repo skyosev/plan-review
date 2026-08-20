@@ -217,19 +217,22 @@ upgrade_checkout() {
 }
 
 # Harness ids and display names as the skills CLI spells them, read at version
-# 1.5.18 on 2026-08-19. Two strings per harness because verification needs both:
-# the id selects, the display name is what comes back.
+# 1.5.18 on 2026-08-19 and CONFIRMED against a real 1.5.18 on macOS 2026-08-20:
+# all four ids exit 0, and all four display names came back exactly as written
+# below. Two strings per harness because verification needs both: the id selects,
+# the display name is what comes back.
 #
 # `agy` is `antigravity-cli`, NOT `antigravity`: skills lists those as two agents
 # with two separate global directories, and lib/doctor.sh:141 identifies agy as
 # the Antigravity *CLI*.
 #
-# THE DISPLAY NAMES ARE UNCONFIRMED. Task 2 Step 11 item 3 confirms them against a
-# real `skills ls -g --json` and corrects this table. A wrong one is self-diagnosing
-# rather than silent: verify_skill prints both what it wanted and what came back,
-# so the fix is a copy-paste. No offline test can check any of these -- a stub
-# reproduces whatever name it is given, which is how `antigravity` survived a
-# draft of this file. Same convention, same reason, as lib/doctor.sh:396.
+# Re-confirm both tables whenever this comment's version goes stale. No offline
+# test can check any of them -- a stub reproduces whatever name it is given, which
+# is how `antigravity` survived a draft of this file, and tests/test-bootstrap.sh's
+# ALL_LINKED fixture hard-codes the same four names, so a correction here needs the
+# fixture corrected with it or the suite passes against the old world. A wrong name
+# is at least self-diagnosing rather than silent: verify_skill prints both what it
+# wanted and what came back. Same convention, same reason, as lib/doctor.sh:396.
 skill_id_for() {
   case "$1" in
     claude) printf 'claude-code\n' ;;
@@ -345,6 +348,17 @@ install_skill() {
 # still had `skills ls` print plan-review and exit 0, annotated only `not linked`.
 # The JSON is where the difference lives.
 #
+# A missing name is not always a missing link. Measured on macOS 2026-08-20 with
+# skills 1.5.18: `ls -g --json` attributes a skill to an agent only when that
+# agent's config directory exists in the same HOME (`~/.codex`, `~/.cursor`,
+# `~/.claude`, `~/.gemini/antigravity-cli`) -- `-a` says where to install, and a
+# separate per-agent detectInstalled() decides what gets reported. On the FIRST
+# run in a pristine home the add copied the skill for Codex and this check still
+# said `no agent at all`; the second run passed, because the doctor's own
+# `codex --version` probe had created `~/.codex` in between. The warning is left
+# as it is: it is right whenever the user has ever run the harness, its remedy
+# line is correct either way, and suppressing it would cost the true miss.
+#
 # node, not jq: jq is not a requirement of this installer and must not become
 # one, while npx has already proved Node is here.
 verify_skill() {
@@ -378,7 +392,8 @@ verify_skill() {
     });' "$@" || rc=$?
   case "$rc" in
     0) say "  verified: the skill is linked into$targets"; return 0 ;;
-    1) warn "the skill is installed but not linked everywhere (see above)." ;;
+    1) warn "the skill is installed but not linked everywhere (see above)."
+       say  "  a harness you have never launched reports this way whether linked or not." ;;
     *) warn "could not parse 'skills ls -g --json'; the links are unverified." ;;
   esac
   say "  check it by hand: npx skills ls -g --json"
