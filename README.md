@@ -48,10 +48,13 @@ orchestrators and as skill targets; only reviewing is affected.
 **What has actually been run on macOS** is one manual pass, on 2026-08-20, on Darwin 25 with the
 packages above: `plan-review doctor`, and one real round in which `codex` and `agent` each
 produced a review — read reviewer by reviewer out of `round.json`, because a round succeeds when
-one reviewer does. `make test` is not proven there. That pass found one failing expectation (a test
-that compares a path against `$TMPDIR`, which macOS exports with a trailing slash); the fix is on
-this branch and has not been re-run on a Mac. Nothing about macOS is checked automatically, so
-treat it as verified once rather than supported continuously.
+one reviewer does. After that pass's fixes landed, the full `make test` was re-run on
+the same Mac and passed. Getting there took four macOS-only corrections, all on this branch: the
+trailing slash macOS puts on `$TMPDIR`, BSD `wc`'s space-padded counts, BSD `ln`'s missing `-r`,
+and BSD `readlink -f` erroring on a path whose last component does not exist where GNU
+canonicalises it — `lib/paths.sh` now emulates the GNU reading, so a missing plan or criteria
+file is reported as missing rather than as escaping its directory. Nothing about macOS is checked
+automatically, so treat it as verified once rather than supported continuously.
 
 ## Reviewer roster
 

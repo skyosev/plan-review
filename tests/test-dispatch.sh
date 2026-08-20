@@ -95,7 +95,15 @@ test_a_round_completes_through_an_absolute_symlink() {
 test_a_round_completes_through_a_relative_symlink() {
   local d; d="$(pr_test_tmpdir)"; make_target "$d/target"
   mkdir -p "$d/bin"
-  ln -sr "$PR" "$d/bin/plan-review"
+  # BSD ln has no -r, so build the relative target by hand: climb from the
+  # link's directory to /, then descend the checkout's absolute path. The
+  # climb is counted on the physical path (pwd -P) because `..` is resolved
+  # against real parents — on macOS $TMPDIR sits under the /var -> private/var
+  # symlink, one level shallower lexically than physically.
+  local phys up
+  phys="$(cd "$d/bin" && pwd -P)"
+  up="$(sed 's|[^/][^/]*|..|g' <<< "${phys#/}")"
+  ln -s "$up$PR" "$d/bin/plan-review"
   [[ "$(readlink "$d/bin/plan-review")" != /* ]] || pr_fail "the link under test is not relative"
   round_via "$d/bin/plan-review" "$d/target" "$d/cache" > "$d/out.txt" 2>&1
   assert_round_ran "$d/target" "a relative link resolves to the checkout"

@@ -21,6 +21,22 @@ pr_path_escapes() {
 pr_path_resolve_within() {
   local -n _abs="$3" _root="$4"
   _abs="$(readlink -f "$2" 2>/dev/null)"
+  # GNU readlink -f canonicalises a path whose last component does not exist;
+  # BSD readlink -f (macOS stock, measured on Darwin 25) errors instead. The
+  # GNU reading is the one the callers rely on: a missing criteria file or plan
+  # must pass containment and then fail the existence check that owns the
+  # message, not be reported as escaping the directory. Emulate it by
+  # canonicalising the parent and re-appending the component -- but only when
+  # that component is truly absent and not a symlink, so a dangling link (whose
+  # target GNU would resolve) still fails closed.
+  if [[ -z "$_abs" && ! -e "$2" && ! -L "$2" ]]; then
+    local _parent _base
+    _parent="$(readlink -f "$(dirname "$2")" 2>/dev/null)"
+    _base="$(basename "$2")"
+    if [[ -n "$_parent" && "$_base" != . && "$_base" != .. ]]; then
+      _abs="$_parent/$_base"
+    fi
+  fi
   _root="$(readlink -f "$1" 2>/dev/null)"
   [[ -n "$_abs" && -n "$_root" && "$_abs" == "$_root"/* ]]
 }

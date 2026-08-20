@@ -56,7 +56,7 @@ test_each_orchestrator_gets_three_reviewers() {
   local orch map n
   for orch in codex agent agy claude; do
     map="$(pr_roster_default_map "$orch")"
-    n="$(wc -w <<< "$map")"
+    n="$(wc -w <<< "$map" | tr -d ' ')"  # BSD wc pads its count with spaces
     assert_eq "$n" "3" "$orch orchestrating leaves three reviewers"
     assert_not_contains "$map" "$orch=" "$orch is not in its own roster"
   done
@@ -65,7 +65,7 @@ test_each_orchestrator_gets_three_reviewers() {
 # A human at a terminal is not a reviewer, so nothing has to be excluded.
 test_none_means_every_adapter_reviews() {
   local map; map="$(pr_roster_default_map none)"
-  assert_eq "$(wc -w <<< "$map")" "4" "all four review"
+  assert_eq "$(wc -w <<< "$map" | tr -d ' ')" "4" "all four review"
 }
 
 # --- an explicit roster ------------------------------------------------------
