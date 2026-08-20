@@ -10,9 +10,17 @@
 # stale.
 #
 # BASH 3.2, unlike every other file in this project. This is the file that tells
-# a macOS user their /bin/bash is too old, so it cannot need bash 5 to say it. No
-# arrays, no ${x^^}, no mapfile. `set --` inside a function is the substitute for
-# an argument array (Task 2 uses it).
+# a macOS user their /bin/bash is too old, so it cannot need bash 5 to say it.
+#
+# The rule covers the WHOLE file, not just the part above preflight_host. Every
+# function here is defined before main runs, so bash 3.2 parses all of them before
+# preflight can refuse anything: one construct it cannot parse and the refusal
+# never prints. Runtime-only newer features would in fact be safe below the
+# refusal, and reasoning about which are which per line is not worth it.
+#
+# In practice: no ${x^^}, no mapfile, no local -n, no associative arrays. Indexed
+# arrays do work in 3.2, but `set --` inside a function is used as the argument
+# array anyway (verify_skill), because it needs no version reasoning at all.
 #
 # What it promises is the RUNNER, not a working plan-review, and not the skill:
 # the skill step is non-fatal, so exit 0 says the runner was linked and nothing
@@ -294,6 +302,10 @@ install_skill() {
     say  "  repeat -a for each one you use: claude-code, codex, cursor, antigravity-cli"
     return 0
   fi
+  # The same four CLIs lib/roster.sh's PR_ROSTER_ADAPTERS names, spelled again
+  # because this file sources nothing. Not the roster, though: this asks which
+  # harnesses can HOST the skill, so it includes the orchestrator, and a fifth
+  # one would need skill_id_for and skill_name_for entries regardless.
   for cli in claude codex agent agy; do
     command -v "$cli" > /dev/null 2>&1 || continue
     if [ "$cli" = agent ] && ! cursor_identity_ok; then
@@ -441,11 +453,13 @@ main() {
   # Fatal, and its message is the diagnosis. `refusing: ... is a symlink to ...`
   # is the occupied-destination case, and re-deriving that rule here instead of
   # calling the command that owns it is exactly the mistake this delegates away.
-  if [ -n "$bin_dir" ]; then
-    "$checkout/bin/plan-review" install --bin-dir "$bin_dir" < /dev/null
-  else
-    "$checkout/bin/plan-review" install < /dev/null
-  fi
+  #
+  # The while loop above has already drained $@, so `set --` is free to carry the
+  # optional flag -- one invocation rather than two arms that have to be kept
+  # identical apart from it.
+  set --
+  [ -n "$bin_dir" ] && set -- --bin-dir "$bin_dir"
+  "$checkout/bin/plan-review" install "$@" < /dev/null
 
   after="$(checkout_version "$checkout")"
   if [ -z "$before" ]; then

@@ -47,18 +47,27 @@ mk_case() {
   printf '%s' "$d"
 }
 
+# Where the checkout lands, named once: the assertions and the PR_INSTALL_DIR
+# that decides it must not be able to disagree.
+checkout_of() { printf '%s' "$1/home/.local/share/plan-review"; }
+
 # PATH is assigned in the environment of the command itself, not as a prefix on a
 # function call -- the distinction tests/helpers.sh's pr_test_mkstub note explains.
+#
+# NPX_LOG is read only by stub_npx, so it is inert in the cases that have no npx
+# stub, and one runner beats two that drift apart. Truncating it here rather than
+# per case also means `cat "$d/npx.log"` has a file to read in the case that
+# asserts npx was never called.
 run_bootstrap() {
   local d="$1" src="$2"; shift 2
-  env HOME="$d/home" \
+  : > "$d/npx.log"
+  env NPX_LOG="$d/npx.log" \
+      HOME="$d/home" \
       PR_INSTALL_SOURCE="$src" \
-      PR_INSTALL_DIR="$d/home/.local/share/plan-review" \
+      PR_INSTALL_DIR="$(checkout_of "$d")" \
       PATH="$d/stub:$PATH" \
       bash "$PR_ROOT/scripts/install.sh" "$@" 2>&1
 }
-
-checkout_of() { printf '%s' "$1/home/.local/share/plan-review"; }
 
 # `git commit` needs an identity, and a test must not depend on the developer's.
 src_commit() {
@@ -277,16 +286,6 @@ stub_harness_clis() {
 exit 0'
 }
 
-run_with_skills() {   # <case-dir> [flags...]
-  local d="$1"; shift
-  env NPX_LOG="$d/npx.log" \
-      HOME="$d/home" \
-      PR_INSTALL_SOURCE="$d/src" \
-      PR_INSTALL_DIR="$d/home/.local/share/plan-review" \
-      PATH="$d/stub:$PATH" \
-      bash "$PR_ROOT/scripts/install.sh" "$@" 2>&1
-}
-
 # What a fully linked install looks like. The display names are the ones
 # skill_name_for claims -- confirmed against a real `skills ls -g --json` at
 # 1.5.18 on macOS 2026-08-20, all four exact -- and they are hard-coded here, so
@@ -299,15 +298,17 @@ ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Ant
 # npx at all, so without it there is no add to make an assertion about. npx
 # implies node in production, but the suite must not fail on a machine that has
 # neither.
-say_skipped() { printf '  SKIP %s: node is not installed\n' "$PR_CURRENT_TEST"; }
+need_node() {
+  command -v node > /dev/null 2>&1 && return 0
+  printf '  SKIP %s: node is not installed\n' "$PR_CURRENT_TEST"
+  return 1
+}
 
 test_one_add_covers_every_detected_harness() {
-  local d out log checkout; d="$(mk_case)"
-  command -v node > /dev/null 2>&1 || { say_skipped; return 0; }
-  stub_harness_clis "$d/stub"
+  local d log checkout; d="$(mk_case)"
+  need_node || return 0
   stub_npx "$d/stub" "$ALL_LINKED"
-  : > "$d/npx.log"
-  out="$(run_with_skills "$d")"
+  run_bootstrap "$d" "$d/src" > /dev/null 2>&1
   log="$(cat "$d/npx.log")"
   checkout="$(checkout_of "$d")"
   assert_contains "$log" \
@@ -320,14 +321,12 @@ test_one_add_covers_every_detected_harness() {
 
 test_cursor_is_skipped_when_the_identity_probe_returns_no_version() {
   local d out log; d="$(mk_case)"
-  command -v node > /dev/null 2>&1 || { say_skipped; return 0; }
-  stub_harness_clis "$d/stub"
+  need_node || return 0
   # Exit 0, valid JSON, empty field: the case that an exit-status-only probe
   # passes and lib/doctor.sh:408's non-empty .cliVersion test catches.
   pr_test_mkstub "$d/stub/agent" 'printf "{\"cliVersion\":\"\"}\n"; exit 0'
   stub_npx "$d/stub" "$ALL_LINKED"
-  : > "$d/npx.log"
-  out="$(run_with_skills "$d")"
+  out="$(run_bootstrap "$d" "$d/src")"
   log="$(cat "$d/npx.log")"
   assert_not_contains "$log" "-a cursor" "nothing was written into a Cursor directory"
   assert_contains "$out" "agent about --format json" "the probe was named"
@@ -339,13 +338,11 @@ test_cursor_is_skipped_when_the_identity_probe_returns_no_version() {
 # searched for. A substring hunt -- the first draft -- passes both of these.
 test_a_non_cursor_agent_does_not_pass_the_identity_probe() {
   local d log; d="$(mk_case)"
-  command -v node > /dev/null 2>&1 || { say_skipped; return 0; }
-  stub_harness_clis "$d/stub"
+  need_node || return 0
   pr_test_mkstub "$d/stub/agent" \
     'printf "agent: unknown flag --format (try: agent --cliVersion \"1.2\")\n"; exit 0'
   stub_npx "$d/stub" "$ALL_LINKED"
-  : > "$d/npx.log"
-  run_with_skills "$d" > /dev/null 2>&1
+  run_bootstrap "$d" "$d/src" > /dev/null 2>&1
   log="$(cat "$d/npx.log")"
   assert_not_contains "$log" "-a cursor" "a key-shaped substring is not an identity"
   assert_contains "$log" "-a codex" "the other harnesses still got the skill"
@@ -353,13 +350,11 @@ test_a_non_cursor_agent_does_not_pass_the_identity_probe() {
 
 test_a_missing_display_name_is_not_a_pass() {
   local d out rc; d="$(mk_case)"
-  command -v node > /dev/null 2>&1 || { say_skipped; return 0; }
-  stub_harness_clis "$d/stub"
+  need_node || return 0
   # The false positive the previous design could not see: linked into Claude Code
   # alone, while a per-harness `ls -a codex` query would still answer non-empty.
   stub_npx "$d/stub" '[{"name":"plan-review","agents":["Claude Code"]}]'
-  : > "$d/npx.log"
-  out="$(run_with_skills "$d")"; rc=$?
+  out="$(run_bootstrap "$d" "$d/src")"; rc=$?
   assert_exit_code "$rc" 0 "a partial link is not a failed install"
   assert_contains "$out" "not linked into" "the missing harnesses were named"
   assert_contains "$out" "Codex" "including this one"
@@ -368,11 +363,9 @@ test_a_missing_display_name_is_not_a_pass() {
 
 test_unparseable_json_warns_rather_than_passing() {
   local d out rc; d="$(mk_case)"
-  command -v node > /dev/null 2>&1 || { say_skipped; return 0; }
-  stub_harness_clis "$d/stub"
+  need_node || return 0
   stub_npx "$d/stub" 'this is not json'
-  : > "$d/npx.log"
-  out="$(run_with_skills "$d")"; rc=$?
+  out="$(run_bootstrap "$d" "$d/src")"; rc=$?
   assert_exit_code "$rc" 0 "unreadable output is not a failed install"
   assert_contains "$out" "unverified" "readiness was left unverified"
   assert_not_contains "$out" "verified: the skill" "and nothing was called verified"
@@ -380,10 +373,8 @@ test_unparseable_json_warns_rather_than_passing() {
 
 test_no_skill_takes_npm_out_of_the_install_path() {
   local d out rc; d="$(mk_case)"
-  stub_harness_clis "$d/stub"
   stub_npx "$d/stub" "$ALL_LINKED"
-  : > "$d/npx.log"
-  out="$(run_with_skills "$d" --no-skill)"; rc=$?
+  out="$(run_bootstrap "$d" "$d/src" --no-skill)"; rc=$?
   assert_exit_code "$rc" 0 "--no-skill succeeded"
   assert_eq "$(cat "$d/npx.log")" "" "npx was never invoked"
   assert_contains "$out" "verified: plan-review" "the runner was still installed"
@@ -393,11 +384,9 @@ test_no_skill_takes_npm_out_of_the_install_path() {
 
 test_the_removal_line_appears_only_when_a_skill_was_installed() {
   local d out; d="$(mk_case)"
-  command -v node > /dev/null 2>&1 || { say_skipped; return 0; }
-  stub_harness_clis "$d/stub"
+  need_node || return 0
   stub_npx "$d/stub" "$ALL_LINKED"
-  : > "$d/npx.log"
-  out="$(run_with_skills "$d")"
+  out="$(run_bootstrap "$d" "$d/src")"
   assert_contains "$out" "npx skills remove -g plan-review" "printed after a real install"
   assert_contains "$out" "global" "and says that removal is global, by name"
 }
@@ -414,7 +403,7 @@ test_a_missing_npx_warns_and_the_install_still_succeeds() {
   done
   out="$(env HOME="$d/home" \
              PR_INSTALL_SOURCE="$d/src" \
-             PR_INSTALL_DIR="$d/home/.local/share/plan-review" \
+             PR_INSTALL_DIR="$(checkout_of "$d")" \
              PATH="$d/minpath" \
              bash "$PR_ROOT/scripts/install.sh" 2>&1)"; rc=$?
   assert_exit_code "$rc" 0 "a missing npx is not a failed install"
