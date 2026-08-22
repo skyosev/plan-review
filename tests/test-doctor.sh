@@ -927,4 +927,116 @@ test_the_header_names_the_runner_s_revision() {
   assert_contains "$out" "$version" "the header carries the same string as \`plan-review version\`"
 }
 
+# --- Smoke (--smoke): one live prompt per reviewer --------------------------
+#
+# The only doctor check that spends tokens, so it is opt-in and never reached
+# by preflight. Driven with fake adapters on the real PATH: the check runs
+# adapters under timeout(1), so a stub-only PATH would test the absence of
+# coreutils rather than the smoke logic.
+
+FAKES="$PR_ROOT/tests/fixtures/adapters"
+
+# PR_CACHE_ROOT is pointed into the test tmpdir because the smoke builds its
+# workdirs with the pr_sandbox_* paths -- without it, a unit case would write
+# under the operator's real ~/.cache/plan-review.
+smoke_run() {  # smoke_run <map> [secs] [env-line]
+  doctor_run "$PATH" "PR_CACHE_ROOT='$(pr_test_tmpdir)/cache'
+${3:-}
+pr_doctor_check_smoke '$1' '${2:-5}'"
+}
+
+test_smoke_passes_a_reviewer_that_answers() {
+  local out; out="$(smoke_run "codex=$FAKES/fake-ok.sh")"
+  assert_contains "$out" "codex" "names the reviewer"
+  assert_contains "$out" "counts 1 0 0" "an answer is a pass"
+}
+
+# Cursor exits 2 on a denied tool call while still producing a correct review
+# (D7). The smoke must agree with the round about what alive means, or it
+# would tell an operator to fix a reviewer the round runs happily.
+test_smoke_judges_on_output_not_exit_code() {
+  local out; out="$(smoke_run "agent=$FAKES/fake-exit2-with-output.sh")"
+  assert_contains "$out" "counts 1 0 0" "output with a non-zero exit is alive"
+}
+
+test_smoke_fails_a_dead_reviewer_and_quotes_its_reason() {
+  local out; out="$(smoke_run "codex=$FAKES/fake-fail-with-reason.sh")"
+  assert_contains "$out" "the vendor said no" "reason_out outranks the exit code"
+  assert_not_contains "$out" "a second line nobody should read" "first line only"
+  assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# The case the smoke exists for, and the round's measured lesson in one: an
+# auth probe can pass while the exec path hangs on an interactive prompt, the
+# hang must be cut at the smoke deadline rather than the round's, and
+# --kill-after reaps only the direct child -- a TERM-ignoring grandchild would
+# survive the deadline without the group sweep. Asserted by pid, the way
+# test-runner.sh does.
+test_smoke_times_out_a_hung_reviewer_and_sweeps_its_group() {
+  local d pidfile out; d="$(pr_test_tmpdir)"; pidfile="$d/child.pid"
+  out="$(smoke_run "codex=$FAKES/fake-term-handling-with-child.sh" 1 \
+    "export PR_TEST_CHILD_PIDFILE='$pidfile' PR_KILL_GRACE_SECS=1")"
+  assert_contains "$out" "counts 0 0 1" "a hang is a failure"
+  assert_contains "$out" "timed out after 1s" "and the deadline is named"
+  assert_file_exists "$pidfile" "the fake recorded its grandchild pid"
+  assert_pid_gone "$(cat "$pidfile")" "grandchild survived; the smoke did not sweep the group"
+}
+
+# The probe stub for the doctor-CLI cases: answers, and leaves a marker proving
+# it was invoked at all -- silence in the report is not proof.
+mk_smoke_probe() {
+  pr_test_mkstub "$1" 'cat > /dev/null; : > "$PR_TEST_SMOKE_MARKER"; echo alive > "$3"'
+}
+
+# Opt-in is the load-bearing promise: without --smoke the doctor still costs
+# nothing, and the marker file proves no adapter ran rather than trusting the
+# report's silence.
+test_doctor_smoke_is_opt_in() {
+  local d out; d="$(pr_test_tmpdir)"
+  mk_smoke_probe "$d/probe.sh"
+  out="$(PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
+         PR_CACHE_ROOT="$d/cache" PR_TEST_SMOKE_MARKER="$d/marker" \
+         bash "$DOCTOR" doctor --offline 2>&1)"
+  assert_not_contains "$out" "Smoke" "no smoke section without --smoke"
+  assert_file_missing "$d/marker" "and no adapter was invoked"
+}
+
+# The pins are blanked because this is the one doctor-CLI case that cannot use
+# --offline: with a fakes-only map $shipped is empty, pr_doctor_check_pins ""
+# reports all four, and an exported PR_AGENT_MODEL would make it fetch a real
+# model list mid-suite.
+test_doctor_smoke_invokes_the_roster_end_to_end() {
+  local d out rc; d="$(pr_test_tmpdir)"
+  mk_smoke_probe "$d/probe.sh"
+  out="$(PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
+         PR_CACHE_ROOT="$d/cache" PR_TEST_SMOKE_MARKER="$d/marker" \
+         PR_AGENT_MODEL= PR_AGY_MODEL= \
+         bash "$DOCTOR" doctor --smoke 2>&1)"; rc=$?
+  assert_file_exists "$d/marker" "the adapter really ran"
+  assert_contains "$out" "spends tokens" "the cost is stated in the report"
+  assert_exit_code "$rc" 0 "an answering roster passes"
+}
+
+# --smoke beside --show-config is deliberately NOT refused: that path exits
+# before any check runs, so the flag is inert there, exactly as --offline has
+# always silently been.
+test_doctor_smoke_conflicts_with_offline() {
+  local out rc
+  out="$(PR_ORCHESTRATOR=none bash "$DOCTOR" doctor --smoke --offline 2>&1)"; rc=$?
+  assert_exit_code "$rc" 2 "a contradiction is a usage error"
+  assert_contains "$out" "--offline" "and both flags are named"
+}
+
+# The adapters do integer arithmetic on the deadline they are handed (agy
+# derives --print-timeout from it), so the same positive-integer rule the round
+# enforces on PR_TIMEOUT_SECS applies here.
+test_doctor_smoke_rejects_a_fractional_deadline() {
+  local out rc
+  out="$(PR_ORCHESTRATOR=none PR_SMOKE_TIMEOUT_SECS=1.5 \
+         PR_ADAPTER_MAP="codex=$FAKES/fake-ok.sh" \
+         bash "$DOCTOR" doctor --smoke 2>&1)"; rc=$?
+  assert_exit_code "$rc" 2 "same rule as PR_TIMEOUT_SECS, same refusal"
+  assert_contains "$out" "PR_SMOKE_TIMEOUT_SECS" "names the variable"
+}
+
 pr_run_tests

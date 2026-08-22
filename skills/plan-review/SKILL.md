@@ -87,6 +87,11 @@ reported as `SKIP`.
   verified. Report it to the user. It is not a reason to stop, but if a round then aborts
   with a sandbox-header error, that warning was the cause.
 - `.plan-review/` not gitignored is a FAIL with the fix printed. Apply it and say so.
+- If the doctor is green but a reviewer still dies at round time with nothing useful in
+  its log, run `"$PR" doctor --smoke` once: it sends each reviewer one trivial prompt
+  through its adapter, which catches a CLI that authenticates fine but hangs or fails on
+  the exec path. It is the one doctor check that **spends tokens**, so ask the user
+  before running it.
 
 ## The roster
 

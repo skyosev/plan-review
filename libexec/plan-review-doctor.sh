@@ -10,8 +10,10 @@
 # and unset model pins are reported and do not fail: the point is a diagnosis, not
 # a gate.
 #
-# No inference call is made anywhere in here. The auth checks use status and
-# list endpoints only, so running this costs nothing.
+# No inference call is made anywhere in here unless --smoke asks for one. The
+# auth checks use status and list endpoints only, so the default run costs
+# nothing; --smoke sends each reviewer one trivial prompt end to end, which is
+# the one check that spends tokens and the reason it is opt-in.
 
 set -uo pipefail
 
@@ -35,6 +37,10 @@ usage: plan-review doctor [options]
   --show-config      with --repo: print the resolved configuration as JSON and
                      exit, running no other check and writing nothing
   --offline          skip the auth and model-list checks (no network)
+  --smoke            also send each reviewer one trivial prompt end to end,
+                     through its adapter exactly as a round would. The only
+                     doctor check that spends tokens. Deadline per reviewer:
+                     PR_SMOKE_TIMEOUT_SECS (default 90)
   -h, --help         this text
 
 PR_ORCHESTRATOR is required, exactly as it is for a round: with no config it is
@@ -43,7 +49,7 @@ Use `none` when no agent is orchestrating.
 EOF
 }
 
-repo="" plan_rel="" offline=0 preset="" show_config=0
+repo="" plan_rel="" offline=0 preset="" show_config=0 smoke=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)        repo="${2:-}"; shift 2 ;;
@@ -51,10 +57,30 @@ while [[ $# -gt 0 ]]; do
     --preset)      preset="${2:-}"; shift 2 ;;
     --show-config) show_config=1; shift ;;
     --offline)     offline=1; shift ;;
+    --smoke)       smoke=1; shift ;;
     -h|--help)     usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 2 ;;
   esac
 done
+
+# Everything --smoke requires, in one place. It is NOT refused next to
+# --show-config: that path exits before any check runs, so --smoke is inert
+# there, exactly as --offline has always silently been.
+if (( smoke == 1 )); then
+  if (( offline == 1 )); then
+    echo "--smoke and --offline contradict each other: --smoke is a live call per" >&2
+    echo "reviewer, --offline promises none." >&2
+    exit 2
+  fi
+  # The same rule, the same reason and nearly the same words as the round's
+  # check on PR_TIMEOUT_SECS: the smoke hands the value to the adapters AS
+  # their PR_TIMEOUT_SECS, and adapters/agy.sh does integer arithmetic on it.
+  PR_SMOKE_TIMEOUT_SECS="${PR_SMOKE_TIMEOUT_SECS:-90}"
+  if [[ ! "$PR_SMOKE_TIMEOUT_SECS" =~ ^[1-9][0-9]*$ ]]; then
+    echo "PR_SMOKE_TIMEOUT_SECS must be a positive whole number of seconds, got: $PR_SMOKE_TIMEOUT_SECS" >&2
+    exit 2
+  fi
+fi
 
 if [[ -n "$plan_rel" && -z "$repo" ]]; then
   echo "--plan needs --repo: the path is repo-relative." >&2
@@ -203,6 +229,16 @@ if [[ -n "$repo" ]]; then
       pr_d_info "No --plan given; skipped the plan and blocked-round checks."
     fi
   fi
+fi
+
+# Last on purpose: it is the expensive check, and a smoke failure is best read
+# under the cheap diagnoses above it -- a reviewer that fails here after its
+# auth check failed is one problem, not two.
+if (( smoke == 1 )); then
+  pr_d_section "Smoke"
+  pr_d_info "one live prompt per reviewer, ${PR_SMOKE_TIMEOUT_SECS}s deadline each;"
+  pr_d_info "this is the only doctor check that spends tokens."
+  pr_doctor_check_smoke "$adapter_map" "$PR_SMOKE_TIMEOUT_SECS"
 fi
 
 printf '\n%s\n' '――――――――――――'

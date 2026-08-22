@@ -12,6 +12,8 @@ help:
 	@echo 'make doctor REPO=<dir> [PLAN=<rel.md>] [PRESET=<name>]'
 	@echo '                        also check a target repo, plan and project config'
 	@echo 'make doctor OFFLINE=1   skip the auth and model-list checks'
+	@echo 'make doctor SMOKE=1     also send each reviewer one live prompt end to end'
+	@echo '                        (the only doctor check that spends tokens)'
 	@echo 'make init REPO=<dir> [REVIEWERS=a,b] [PINS="agy=x agent=y"]'
 	@echo '                        write that repo config from what is installed here,'
 	@echo '                        then run the doctor over it'
@@ -26,7 +28,8 @@ doctor:
 	  $(if $(REPO),--repo $(REPO)) \
 	  $(if $(PLAN),--plan $(PLAN)) \
 	  $(if $(PRESET),--preset $(PRESET)) \
-	  $(if $(OFFLINE),--offline)
+	  $(if $(OFFLINE),--offline) \
+	  $(if $(SMOKE),--smoke)
 
 # --no-verify is deliberately not exposed here. It exists for the test suite and
 # for scripted setup on a machine that is knowingly incomplete; `make init`

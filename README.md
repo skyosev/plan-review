@@ -102,6 +102,7 @@ Check all of it with:
     PR_ORCHESTRATOR=claude make doctor REPO=/path/to/repo PLAN=docs/plans/thing.md
     PR_ORCHESTRATOR=claude make doctor REPO=/path/to/repo PRESET=quick
     PR_ORCHESTRATOR=claude make doctor OFFLINE=1                # skip the auth checks
+    PR_ORCHESTRATOR=claude make doctor SMOKE=1                  # + one live prompt per reviewer
 
     plan-review doctor --repo /path/to/repo --show-config   # what a round would do, as JSON
 
@@ -112,7 +113,18 @@ gitignored and whether an unfinished round is blocking the next one. Every check
 adapter map the round would actually use, keyed on adapter *paths*: a CLI that is not reviewing is
 reported as `SKIP` and its pin is not checked, and an adapter this repo does not ship carries no
 requirements at all. Exit status is 1 only for things that would stop a round; drift and unset pins
-are reported without failing. Nothing it runs costs tokens.
+are reported without failing. Nothing it runs costs tokens — unless you pass `--smoke`, which is
+why that one is opt-in.
+
+`--smoke` sends every reviewer in the roster one trivial prompt, through its adapter exactly as a
+round would send one — same sandbox layout, same stdin contract, same process-group sweep on
+timeout — under a short deadline (`PR_SMOKE_TIMEOUT_SECS`, default 90s) instead of the round's. It
+exists because the auth checks hit status endpoints, and the exec path is different code in a
+vendor's CLI: it can hang on an interactive login prompt the auth check never reaches, or die on
+flag drift the version check only warns about. Alive means the adapter produced a review file, the
+same rule the round judges by; a dead reviewer FAILs with the adapter's own reason and its work
+directory kept for diagnosis (`PR_KEEP_SANDBOX=1` keeps the passing ones too). It contradicts
+`--offline` by definition, so the two together are refused.
 
 `--show-config` is the narrow companion to all that: it resolves and validates exactly as a round
 would, prints the roster, the pins, the criteria and **where each value came from**, and then exits

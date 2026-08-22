@@ -65,7 +65,9 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   knows a config exists. Schema violations exit 2 before anything is written.
 - **`lib/doctor.sh` and `lib/roster.sh` use bash builtins only** — no sed/grep/awk, no
   `jq`. That is what lets `tests/test-doctor.sh` point `PATH` at a stub directory alone.
-  `jq`-using logic belongs in `lib/config.sh` / `lib/init.sh` instead.
+  `jq`-using logic belongs in `lib/config.sh` / `lib/init.sh` instead. The rule is about
+  parsing: Tier E (`doctor --smoke`) exists to run adapters and so assumes a working
+  PATH, exactly as `_pr_doctor_bwrap_probe` already does.
 - **`pr_doctor_run` captures each probe to its own pair of files** and replays them on
   the streams they came from, then removes them itself. Both halves are load-bearing:
   a command substitution is held open by any descendant that inherited stdout, so the
@@ -92,7 +94,9 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   on timeout, before any artifact is read — `timeout --kill-after` stops escalating once
   the direct child is reaped, so a TERM-ignoring grandchild otherwise survives and can
   still append to `review-<reviewer>.md`. `PR_KILL_GRACE_SECS` therefore covers the
-  adapter only, not its descendants.
+  adapter only, not its descendants. The doctor's probes and its `--smoke` pings share
+  the same discipline through `_pr_doctor_run_capped` (`lib/doctor.sh`); the round keeps
+  its own copy because its comments carry the fan-out's descriptor-inheritance contract.
 - **Round state machine** lives in `lib/round.sh`; every mutation of `round.json` happens
   serially in the parent after `wait`, never in a reviewer background job.
 - **Confinement is per-adapter and not uniform**: codex and Cursor confine themselves;
@@ -104,7 +108,9 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
 - **`PR_TIMEOUT_SECS` must be a positive integer**, enforced in
   `libexec/plan-review-round.sh` before preflight (which `PR_SKIP_PREFLIGHT=1` can
   skip) and again in `adapters/agy.sh`, which derives its own deadline from it with
-  integer arithmetic. Two copies, because adapters are standalone.
+  integer arithmetic. Two copies, because adapters are standalone. `doctor --smoke`
+  enforces the same rule on `PR_SMOKE_TIMEOUT_SECS`, which the smoke hands to the
+  adapters *as* their `PR_TIMEOUT_SECS`.
 
 ## Conventions
 

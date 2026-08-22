@@ -68,6 +68,30 @@ pr_d_section() {
 
 pr_doctor_have() { command -v "$1" > /dev/null 2>&1; }
 
+# _pr_doctor_run_capped <grace-or-empty> <secs> <cmd...>
+#
+# The capped-exec-and-sweep core under pr_doctor_run and the smoke tier — the
+# shared-core-behind-thin-shells shape the 2026-08-21 dispatch-layer note (C4)
+# reserved for the day a second caller landed on the same side of the capture
+# split. timeout(1) is backgrounded so $! names ITS pid, which is the process-
+# group id; the KILL sweep after wait is unconditional because it, not the
+# grace, is what disposes of a descendant that outlives the direct child —
+# --kill-after (passed as <grace> when the caller wants the TERM→KILL
+# escalation on the child itself) stops escalating once the direct child is
+# reaped (measured 2026-08-19). stdin, stdout and stderr are the caller's:
+# redirect at the call site. Requires timeout(1); callers own the fallback.
+# The round fan-out keeps its own copy in libexec/plan-review-round.sh, where
+# the comments carry the fan-out's descriptor-inheritance contract.
+_pr_doctor_run_capped() {
+  local grace="$1" secs="$2"; shift 2
+  local pid rc
+  timeout ${grace:+--kill-after="$grace"} "$secs" "$@" &
+  pid=$!
+  wait "$pid"; rc=$?
+  kill -KILL -- "-$pid" 2> /dev/null
+  return "$rc"
+}
+
 # Run with a wall-clock cap when timeout(1) exists, plain otherwise. The auth
 # checks reach the network; a hung one must not hang the doctor. timeout's own
 # absence is reported by pr_doctor_check_utils, so this degrades rather than dies.
@@ -88,9 +112,9 @@ pr_doctor_have() { command -v "$1" > /dev/null 2>&1; }
 # line looking for a digit -- can then return a token from a deprecation notice
 # instead of the version. Replaying keeps the choice where the caller makes it.
 #
-# The sweep is inside the timeout branch on purpose: GNU timeout puts ITSELF in
-# a new process group, so its pid is the group id. The fallback child shares
-# this shell's group and `-$pid` would name nothing of ours.
+# The capped branch delegates to _pr_doctor_run_capped below, and the fallback
+# deliberately does not: the fallback child shares this shell's process group,
+# so the core's `-$pid` sweep would name nothing of ours.
 #
 # Builtins only, and that is a hard constraint, not a preference:
 # tests/test-doctor.sh runs Tier B checks with a stub directory as the ENTIRE
@@ -100,12 +124,10 @@ pr_doctor_have() { command -v "$1" > /dev/null 2>&1; }
 pr_doctor_run() {
   local secs="$1"; shift
   local out="${TMPDIR:-/tmp}/pr-doctor-run.$$" err="${TMPDIR:-/tmp}/pr-doctor-err.$$"
-  local pid rc
+  local rc
   if pr_doctor_have timeout; then
-    timeout "$secs" "$@" > "$out" 2> "$err" &
-    pid=$!
-    wait "$pid"; rc=$?
-    kill -KILL -- "-$pid" 2> /dev/null
+    _pr_doctor_run_capped "" "$secs" "$@" > "$out" 2> "$err"
+    rc=$?
   else
     "$@" > "$out" 2> "$err"
     rc=$?
@@ -851,6 +873,119 @@ pr_doctor_check_rounds() {
         pr_d_info "  plan-review abort --round $prev_dir"
       fi ;;
   esac
+  return 1
+}
+
+# ---------------------------------------------------------------------------
+# Tier E: smoke. The ONE check that spends tokens, which is why it runs only
+# behind `doctor --smoke` and is never reached by a round's preflight. It
+# exists because Tier B can lie by omission: an auth probe hits a status
+# endpoint, but the exec path is different code in the vendor's CLI -- it can
+# hang on an interactive prompt an auth check never reaches, or die on flag
+# drift the version check only warns about. The smoke ping is the one check
+# that exercises the same path a round does.
+#
+# The builtins-only rule does not bind here: this tier RUNS adapters, so a
+# working PATH is its subject matter, not an assumption to test away.
+# tests/test-doctor.sh drives it with fake adapters on the real PATH.
+# ---------------------------------------------------------------------------
+
+# Deliberately tiny -- the point is the transport, not the answer -- and
+# explicit that no tools should run, so the reply costs the minimum the vendor
+# bills. The reply's CONTENT is never asserted: alive means "produced output",
+# same as the round; a model that answers in its own words is still alive.
+PR_DOCTOR_SMOKE_PROMPT='plan-review doctor connectivity check.
+Reply with exactly: SMOKE OK
+Do not read files, run tools, or write anything.'
+
+# pr_doctor_check_smoke <adapter-map> <deadline-secs>
+#
+# One live prompt per reviewer in the map, through the adapter contract exactly
+# as a round sends one: same argv, prompt on stdin, the pr_sandbox_* workdir
+# layout under a throwaway session key, capped and group-swept by the same core
+# as every other probe. Sequential on purpose: the pr_d_* counters are parent
+# state, and roster × deadline is an accepted worst case for an opt-in
+# diagnostic -- the round's fan-out exists to overlap 15-minute reviews, not
+# 90-second pings. Custom adapters are smoked too: they are in the roster, so
+# a round would run them.
+pr_doctor_check_smoke() {
+  local map="$1" secs="$2"
+  # Without a cap, the hung-login case this check exists to catch would hang
+  # the doctor itself. Uncounted, like every skip: timeout's absence is already
+  # a Tier A failure, and counting it again would report one problem as two.
+  if ! pr_doctor_have timeout; then
+    pr_d_skip "smoke: timeout(1) is missing; an uncapped live call could hang the doctor"
+    return 0
+  fi
+  local key="doctor-smoke.$$" pair reviewer rc=0
+  for pair in $map; do
+    reviewer="${pair%%=*}"
+    _pr_doctor_smoke_one "$reviewer" "${pair#*=}" "$secs" "$key" || rc=1
+  done
+  # Empty when every reviewer passed and was discarded; kept otherwise.
+  rmdir "$(pr_session_cache_dir "$key")" 2> /dev/null
+  return "$rc"
+}
+
+# _pr_doctor_smoke_one <reviewer> <adapter-path> <deadline-secs> <session-key>
+_pr_doctor_smoke_one() {
+  local reviewer="$1" adapter="$2" secs="$3" key="$4"
+  local dir workdir tmp
+  dir="$(pr_sandbox_dir "$key" "$reviewer")"
+  workdir="$(pr_sandbox_repo "$key" "$reviewer")"
+  tmp="$(pr_sandbox_tmp "$key" "$reviewer")"
+  local review="$dir/review.md" meta="$dir/meta" reason="$dir/reason" log="$dir/log.txt"
+
+  # The round's workdir layout by construction -- the same pr_sandbox_* paths a
+  # round hands its adapters, under the PR_CACHE_ROOT that Tier A already
+  # verified writable -- minus the repo copy a ping has no use for. No git
+  # init: codex passes --skip-git-repo-check and the other three only cd or
+  # bind the directory.
+  if ! mkdir -p "$tmp" 2>/dev/null; then
+    pr_d_fail "smoke: $reviewer: cannot create $workdir"
+    return 1
+  fi
+
+  # PR_TIMEOUT_SECS is the SMOKE deadline for this call: adapters/agy.sh
+  # derives its inner --print-timeout from it, and the round's 900s default
+  # would put the inner deadline far outside the outer one. TMPDIR per the
+  # adapter contract: a private directory inside the workdir.
+  local rc timed_out=0
+  _pr_doctor_run_capped "${PR_KILL_GRACE_SECS:-15}" "$secs" \
+    env PR_TIMEOUT_SECS="$secs" TMPDIR="$tmp" \
+    bash "$adapter" "$workdir" "" "$review" "$meta" "$reason" \
+    <<< "$PR_DOCTOR_SMOKE_PROMPT" > "$log" 2>&1
+  rc=$?
+  [[ "$rc" -eq 124 || "$rc" -eq 137 ]] && timed_out=1
+
+  # Judge on output, not the exit code alone -- the round's rule: Cursor exits
+  # 2 on a denied tool call while still producing a correct review (D7).
+  if [[ -s "$review" ]]; then
+    pr_d_pass "smoke: $reviewer answered end to end"
+    # A smoke session has no next round to carry state into, so the whole
+    # directory -- adapter config included -- is discardable, which a round's
+    # sandbox (lib/sandbox.sh) deliberately is not. PR_KEEP_SANDBOX means here
+    # what it means there: keep the evidence whatever happened.
+    [[ "${PR_KEEP_SANDBOX:-0}" != 1 ]] && rm -rf "$dir"
+    return 0
+  fi
+
+  # An adapter that knows why outranks anything inferred from an exit code --
+  # first line only, truncated, exactly as the runner reads reason_out.
+  local detail=""
+  if [[ -s "$reason" ]]; then
+    IFS= read -r detail < "$reason"
+    detail="${detail%$'\r'}"
+    detail="${detail:0:200}"
+  fi
+  local why="exit $rc"
+  (( timed_out )) && why="timed out after ${secs}s"
+  pr_d_fail "smoke: $reviewer produced no output ($why${detail:+ — $detail})"
+  if (( timed_out )); then
+    pr_d_info "A trivial prompt should not need the round's deadline; a hang here"
+    pr_d_info "usually means an interactive login prompt the auth check cannot reach."
+  fi
+  pr_d_info "kept for diagnosis: $dir"
   return 1
 }
 
