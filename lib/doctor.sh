@@ -216,13 +216,15 @@ pr_doctor_check_cli() {
   # ~/.local/share/claude/versions/<version> -- and that directory is on an
   # interactive PATH via a shell rc file, which a non-interactive shell never
   # reads. ~/.claude/local/claude, what the old npm `migrate-installer` left
-  # behind (alias-only, so invisible to any non-interactive shell), does not
-  # exist on this machine at all; it is worth one clause, not the headline.
+  # behind (alias-only, so invisible to any non-interactive shell), does NOT
+  # exist on this machine -- so that half is documented rather than observed,
+  # which is why the hint says "documented at" and README.md says the same. It is
+  # worth one clause, not the headline.
   # A string branch rather than a lookup table: this file is builtins-only, and
   # one exception does not earn a table.
   local hint=""
   [[ "$cli" == claude ]] && \
-    hint=" (usually ~/.local/bin/claude with that directory missing from PATH; legacy installs live at ~/.claude/local/claude)"
+    hint=" (usually ~/.local/bin/claude with that directory missing from PATH; legacy installs are documented at ~/.claude/local/claude)"
   pr_d_fail "$cli not on PATH$hint"
   pr_d_info "$(pr_doctor_cli_note "$cli"), or drop that reviewer from the roster"
   pr_d_info "by setting PR_ADAPTER_MAP to the pairs you do want."
