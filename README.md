@@ -10,6 +10,17 @@ between three terminals.
 and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well, if `agy` or `claude` is in the
 roster — see the `bwrap` note below and "Reviewer roster".
 
+**`claude` is the one that is usually installed and still not found.** Measured on
+2026-08-26: the native installer puts the binary at `~/.local/bin/claude`, a symlink into
+`~/.local/share/claude/versions/<version>`. If `plan-review doctor` says `claude not on PATH`
+while `claude` works in your terminal, the directory is on your *interactive* `PATH` — a shell
+rc file — and a non-interactive shell never reads it; put `~/.local/bin` somewhere every shell
+sees. An older npm install migrated with `claude migrate-installer` instead leaves a shell
+**alias** plus a binary at `~/.claude/local/claude`; an alias is invisible to everything here, so
+that one needs a symlink from a directory that is on `PATH`. Both locations were checked on this
+machine on that date; neither installer's future layout is promised here, so if `claude` is
+elsewhere, `command -v claude` in a non-interactive shell is the question the doctor is asking.
+
 5 is what `make doctor` enforces and it is a support statement rather than a measured
 requirement: nothing here uses a construct newer than `bash` 4 (`${x^^}`, `mapfile`,
 `printf %()T`), so 4.4 would very likely run — it is simply never tested. Its practical job
