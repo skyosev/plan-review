@@ -98,7 +98,8 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   never fires at all for an adapter that exits cleanly, which is why the group
   kill is not conditional on the timeout; `PR_KILL_GRACE_SECS` therefore covers
   the adapter only, not its descendants. But the group sweep alone reaches the
-  spawned command of **neither shipped reviewer** (P6, `docs/process/probes/2026-08-26-roster-sweep-reach/`):
+  spawned command of **no shipped reviewer**
+  (P6, `docs/process/probes/2026-08-26-roster-sweep-reach/`):
   `agy`/`claude` are contained by their adapters' bwrap, `codex` by its own
   `--as-pid-1`, and `agent` by nothing — its tool layer takes its own process
   group *and* session. So `wait` is polled: each tick walks a `ps -eo pid=,ppid=`
@@ -121,12 +122,14 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   inherited session lock, and later operations on that session fail closed until
   it exits — the accepted availability cost. Nothing in the poller closes a
   descriptor. `ps` is therefore a core utility (`PR_DOCTOR_UTILS`), though that
-  is a presence check and busybox's `ps` rejects `-eo`, which degrades silently. macOS descendant cleanup is unverified live (first row of the macOS
-  cycle). The round (`lib/reviewer-runner.sh`) and `doctor --smoke` both spawn
+  is a presence check and busybox's `ps` rejects `-eo`, which degrades silently.
+  macOS descendant cleanup is unverified live (first row of the macOS cycle).
+  The round (`lib/reviewer-runner.sh`) and `doctor --smoke` both spawn
   through the kernel — the smoke's call guarded by `declare -F` so the stub-PATH
   doctor tests stay green, and the smoke deliberately does *not* publish (it keeps
-  no record and judges only alive/dead, so the finality rule above is the round's); `pr_doctor_run` keeps its own synchronous two-stream
-  capture — the opposite discipline, deliberately not unified.
+  no record and judges only alive/dead, so the finality rule above is the
+  round's); `pr_doctor_run` keeps its own synchronous two-stream capture — the
+  opposite discipline, deliberately not unified.
 - **Round state machine** lives in `lib/round.sh`; every mutation of `round.json` happens
   serially in the parent after `wait`, never in a reviewer background job.
 - **The reviewer runner** (`lib/reviewer-runner.sh`) owns the fan-out:

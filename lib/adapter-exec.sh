@@ -48,7 +48,13 @@
 #
 # The sweep is UNCONDITIONAL, not post-timeout: --kill-after never fires for
 # an adapter that exits cleanly, so a descendant it leaked would otherwise
-# outlive the caller. (The smoke's core always swept this way; the round's copy
+# outlive the caller and could still append to artifacts already read. The
+# round now publishes the REVIEW out of the survivor's reach
+# (lib/reviewer-runner.sh) and that is the artifact its judgment rests on --
+# but publication covers the review and only the review: <meta_out>,
+# <reason_out> and the log are read in place, so for those three this sweep is
+# still the only thing standing between a survivor and a file already read.
+# (The smoke's core always swept this way; the round's copy
 # swept only on timeout, which left exactly that gap.) Harmless when nothing
 # survived: the group is already empty. The price: descendants never get the
 # grace, only the direct child does -- buffered review text and vendor session
