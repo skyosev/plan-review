@@ -11,11 +11,16 @@
 set -uo pipefail
 workdir="$1"; review_out="$3"; meta_out="$4"
 cat > /dev/null
-me="$(basename "$(dirname "$workdir")")"
+me="${workdir%/*}"; me="${me##*/}"
 : > "$PR_TEST_HANDSHAKE_DIR/$me"
+# Forkless poll: a glob into $@ counts the markers without ls, wc or a
+# subshell, which matters only in the failing (serialised) case -- there the
+# loop runs its full 10s instead of a tick or two.
+shopt -s nullglob
 n=0
 for ((i = 0; i < 200; i++)); do
-  n="$(ls "$PR_TEST_HANDSHAKE_DIR" | wc -l)"
+  set -- "$PR_TEST_HANDSHAKE_DIR"/*
+  n=$#
   (( n >= 2 )) && break
   sleep 0.05
 done

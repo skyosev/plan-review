@@ -82,7 +82,14 @@ pr_test_mkstub() {
 # from leaking a 30-300s sleeper into the rest of the suite.
 assert_pid_gone() {
   local pid="$1" msg="$2"
-  sleep 1
+  # Polled rather than slept flat: the same 1s ceiling, but the usual case --
+  # the kernel has already reaped the target -- costs ~20ms instead of a full
+  # second, and six call sites of a flat sleep were ~6s of the suite's runtime.
+  local i
+  for ((i = 0; i < 50; i++)); do
+    kill -0 "$pid" 2> /dev/null || return 0
+    sleep 0.02
+  done
   if kill -0 "$pid" 2> /dev/null; then
     kill -9 "$pid" 2> /dev/null
     pr_fail "$msg (pid $pid still alive)"

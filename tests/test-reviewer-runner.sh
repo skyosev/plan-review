@@ -73,7 +73,7 @@ test_run_all_refuses_an_incomplete_contract_before_spawning() {
   out="$(pr_reviewer_run_all "codex=$FAKES/fake-ok.sh" 2>&1)"; rc=$?
   assert_exit_code "$rc" 2 "a broken contract is a refusal"
   assert_contains "$out" "session_map" "and the refusal names the variable"
-  assert_eq "$(cat "$status_file")" "" "nothing spawned: no status event"
+  assert_eq "$(< "$status_file")" "" "nothing spawned: no status event"
   assert_file_missing "$round_dir/.result-codex" "and no record was written"
 }
 
