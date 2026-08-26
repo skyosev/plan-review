@@ -75,8 +75,8 @@ pr_test_mkstub() {
 }
 
 # assert_pid_gone <pid> <msg>
-# Three tests across two files assert that a process-group sweep disposed of a
-# grandchild, so the shape is written once. The grace second is not decoration:
+# Several tests across the runner, kernel and doctor suites assert that a
+# process-group sweep disposed of a grandchild, so the shape is written once. The grace second is not decoration:
 # the sweep is a SIGKILL the parent does not wait on, so the kernel may not have
 # reaped the target by the time the runner returns. The kill -9 keeps a failure
 # from leaking a 30-300s sleeper into the rest of the suite.

@@ -34,7 +34,8 @@
 # mode -- the same reason tests/test-doctor.sh passes PATH as an argument. env
 # execs the adapter's bash in place, so it adds no process to the group and
 # touches no descriptor. PR_KILL_GRACE_SECS (default 15) is read from the
-# environment: both callers already hold it there.
+# caller's shell: both callers already hold it there, and this function runs
+# in that same shell, so no export is needed.
 #
 # `timeout` puts ITSELF in a new process group and sends TERM to that whole
 # group on expiry, then SIGKILL after the grace -- but only while the direct

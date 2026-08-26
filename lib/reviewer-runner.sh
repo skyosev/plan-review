@@ -98,8 +98,7 @@ _pr_reviewer_exit_detail() {
 # --- run one reviewer --------------------------------------------------------
 # Internal: a public run-one would bypass the contract validation and be exposed
 # to exactly the unset-variable, missing-record failure it exists to prevent.
-# One production caller (the fan-out below); tests may still exercise it
-# deliberately.
+# One production caller (the fan-out below).
 # _pr_reviewer_run_one <reviewer> <adapter>
 _pr_reviewer_run_one() {
   local reviewer="$1" adapter="$2"

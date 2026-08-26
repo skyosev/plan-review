@@ -84,7 +84,10 @@ test_run_all_refuses_an_incomplete_contract_before_spawning() {
 test_run_all_runs_reviewers_concurrently() {
   local d; d="$(pr_test_tmpdir)"
   setup_session "$d"
-  export PR_TEST_HANDSHAKE_DIR="$d/hs"
+  # local -x, not export: the fixture is a separate process and must find this
+  # in its environment, but the variable dies with this function instead of
+  # leaking a stale marker dir into a second handshake test.
+  local -x PR_TEST_HANDSHAKE_DIR="$d/hs"
   mkdir -p "$PR_TEST_HANDSHAKE_DIR"
   PR_TIMEOUT_SECS=20
   pr_reviewer_run_all "alpha=$FAKES/fake-handshake.sh beta=$FAKES/fake-handshake.sh"
