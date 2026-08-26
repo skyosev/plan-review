@@ -77,8 +77,10 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   path reaches it through preflight and never runs the doctor's own tail.
 - **The session lock** (`lib/lock.sh`) is an `flock` on `<session>/.lock`, taken before
   anything is read and inherited by every spawned process — that inheritance is the
-  mechanism, so never close descriptors or sanitise the environment in the fan-out path
-  of `libexec/plan-review-round.sh`.
+  mechanism, so never close descriptors in the fan-out path (`lib/reviewer-runner.sh`,
+  `lib/adapter-exec.sh`). Environment sanitisation is independent of the lock —
+  `adapters/claude.sh` rebuilds its environment from a whitelist while the lock fd,
+  deliberately not CLOEXEC, rides through.
 - **`adapters/agy.sh` passes `--print-timeout $((PR_TIMEOUT_SECS * 900))ms`** — 90% of
   the runner's deadline, in milliseconds so the inner deadline stays strictly below the
   outer one even at `PR_TIMEOUT_SECS=1`. Without it agy applies its own 5m0s default
@@ -90,15 +92,26 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
 - **R1: a reviewer forfeits its resume handle on a timeout *or* a failure**, and only
   its own. The parent branches on the `timed_out` field the child records, not on
   `status` — a timed-out reviewer with partial output is still `ok` but must not resume.
-- **The round fan-out sweeps the reviewer's process group** (`kill -KILL -- -$timeout_pid`)
-  on timeout, before any artifact is read — `timeout --kill-after` stops escalating once
-  the direct child is reaped, so a TERM-ignoring grandchild otherwise survives and can
-  still append to `review-<reviewer>.md`. `PR_KILL_GRACE_SECS` therefore covers the
-  adapter only, not its descendants. The doctor's probes and its `--smoke` pings share
-  the same discipline through `_pr_doctor_run_capped` (`lib/doctor.sh`); the round keeps
-  its own copy because its comments carry the fan-out's descriptor-inheritance contract.
+- **The execution kernel sweeps the adapter's process group unconditionally**
+  (`kill -KILL -- -$pid` after `wait`, `lib/adapter-exec.sh`), before any artifact
+  is read — `timeout --kill-after` stops escalating once the direct child is
+  reaped, so a TERM-ignoring grandchild otherwise survives and can still append to
+  `review-<reviewer>.md`; and it never fires at all for an adapter that exits
+  cleanly, which is why the sweep is not conditional on the timeout.
+  `PR_KILL_GRACE_SECS` therefore covers the adapter only, not its descendants. The
+  round (`lib/reviewer-runner.sh`) and `doctor --smoke` both spawn through the
+  kernel — the smoke's call guarded by `declare -F` so the stub-PATH doctor tests
+  stay green; `pr_doctor_run` keeps its own synchronous two-stream capture — the
+  opposite discipline, deliberately not unified.
 - **Round state machine** lives in `lib/round.sh`; every mutation of `round.json` happens
   serially in the parent after `wait`, never in a reviewer background job.
+- **The reviewer runner** (`lib/reviewer-runner.sh`) owns the fan-out:
+  `pr_reviewer_run_all` is the only public entry and validates the module's
+  variable contract (fourteen caller variables, listed in the module header)
+  before the first spawn, then waits on collected pids — never bare `wait`, which
+  in a sourced function would reap a caller's unrelated job. The round caller
+  reads each record through `pr_reviewer_result_read` and keeps every
+  `round.json` and session-map mutation serial, in the parent.
 - **Confinement is per-adapter and not uniform**: codex and Cursor confine themselves;
   `agy` and `claude` are wrapped in bubblewrap by their adapters and **fail closed** when
   `bwrap` is missing. `claude` additionally rebuilds the environment from a whitelist

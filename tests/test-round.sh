@@ -15,8 +15,11 @@ make_repo() {
   git -C "$root" commit -qm init
 }
 
-# Mirrors the runner's write_result. Kept here so the record's shape is asserted
-# in one place and these tests do not depend on libexec/plan-review-round.sh.
+# The fields pr_round_record_reviewer consumes -- seven of the producer's nine;
+# `discard` and `timed_out` are read only by the round caller's serial pass.
+# The full nine-field producer schema is asserted where the producer lives, in
+# tests/test-reviewer-runner.sh. Kept here so these tests do not depend on
+# lib/reviewer-runner.sh.
 # result_file <path> <status> <detail> <verdict> <session> <model> <effort> <cli>
 result_file() {
   jq -n --arg status "$2" --arg detail "$3" --arg verdict "$4" \
