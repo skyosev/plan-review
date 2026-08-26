@@ -13,6 +13,7 @@ complete — read the relevant section before changing behaviour it documents.
 
     make test                     # whole suite: bash tests/run-tests.sh
     bash tests/test-round.sh      # one file — that is the finest granularity
+    PR_TEST_BASH32=1 bash tests/test-bootstrap.sh   # + the 3.2 refusal, in docker
     PR_ORCHESTRATOR=none make doctor
     PR_ORCHESTRATOR=none make doctor OFFLINE=1     # no auth/model-list calls
     bin/plan-review doctor --repo <dir> --show-config
@@ -20,7 +21,9 @@ complete — read the relevant section before changing behaviour it documents.
 The suite is offline and takes seconds: every test drives the runner with fake adapters
 from `tests/fixtures/adapters/` via `PR_ADAPTER_MAP`, so nothing costs tokens. There is
 no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
-`test_*` function in the sourcing file.
+`test_*` function in the sourcing file. Anything that would break "offline and seconds"
+is opt-in behind a flag and skips by default — `PR_TEST_BASH32=1` is the only one, and it
+is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
 
 `PR_ORCHESTRATOR` (`codex|agent|agy|claude|none`) is required by `round`, `doctor` and
 `init`, deliberately with no default.

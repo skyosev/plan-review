@@ -448,4 +448,36 @@ test_a_missing_npx_warns_and_the_install_still_succeeds() {
   assert_not_contains "$out" "skills remove" "and no removal line for a skill never installed"
 }
 
+# The bash-5 refusal is the one thing in this file no stub can reach:
+# BASH_VERSINFO belongs to the running shell, so the only way to exercise it is
+# to run the script under a real 3.2. Hence a container -- and hence a case that
+# is opt-in.
+#
+# Opt-in: pulls a container image, so it must never run inside `make test`'s
+# offline, seconds-long promise. PR_TEST_BASH32=1 is the operator saying "spend
+# the time"; docker is then a skip, not a failure.
+test_bash32_host_refusal_is_the_one_install_sh_promises() {
+  if [ "${PR_TEST_BASH32:-0}" != 1 ]; then
+    PR_TESTS_SKIPPED=$((PR_TESTS_SKIPPED + 1))
+    printf '  SKIP %s: set PR_TEST_BASH32=1\n' "$PR_CURRENT_TEST"
+    return 0
+  fi
+  pr_test_requires docker || return 0
+  # A stub git, because main checks for git BEFORE preflight_host and the
+  # bash:3.2 image (measured 2026-08-26: bash 3.2.57, busybox readlink -f
+  # resolves, no git) would otherwise be refused for the wrong reason. Nothing
+  # ever runs it -- preflight_host dies two lines later -- it exists only so
+  # `command -v git` finds something. The mount stays read-only, so the stub is
+  # written into the container's own /tmp.
+  local out rc=0
+  out="$(docker run --rm -v "$PR_ROOT:/w:ro" bash:3.2 bash -c '
+    mkdir -p /tmp/stub
+    printf "#!/bin/sh\nexit 0\n" > /tmp/stub/git
+    chmod +x /tmp/stub/git
+    PATH=/tmp/stub:$PATH exec bash /w/scripts/install.sh' 2>&1)" || rc=$?
+  assert_exit_code "$rc" 1 "a 3.2 host is refused, not half-installed"
+  assert_contains "$out" "too old; plan-review needs 5" \
+    "and the refusal is the bash-version one, printed by 3.2 itself"
+}
+
 pr_run_tests
