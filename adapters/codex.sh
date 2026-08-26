@@ -95,7 +95,17 @@ if ! grep -qF "sandbox: $PR_EXPECTED_SANDBOX" "$err"; then
   echo "codex adapter: expected 'sandbox: $PR_EXPECTED_SANDBOX' in the banner." >&2
   echo "Got:" >&2
   grep -i '^sandbox:' "$err" >&2 || echo "(no sandbox line at all)" >&2
-  pr_reason "codex ran under an unexpected sandbox; the review was discarded"
+  # The banner is also absent when codex never started, and the commonest
+  # reason for that is the operator's own config: codex runs --strict-config
+  # here, so one field this codex version rejects takes the reviewer out with a
+  # config error and no banner. The symptom ("unexpected sandbox") names no
+  # file, so the likeliest cause is spelled out beside it. Said twice on
+  # purpose -- once here for whoever reads the log, once in the reason below,
+  # which is what the round's summary shows; adapters source nothing, so there
+  # is no shared constant to hold it.
+  echo "codex adapter: if codex printed a config error above, the likeliest cause is a" >&2
+  echo "  ~/.codex/config.toml field this codex version rejects (--strict-config)." >&2
+  pr_reason "codex ran under an unexpected sandbox; the review was discarded (if codex refused to start, check ~/.codex/config.toml for a field it rejects)"
   rm -f "$review_out"
   exit 1
 fi

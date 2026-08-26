@@ -162,11 +162,17 @@ test_unexpected_sandbox_header_aborts_with_no_review() {
   install_stub "$d/bin" "sandbox: danger-full-access"
   mkdir -p "$d/work"
   echo "prompt" | PATH="$d/bin:$PATH" \
-    bash "$PR_ROOT/adapters/codex.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > "$d/out.txt" 2>&1
+    bash "$PR_ROOT/adapters/codex.sh" "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
   rc=$?
   assert_exit_code "$rc" 1 "aborts"
   assert_file_missing "$d/r.md" "no review written"
   assert_contains "$(cat "$d/out.txt")" "workspace-write [workdir]" "explains the expectation"
+  # The symptom names no file, so both the log and the reason -- the only line
+  # the round's summary shows -- must name the likeliest cause.
+  assert_contains "$(cat "$d/out.txt")" "~/.codex/config.toml" \
+    "the log names the file the operator has to look in"
+  assert_contains "$(cat "$d/reason.txt")" "~/.codex/config.toml" \
+    "and so does the reason carried back to the round"
 }
 
 # A missing banner is not a pass. --json suppresses it, and so would any future
