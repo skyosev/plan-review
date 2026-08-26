@@ -136,6 +136,22 @@ test_the_printed_removal_line_removes_the_checkout_and_nothing_else() {
   assert_file_missing "$d/pwned" "and did not run the substitution in its name"
 }
 
+# --bin-dir is passed through to `plan-review install`, which owns the link. The
+# three things worth asserting are the three that can break independently: the
+# flag reaches install at all, the link it wrote resolves into THIS checkout
+# (rather than some older plan-review on the machine), and the epilogue's
+# removal line names the same directory -- that last one is not free, because
+# the epilogue re-derives it from $bin_dir with its own default.
+test_bin_dir_flag_places_the_link_where_told() {
+  local d out; d="$(mk_case)"
+  out="$(run_bootstrap "$d" "$d/src" --bin-dir "$d/altbin")"
+  assert_file_exists "$d/altbin/plan-review" "the link landed in --bin-dir"
+  assert_eq "$(readlink -f "$d/altbin/plan-review")" \
+    "$(readlink -f "$(checkout_of "$d")/bin/plan-review")" \
+    "and it resolves into the checkout"
+  assert_contains "$out" "$d/altbin" "the epilogue's removal line names it"
+}
+
 test_help_exits_zero_and_touches_nothing() {
   local d out rc; d="$(mk_case)"
   out="$(run_bootstrap "$d" "$d/src" --help)"; rc=$?
@@ -227,6 +243,31 @@ test_ref_switches_the_checkout_between_runs() {
   assert_exit_code "$rc" 0 "the ref switch succeeded"
   head="$(git -C "$(checkout_of "$d")" rev-parse --abbrev-ref HEAD)"
   assert_eq "$head" "experiment" "the checkout moved to the named ref"
+}
+
+# The two halves of the split die on the upgrade path. They used to share one
+# message -- "no such ref after fetching" -- which sent someone hunting for a ref
+# that was sitting right there whenever the checkout itself was what failed.
+test_a_ref_that_does_not_exist_is_named_as_missing() {
+  local d out rc; d="$(mk_case)"
+  run_bootstrap "$d" "$d/src" > /dev/null 2>&1
+  out="$(run_bootstrap "$d" "$d/src" --ref no-such-branch)"; rc=$?
+  assert_exit_code "$rc" 1 "a missing ref is fatal"
+  assert_contains "$out" "no such ref after fetching: no-such-branch" "and is named as missing"
+}
+
+# An index.lock is what a concurrent git leaves -- including a second copy of
+# this installer running right now, which is the case the message is written for.
+test_a_checkout_that_cannot_run_is_not_reported_as_a_missing_ref() {
+  local d out rc; d="$(mk_case)"
+  git -C "$d/src" branch experiment > /dev/null 2>&1
+  run_bootstrap "$d" "$d/src" > /dev/null 2>&1
+  : > "$(checkout_of "$d")/.git/index.lock"
+  out="$(run_bootstrap "$d" "$d/src" --ref experiment)"; rc=$?
+  assert_exit_code "$rc" 1 "the failed checkout is fatal"
+  assert_contains "$out" "git checkout experiment failed" "and is named for what it was"
+  assert_contains "$out" "index lock" "with the cause that explains it"
+  assert_not_contains "$out" "no such ref" "and never as a missing ref"
 }
 
 test_a_dirty_checkout_is_refused() {
