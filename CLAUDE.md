@@ -94,9 +94,13 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   on timeout, before any artifact is read — `timeout --kill-after` stops escalating once
   the direct child is reaped, so a TERM-ignoring grandchild otherwise survives and can
   still append to `review-<reviewer>.md`. `PR_KILL_GRACE_SECS` therefore covers the
-  adapter only, not its descendants. The doctor's probes and its `--smoke` pings share
-  the same discipline through `_pr_doctor_run_capped` (`lib/doctor.sh`); the round keeps
-  its own copy because its comments carry the fan-out's descriptor-inheritance contract.
+  adapter only, not its descendants. `doctor --smoke` runs adapters through the
+  execution kernel (`lib/adapter-exec.sh` — spawn, deadline classification,
+  unconditional group sweep, prompt on stdin, raw facts out through namerefs),
+  guarded by `declare -F` so the stub-PATH doctor tests stay green. `pr_doctor_run`
+  keeps its own synchronous two-stream capture — the opposite discipline,
+  deliberately not unified. The round keeps its own copy of the spawn until the
+  reviewer-runner extraction lands.
 - **Round state machine** lives in `lib/round.sh`; every mutation of `round.json` happens
   serially in the parent after `wait`, never in a reviewer background job.
 - **Confinement is per-adapter and not uniform**: codex and Cursor confine themselves;

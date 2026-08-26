@@ -68,30 +68,6 @@ pr_d_section() {
 
 pr_doctor_have() { command -v "$1" > /dev/null 2>&1; }
 
-# _pr_doctor_run_capped <grace-or-empty> <secs> <cmd...>
-#
-# The capped-exec-and-sweep core under pr_doctor_run and the smoke tier — the
-# shared-core-behind-thin-shells shape the 2026-08-21 dispatch-layer note (C4)
-# reserved for the day a second caller landed on the same side of the capture
-# split. timeout(1) is backgrounded so $! names ITS pid, which is the process-
-# group id; the KILL sweep after wait is unconditional because it, not the
-# grace, is what disposes of a descendant that outlives the direct child —
-# --kill-after (passed as <grace> when the caller wants the TERM→KILL
-# escalation on the child itself) stops escalating once the direct child is
-# reaped (measured 2026-08-19). stdin, stdout and stderr are the caller's:
-# redirect at the call site. Requires timeout(1); callers own the fallback.
-# The round fan-out keeps its own copy in libexec/plan-review-round.sh, where
-# the comments carry the fan-out's descriptor-inheritance contract.
-_pr_doctor_run_capped() {
-  local grace="$1" secs="$2"; shift 2
-  local pid rc
-  timeout ${grace:+--kill-after="$grace"} "$secs" "$@" &
-  pid=$!
-  wait "$pid"; rc=$?
-  kill -KILL -- "-$pid" 2> /dev/null
-  return "$rc"
-}
-
 # Run with a wall-clock cap when timeout(1) exists, plain otherwise. The auth
 # checks reach the network; a hung one must not hang the doctor. timeout's own
 # absence is reported by pr_doctor_check_utils, so this degrades rather than dies.
@@ -112,10 +88,6 @@ _pr_doctor_run_capped() {
 # line looking for a digit -- can then return a token from a deprecation notice
 # instead of the version. Replaying keeps the choice where the caller makes it.
 #
-# The capped branch delegates to _pr_doctor_run_capped below, and the fallback
-# deliberately does not: the fallback child shares this shell's process group,
-# so the core's `-$pid` sweep would name nothing of ours.
-#
 # Builtins only, and that is a hard constraint, not a preference:
 # tests/test-doctor.sh runs Tier B checks with a stub directory as the ENTIRE
 # PATH. No mktemp, no cat. `rm` may be missing too, which is why the names are
@@ -124,10 +96,21 @@ _pr_doctor_run_capped() {
 pr_doctor_run() {
   local secs="$1"; shift
   local out="${TMPDIR:-/tmp}/pr-doctor-run.$$" err="${TMPDIR:-/tmp}/pr-doctor-err.$$"
-  local rc
+  local rc pid
   if pr_doctor_have timeout; then
-    _pr_doctor_run_capped "" "$secs" "$@" > "$out" 2> "$err"
-    rc=$?
+    # Backgrounded so $! names timeout's pid, which is the process-group id;
+    # the KILL sweep after wait is unconditional because it, not the grace, is
+    # what disposes of a descendant that outlives the direct child (measured
+    # 2026-08-19). The files above break a hung probe's descriptor chain; the
+    # sweep disposes of the probe itself. This used to be _pr_doctor_run_capped,
+    # shared with the smoke tier; the smoke now goes through lib/adapter-exec.sh
+    # and this synchronous capture is deliberately the discipline the kernel
+    # does not absorb. The fallback branch shares this shell's process group,
+    # so a `-$pid` sweep there would name nothing of ours.
+    timeout "$secs" "$@" > "$out" 2> "$err" &
+    pid=$!
+    wait "$pid"; rc=$?
+    kill -KILL -- "-$pid" 2> /dev/null
   else
     "$@" > "$out" 2> "$err"
     rc=$?
@@ -917,6 +900,14 @@ pr_doctor_check_smoke() {
     pr_d_skip "smoke: timeout(1) is missing; an uncapped live call could hang the doctor"
     return 0
   fi
+  # Guarded the way pr_doctor_check_rounds guards lib/round.sh: this file is
+  # sourceable with nothing beside it, and the smoke must say what is missing
+  # rather than die on an unset function. libexec/plan-review-doctor.sh always
+  # sources the kernel, so only a unit test can reach this skip.
+  if ! declare -F pr_adapter_exec > /dev/null; then
+    pr_d_skip "smoke: lib/adapter-exec.sh is not sourced; the smoke tier cannot run adapters"
+    return 0
+  fi
   local key="doctor-smoke.$$" pair reviewer rc=0
   for pair in $map; do
     reviewer="${pair%%=*}"
@@ -949,14 +940,14 @@ _pr_doctor_smoke_one() {
   # PR_TIMEOUT_SECS is the SMOKE deadline for this call: adapters/agy.sh
   # derives its inner --print-timeout from it, and the round's 900s default
   # would put the inner deadline far outside the outer one. TMPDIR per the
-  # adapter contract: a private directory inside the workdir.
-  local rc timed_out=0
-  _pr_doctor_run_capped "${PR_KILL_GRACE_SECS:-15}" "$secs" \
-    env PR_TIMEOUT_SECS="$secs" TMPDIR="$tmp" \
-    bash "$adapter" "$workdir" "" "$review" "$meta" "$reason" \
-    <<< "$PR_DOCTOR_SMOKE_PROMPT" > "$log" 2>&1
-  rc=$?
-  [[ "$rc" -eq 124 || "$rc" -eq 137 ]] && timed_out=1
+  # adapter contract: a private directory inside the workdir. Both travel as
+  # the kernel's trailing env words. PR_KILL_GRACE_SECS the kernel reads
+  # itself, with the same default this file used to pass.
+  local rc=0 timed_out=0
+  pr_adapter_exec "$adapter" "$workdir" "" "$review" "$meta" "$reason" \
+    "$log" "$secs" rc timed_out \
+    PR_TIMEOUT_SECS="$secs" TMPDIR="$tmp" \
+    <<< "$PR_DOCTOR_SMOKE_PROMPT"
 
   # Judge on output, not the exit code alone -- the round's rule: Cursor exits
   # 2 on a denied tool call while still producing a correct review (D7).

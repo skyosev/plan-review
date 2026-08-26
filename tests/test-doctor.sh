@@ -940,7 +940,8 @@ FAKES="$PR_ROOT/tests/fixtures/adapters"
 # workdirs with the pr_sandbox_* paths -- without it, a unit case would write
 # under the operator's real ~/.cache/plan-review.
 smoke_run() {  # smoke_run <map> [secs] [env-line]
-  doctor_run "$PATH" "PR_CACHE_ROOT='$(pr_test_tmpdir)/cache'
+  doctor_run "$PATH" "source '$PR_ROOT/lib/adapter-exec.sh'
+PR_CACHE_ROOT='$(pr_test_tmpdir)/cache'
 ${3:-}
 pr_doctor_check_smoke '$1' '${2:-5}'"
 }
@@ -980,6 +981,33 @@ test_smoke_times_out_a_hung_reviewer_and_sweeps_its_group() {
   assert_contains "$out" "timed out after 1s" "and the deadline is named"
   assert_file_exists "$pidfile" "the fake recorded its grandchild pid"
   assert_pid_gone "$(cat "$pidfile")" "grandchild survived; the smoke did not sweep the group"
+}
+
+# The regression the kernel refit fixes: the staged smoke backgrounded the
+# adapter behind a herestring with no explicit stdin redirect, and bash gave
+# the job /dev/null -- every real smoke ping would have sent an EMPTY prompt
+# (measured 2026-08-22; the fakes passed because they ignore prompt content).
+# fake-echo-prompt writes what it received, so this asserts delivery itself.
+test_smoke_delivers_the_prompt() {
+  local d out review; d="$(pr_test_tmpdir)"
+  out="$(smoke_run "codex=$FAKES/fake-echo-prompt.sh" 5 "export PR_KEEP_SANDBOX=1")"
+  assert_contains "$out" "counts 1 0 0" "the ping passes"
+  review=("$d"/cache/doctor-smoke.*/codex/review.md)
+  assert_file_exists "${review[0]}" "PR_KEEP_SANDBOX kept the workdir"
+  assert_contains "$(cat "${review[0]}")" "SMOKE OK" \
+    "the smoke prompt actually reached the adapter's stdin"
+}
+
+# The smoke needs lib/adapter-exec.sh the way pr_doctor_check_rounds needs
+# lib/round.sh; sourced alone (as the stub-PATH tests source this file) it must
+# say what is missing rather than die on an unset function. Reachable only from
+# a unit test: libexec/plan-review-doctor.sh always sources the kernel.
+test_smoke_skips_when_the_kernel_is_not_sourced() {
+  local out
+  out="$(doctor_run "$PATH" "PR_CACHE_ROOT='$(pr_test_tmpdir)/cache'
+pr_doctor_check_smoke 'codex=$FAKES/fake-ok.sh' 5")"
+  assert_contains "$out" "counts 0 0 0" "an uncounted skip, like the timeout skip"
+  assert_contains "$out" "adapter-exec" "names the missing module"
 }
 
 # The probe stub for the doctor-CLI cases: answers, and leaves a marker proving
