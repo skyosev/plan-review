@@ -61,15 +61,16 @@ pr_reviewer_result_path() { printf '%s/.result-%s' "$round_dir" "$1"; }
 # Every scratch name this module owns, retired in one place. The published
 # review and the reviewer log are NOT scratch and are deliberately absent.
 #
-# `.review-$1.scratch.log` is not a name this module composes: adapters/claude.sh
-# and adapters/agent.sh both derive `"${review_out}.log"`, which the contract
-# permits as a sibling diagnostic (docs/adapter-contract.md). Since the round
-# hands them the SCRATCH path, that lands here, hidden, and accumulates unless
-# this list retires it -- so it does. rm -f on a name no adapter wrote is free.
+# `.review-$1.scratch.log` was briefly on this list: adapters/claude.sh and
+# adapters/agent.sh derived `"${review_out}.log"`, which on the round path landed
+# here as a hidden file nothing swept. Sweeping it was the wrong half of the fix
+# -- it deleted the CLI's only stderr copy. Both adapters now inherit stderr into
+# <round>/log-<reviewer>.txt instead, so no shipped adapter derives a path from
+# review_out and there is nothing extra to retire. If one ever does again, the
+# contract (docs/adapter-contract.md) points here.
 pr_reviewer_scratch_rm() {
   rm -f "$round_dir/.result-$1" "$round_dir/.meta-$1" "$round_dir/.reason-$1" \
         "$round_dir/.prompt-$1.txt" "$round_dir/.review-$1.scratch" \
-        "$round_dir/.review-$1.scratch.log" \
         "$round_dir/review-$1.md.publish"
 }
 

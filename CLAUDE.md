@@ -20,11 +20,15 @@ complete — read the relevant section before changing behaviour it documents.
 
 The suite is offline and takes seconds: every test drives the runner with fake adapters
 from `tests/fixtures/adapters/` via `PR_ADAPTER_MAP`, so nothing costs tokens. "Seconds"
-is now the loosest it has been: the execution kernel's polled descendant sweep costs
-every `pr_adapter_exec` a minimum 0.05s tick plus a `ps` fork, which took the suite from
-44s to 62s (+41%, measured `d0d8177` vs the kernel branch). Budget for it before adding
-another per-adapter poll — the next such addition is the one that breaks the promise. There is
-no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
+is the loosest it has been: 51.6s at `d0d8177` (433 tests) against 62.3s at the kernel
+branch (455 tests) — **+21%**, measured 2026-08-27, two back-to-back runs each on a clean
+clone. Roughly half of that is the execution kernel's polled descendant sweep, which
+costs every `pr_adapter_exec` a minimum 0.05s tick plus a `ps` fork: stripping the poll
+loop at HEAD runs 56.8s, so the poll is ~5.5s and the remaining ~5.2s is simply the 22
+tests the branch added. Budget against the ~5.5s, not the whole delta, and weigh the next
+per-adapter poll before adding it.
+
+There is no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
 `test_*` function in the sourcing file. Anything that would break "offline and seconds"
 is opt-in behind a flag and skips by default — `PR_TEST_BASH32=1` is the only one, and it
 is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.

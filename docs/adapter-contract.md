@@ -27,11 +27,13 @@ Every adapter — real or fake — is invoked identically:
   to exactly the path you are given and to no other: the round hands adapters a
   scratch path and publishes a copy of it under its own name once the adapter has
   gone, so a survivor still writing cannot change the artifact the round recorded.
-  An adapter may derive a *sibling diagnostic* path from it — `adapters/claude.sh`
-  and `adapters/agent.sh` both write `<review_out>.log` — but nothing that is, or
-  could be mistaken for, the review. The round sweeps the derived `.log` names it
-  knows about (`pr_reviewer_scratch_rm`, `lib/reviewer-runner.sh`); a new one is a
-  new file left behind in the round directory, so add it there too.
+  Diagnostics do not belong on a derived path at all: write them to **stderr**,
+  which the round captures to `log-<reviewer>.txt`. No shipped adapter derives a
+  path from `<review_out>` — `claude` and `agent` each wrote a `<review_out>.log`
+  until 2026-08-27, which on the round path became a hidden dotfile beside the
+  scratch review that nothing named and nothing cleaned up. If you derive one
+  anyway, it is yours to clean up: the round sweeps only the scratch names it
+  composes itself (`pr_reviewer_scratch_rm`, `lib/reviewer-runner.sh`).
 - **`<meta_out>`** — exactly four lines, any of which may be empty:
 
       line 1   session handle to resume next round ('' if the CLI reports none)
