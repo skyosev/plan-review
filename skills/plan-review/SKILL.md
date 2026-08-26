@@ -228,6 +228,17 @@ meant.
   It deletes nothing; the round stays readable. If `abort` refuses because the session is
   locked, reviewers spawned by the dead runner are still writing — report that and wait
   rather than forcing anything.
+- The runner exits 2 with a message ending in `aborting` that names something it could
+  not write (`round.json`, a result record, the session map): the artifact store itself
+  is gone — a full disk or an unwritable `.plan-review/` — not a reviewer problem. The
+  round stopped mid-way and its artifacts are incomplete by definition, so do not read
+  verdicts out of them and do not retry until the user has fixed the disk or the
+  permissions. Report the message verbatim; the round directory stays for `abort`.
+- A reviewer's `detail` reads `reviewer result record missing` or `record invalid`: that
+  reviewer's job died without leaving a readable record, and the runner synthesized a
+  failed entry so `round.json` still lists it. Treat it as a failed reviewer — there is
+  no review to integrate — and mention it, because it means something killed the job
+  rather than the reviewer declining.
 - The runner exits 2 naming a key in `config.json`: the project config is invalid and no
   round was started. Show the user the message — it names the offending key — and fix the
   config or ask them to. Do not route around it with `PR_SKIP_CONFIG=1`.

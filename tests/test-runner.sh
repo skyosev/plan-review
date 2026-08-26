@@ -701,4 +701,51 @@ test_a_failed_discard_warns_without_failing_the_round() {
     "could not discard" "and recorded it in the artifact"
 }
 
+# Loss of the artifact store: the parent aborts hard with the error on stderr
+# rather than reaching awaiting_integration with an artifact it could not write.
+#
+# Measured before the guards (2026-08-26), with a second, healthy reviewer
+# alongside this one: the round printed "Round 1 complete" and exited 0 over a
+# round.json that still read {"state":"reviewing","reviewers":{}} while
+# review-codex.md sat beside it on disk.
+test_a_read_only_round_dir_aborts_hard() {
+  local d out rc=0; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  out="$(run_round "$d/target" "$d/cache" \
+    "codex=$FAKES/fake-ok-locks-artifacts.sh" 2>&1)" || rc=$?
+  # put the tree back before asserting, so a failure here cannot strand a
+  # read-only directory past this test (pr_run_tests chmods the tmproot too).
+  chmod -R u+w "$d/target/.plan-review" 2> /dev/null
+  assert_exit_code "$rc" 2 "store loss is a hard abort, not a completed round"
+  assert_contains "$out" "aborting" "with the error on stderr"
+  assert_not_contains \
+    "$(cat "$d/target/.plan-review"/*/round-1/round.json 2>/dev/null)" \
+    "awaiting_integration" "the round never claims a state it could not record"
+}
+
+# The late-failure half of unit A: everything succeeds except the final
+# .state = awaiting_integration edit. The guard lives at the call site in
+# libexec/plan-review-round.sh, and this test reaches it through the real
+# runner -- "Round complete" must not print over a state that never persisted.
+#
+# The seam is a PATH shim over jq that delegates every call except the one
+# carrying `awaiting_integration`: only pr_round_set_state's terminal edit ever
+# passes that string, so the reviewer records and the session map go through
+# untouched and the round reaches its final write intact.
+test_a_failed_terminal_state_write_aborts_hard() {
+  local d out rc=0; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  mkdir -p "$d/bin"
+  cat > "$d/bin/jq" <<SHIM
+#!/usr/bin/env bash
+for a in "\$@"; do [[ "\$a" == *awaiting_integration* ]] && exit 1; done
+exec "$(command -v jq)" "\$@"
+SHIM
+  chmod +x "$d/bin/jq"
+  out="$(PATH="$d/bin:$PATH" run_round "$d/target" "$d/cache" \
+    "codex=$FAKES/fake-ok.sh" 2>&1)" || rc=$?
+  assert_exit_code "$rc" 2 "a terminal state the store refused is a hard abort"
+  assert_not_contains "$out" "Round complete" "no completion claim without the write"
+  assert_eq "$(jq -r .state "$d/target/.plan-review"/*/round-1/round.json)" \
+    reviewing "the state on disk is the last one actually written"
+}
+
 pr_run_tests

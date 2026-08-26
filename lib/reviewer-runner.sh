@@ -89,6 +89,45 @@ pr_reviewer_result_read() {
       < "$(pr_reviewer_result_path "$1")")
 }
 
+# _pr_reviewer_result_valid <reviewer> -> 0, or 1 with "missing"/"invalid" on stdout.
+# jq -es over the nine fields AND their closed domains -- exactly one JSON
+# object, status from {ok, failed}, verdict from pr_parse_verdict's output set
+# or empty (a failed reviewer's) -- not existence or types alone: a truncated,
+# concatenated or hand-mangled record must not flow into round.json as
+# authoritative. detail/session/model/effort/cli stay free-form by design --
+# they are display strings, and inventing constraints for them would reject
+# tomorrow's legitimate vendor value.
+_pr_reviewer_result_valid() {
+  local rec; rec="$(pr_reviewer_result_path "$1")"
+  [[ -f "$rec" ]] || { printf 'missing'; return 1; }
+  jq -es 'length == 1 and (.[0] |
+          type == "object"
+          and ([.status, .detail, .verdict, .session, .model, .effort, .cli]
+               | all(type == "string"))
+          and ([.discard, .timed_out] | all(type == "boolean"))
+          and (.status | IN("ok", "failed"))
+          and (.verdict | IN("", "NO_MATERIAL_OBJECTIONS", "MINOR", "BLOCKING",
+                             "UNPARSEABLE")))' \
+    < "$rec" > /dev/null 2>&1 && return 0
+  printf 'invalid'
+  return 1
+}
+
+# pr_reviewer_result_ensure <reviewer>
+# The serial parent's guard: 0 = the record is present and valid; 1 = it was
+# not, and a synthesized failed record now stands in its place (detail says
+# "record missing" or "record invalid" -- the diagnosis differs); 2 = the store
+# refused the synthesized write too, which is no longer a reviewer-scoped
+# failure and the caller must abort rather than promise a coherent artifact.
+pr_reviewer_result_ensure() {
+  local why
+  why="$(_pr_reviewer_result_valid "$1")" && return 0
+  _pr_reviewer_result_write "$1" failed "reviewer result record $why" \
+    "" "" "" "" "" || return 2
+  pr_status_event "$status_file" "$1" failed "reviewer result record $why"
+  return 1
+}
+
 # What an exit code is allowed to be reported as.
 #
 # `exit 143` run by a script and death by SIGTERM are the same number through
@@ -131,8 +170,26 @@ _pr_reviewer_run_one() {
   # given this prompt at all is refused without first rsyncing a full copy of
   # the repository for it. pr_build_prompt reads only the artifact directory,
   # never the sandbox, so the order is free.
-  pr_build_prompt "$artifact_dir" "$round" "$reviewer" "$fresh_flag" \
-    "$criteria_initial" "$criteria_rereview" > "$prompt_file"
+  #
+  # A reviewer that cannot be given this prompt is refused before anything is
+  # rsynced or spawned -- a failed record and a reason, never an empty-stdin
+  # review. -s as well as the exit status: a function whose last write failed
+  # can still return 0, and the prompt is never legitimately empty (the
+  # instructions heredoc alone guarantees bytes).
+  #
+  # Measured before the guard existed (2026-08-26, a /dev/full symlink at
+  # $prompt_file): the write errors went to stderr, the failure was ignored,
+  # and the adapter was spawned reading that same descriptor -- /dev/full
+  # READS as an endless stream of NULs, so the reviewer got zero bytes where
+  # the plan should have been, wrote a review of nothing, and the round
+  # recorded it ok/MINOR. An empty prompt was the optimistic half of it.
+  if ! pr_build_prompt "$artifact_dir" "$round" "$reviewer" "$fresh_flag" \
+       "$criteria_initial" "$criteria_rereview" > "$prompt_file" 2>> "$log" \
+     || [[ ! -s "$prompt_file" ]]; then
+    pr_status_event "$status_file" "$reviewer" failed "prompt write failed"
+    _pr_reviewer_result_write "$reviewer" failed "prompt write failed" "" "" "" "" ""
+    return 0
+  fi
 
   # Keyed on the adapter PATH, never the reviewer name -- the rule
   # pr_doctor_preflight follows, and for the same reason: tests run fakes under
@@ -155,7 +212,21 @@ _pr_reviewer_run_one() {
     return 0
   fi
 
-  printf '\n\n\n' > "$meta_out"
+  # Checked for the same reason as the prompt: the meta pre-seed is what makes
+  # a short meta file readable as "empty lines", and a pre-seed that failed to
+  # write says the store under this reviewer is already broken.
+  #
+  # It is also what keeps the mapfile below off a file it cannot trust.
+  # Measured unguarded (2026-08-26, a /dev/full symlink at $meta_out): the
+  # failed printf was ignored, and `mapfile -t meta < "$meta_out"` then read
+  # the same device -- an endless NUL stream -- past 3GB RSS in twelve seconds
+  # and never returned. Nothing bounds that read: the kernel's deadline covers
+  # the adapter, not this child's own artifact reads.
+  if ! printf '\n\n\n' > "$meta_out" 2>> "$log"; then
+    pr_status_event "$status_file" "$reviewer" failed "meta pre-seed failed"
+    _pr_reviewer_result_write "$reviewer" failed "meta pre-seed failed" "" "" "" "" ""
+    return 0
+  fi
 
   local session_in rc=0 timed_out=0 timed_out_json=false
   session_in="$(pr_session_get "$session_map" "$reviewer")"

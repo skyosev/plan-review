@@ -458,6 +458,21 @@ What makes the review file final is not the sweep but **publication**: the adapt
 to a scratch file, and the runner copies it into place before reading anything from it. A
 survivor still writing to the scratch file cannot change the review the round recorded.
 
+**A write the runner cannot make is never reported as a round that worked.** Every
+critical write is checked, and the two ways one can fail are answered differently. A
+failure scoped to *one reviewer* fails that reviewer and nothing else: a prompt that
+cannot be written refuses to start that adapter at all rather than sending it an empty
+prompt, and a result record that is missing or unparseable becomes a synthesized `failed`
+entry (`reviewer result record missing` / `record invalid`) so `round.json` always
+carries every reviewer in the roster. Either way the resume handle is forfeited, like any
+other failure, and the round continues on the reviewers that worked. Loss of the
+**artifact store itself** — `round.json`, the session map or the runner's own record
+cannot be written, because the disk is full or the directory is not writable — is a hard
+abort: the runner prints what it could not write, ending in `aborting`, and exits 2. It
+does not print "Round complete" over an artifact it failed to record, and the state left
+in `round.json` is the last one that actually persisted, so the round is `abort`-able and
+readable exactly as any other unfinished one.
+
 **agy runs under a deadline of its own**, derived by the adapter as 90% of
 `PR_TIMEOUT_SECS` and passed as `--print-timeout`. Left unset, agy would apply its own
 `5m0s` default *inside* the runner's 900s and cut a long review short with nothing to

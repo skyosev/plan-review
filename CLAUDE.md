@@ -132,6 +132,21 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   opposite discipline, deliberately not unified.
 - **Round state machine** lives in `lib/round.sh`; every mutation of `round.json` happens
   serially in the parent after `wait`, never in a reviewer background job.
+- **Write integrity splits along the blast radius, not the call site.** There is no
+  `set -e` here, so every critical write is checked by hand, and the two failure kinds
+  get different answers. Reviewer-scoped (`lib/reviewer-runner.sh`): a prompt or meta
+  pre-seed that cannot be written fails *that* reviewer before the adapter is spawned —
+  measured 2026-08-26, an unchecked prompt write let the adapter read the same
+  `/dev/full` back as an endless NUL stream and file a review of nothing as `ok`, and an
+  unchecked meta pre-seed left the child's own `mapfile` reading that stream past 3GB
+  RSS under no deadline. Store-scoped (`libexec/plan-review-round.sh`): a `round.json`,
+  session-map or synthesized-record write that fails is a hard `exit 2` with `aborting`
+  on stderr — including the terminal `awaiting_integration` transition, because "Round
+  complete" printed over a state that never persisted is the lie the guard exists to
+  stop. The parent bridges the two with `pr_reviewer_result_ensure` (0 valid / 1
+  synthesized / 2 store lost), so `round.json` lists every reviewer in the roster or the
+  round does not claim to have finished. The all-failed path warns instead of escalating:
+  it already exits non-zero and makes no success claim.
 - **The reviewer runner** (`lib/reviewer-runner.sh`) owns the fan-out:
   `pr_reviewer_run_all` is the only public entry and validates the module's
   variable contract (fourteen caller variables, listed in the module header)

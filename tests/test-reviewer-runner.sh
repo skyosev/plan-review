@@ -186,4 +186,102 @@ test_the_runner_owns_its_scratch_names() {
   assert_file_exists  "$round_dir/review-codex.md" "the published review is not scratch"
 }
 
+# --- write integrity: the child guards ---------------------------------------
+
+# A reviewer that cannot be given its prompt must be refused, not fed empty
+# stdin. /dev/full through a symlink is the seam: opening succeeds, writing
+# fails, and -s on it is false -- no production hook needed.
+#
+# Measured on the unguarded code (2026-08-26): /dev/full is not merely an
+# unwritable file, it READS as an endless stream of NULs, so the adapter was
+# spawned and handed 64 zero bytes where the plan should have been, wrote a
+# review of nothing, and the round recorded it ok/MINOR. "Empty stdin" was the
+# optimistic reading of this path.
+test_a_failed_prompt_write_refuses_to_spawn_the_adapter() {
+  pr_test_requires /dev/full || return 0
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  ln -s /dev/full "$round_dir/.prompt-codex.txt"
+  pr_reviewer_run_all "codex=$FAKES/fake-echo-prompt.sh"
+  local status session discard timed_out
+  pr_reviewer_result_read codex status session discard timed_out
+  assert_eq "$status" failed "no prompt, no spawn"
+  assert_contains "$(jq -r .detail < "$round_dir/.result-codex")" "prompt" \
+    "the detail names the prompt write"
+  assert_file_missing "$round_dir/.review-codex.scratch" "the adapter never ran"
+}
+
+# Measured on the unguarded code: an unwritable meta pre-seed did not merely
+# lose the pre-seed -- the child then read the same /dev/full back with
+# `mapfile`, grew past 3GB RSS in twelve seconds and never returned, under no
+# deadline (the kernel's timeout covers the adapter, not this read). The guard
+# below is what keeps that read from ever being reached.
+test_a_failed_meta_preseed_is_a_reviewer_failure() {
+  pr_test_requires /dev/full || return 0
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  ln -s /dev/full "$round_dir/.meta-codex"
+  pr_reviewer_run_all "codex=$FAKES/fake-ok.sh"
+  local status session discard timed_out
+  pr_reviewer_result_read codex status session discard timed_out
+  assert_eq "$status" failed "a meta pre-seed that cannot be written fails the reviewer"
+}
+
+# --- write integrity: the parent's synthesis ---------------------------------
+
+test_ensure_synthesizes_a_missing_record() {
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  pr_reviewer_result_ensure ghost; local rc=$?
+  assert_exit_code "$rc" 1 "missing record reported as synthesized"
+  assert_eq "$(jq -r .status < "$round_dir/.result-ghost")" failed "synthesized failed"
+  assert_contains "$(jq -r .detail < "$round_dir/.result-ghost")" "record missing" \
+    "missing and invalid carry different details"
+}
+
+test_ensure_synthesizes_an_invalid_record() {
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  echo 'not json at all' > "$round_dir/.result-broken"
+  pr_reviewer_result_ensure broken; local rc=$?
+  assert_exit_code "$rc" 1 "invalid record reported as synthesized"
+  assert_contains "$(jq -r .detail < "$round_dir/.result-broken")" "record invalid" \
+    "the diagnosis differs from missing"
+}
+
+# Domain, not just shape: all nine fields present and typed, but a status
+# outside {ok, failed} must still be refused -- "banana" flowing into
+# round.json as authoritative is the failure type checking alone would pass.
+test_ensure_synthesizes_an_out_of_domain_record() {
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  _pr_reviewer_result_write banana ok "" MINOR s m e c
+  jq '.status = "banana"' < "$round_dir/.result-banana" \
+    > "$round_dir/.result-banana.tmp" \
+    && mv "$round_dir/.result-banana.tmp" "$round_dir/.result-banana"
+  pr_reviewer_result_ensure banana; local rc=$?
+  assert_exit_code "$rc" 1 "an out-of-domain status is invalid, not accepted"
+  assert_contains "$(jq -r .detail < "$round_dir/.result-banana")" "record invalid" \
+    "and synthesized as such"
+}
+
+test_ensure_accepts_a_valid_record_untouched() {
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  _pr_reviewer_result_write good ok "" MINOR s m e c
+  pr_reviewer_result_ensure good
+  assert_exit_code $? 0 "a valid record passes"
+  assert_eq "$(jq -r .status < "$round_dir/.result-good")" ok "and is not rewritten"
+}
+
+# Loss of the store itself: ensure cannot write its synthesized record either.
+test_ensure_reports_a_store_it_cannot_write() {
+  pr_test_requires /dev/full || return 0
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  ln -s /dev/full "$round_dir/.result-gone"
+  pr_reviewer_result_ensure gone
+  assert_exit_code $? 2 "an unwritable store is 2, not a synthesized 1"
+}
+
 pr_run_tests

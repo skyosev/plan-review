@@ -260,9 +260,21 @@ pr_reviewer_run_all "$adapter_map" || exit 2
 # parent, after all reviewers have finished. Nothing below races.
 ok_count=0
 for reviewer in $reviewer_keys; do
+  # Unit A's parent half: a reviewer whose record is missing or unparseable
+  # gets a synthesized failed entry -- handle forfeited below like any failure,
+  # round.json complete. rc 2 means the store itself refused the synthesized
+  # write: abort hard rather than promise a coherent artifact we cannot write.
+  pr_reviewer_result_ensure "$reviewer"
+  if [[ $? -eq 2 ]]; then
+    echo "cannot write a result record under $round_dir; aborting" >&2
+    exit 2
+  fi
   # round.json is written straight from the child's record, so no field list is
   # restated here. Only the values the parent actually branches on are read.
-  pr_round_record_reviewer "$round_dir" "$reviewer" "$(pr_reviewer_result_path "$reviewer")"
+  pr_round_record_reviewer "$round_dir" "$reviewer" "$(pr_reviewer_result_path "$reviewer")" || {
+    echo "cannot write round.json under $round_dir; aborting" >&2
+    exit 2
+  }
   pr_reviewer_result_read "$reviewer" status session discard timed_out_flag
   if [[ "$discard" == true ]]; then
     # Housekeeping, never a verdict on the round: a round that produced three
@@ -282,10 +294,17 @@ for reviewer in $reviewer_keys; do
   # recorded ok -- output is what we judge on -- but its vendor-side session
   # state was written by a process the sweep killed mid-run, which is precisely
   # what R1 exists to prevent. Hence timed_out is tested, not just status.
+  #
+  # Both halves abort rather than split the contract in two: a `set` that
+  # failed just loses a resume, but a `del` that failed leaves a forfeited
+  # handle in place for the next round to resume -- the exact poisoned resume
+  # R1 exists to prevent.
   if [[ "$timed_out_flag" != true && "$status" == ok ]]; then
-    pr_session_set "$session_map" "$reviewer" "$session"
+    pr_session_set "$session_map" "$reviewer" "$session" \
+      || { echo "cannot write the session map at $session_map; aborting" >&2; exit 2; }
   else
-    pr_session_del "$session_map" "$reviewer"
+    pr_session_del "$session_map" "$reviewer" \
+      || { echo "cannot write the session map at $session_map; aborting" >&2; exit 2; }
   fi
   # Counted separately from the handle rule above: a timed-out-but-usable review
   # still counts toward the round, as it always has.
@@ -304,12 +323,22 @@ while IFS= read -r dup; do
 done < <(pr_round_duplicate_model_warnings "$round_dir")
 
 if [[ "$ok_count" -eq 0 ]]; then
-  pr_round_set_state "$round_dir" aborted
+  # Reported, not escalated: this path already exits non-zero with its own
+  # message, and a state write that failed cannot make the news worse. The
+  # success path below is the one where an unrecorded state would be a lie.
+  pr_round_set_state "$round_dir" aborted \
+    || echo "warning: could not record the aborted state in $round_dir/round.json" >&2
   echo "All reviewers failed. Round $round preserved at $round_dir" >&2
   pr_status_render "$status_file" >&2
   exit 1
 fi
 
-pr_round_set_state "$round_dir" awaiting_integration
+# The success claim is gated on the write that backs it: printing "complete"
+# over a round.json that still says `reviewing` would tell the Integrator to
+# read an artifact the store never accepted.
+pr_round_set_state "$round_dir" awaiting_integration || {
+  echo "cannot record awaiting_integration in $round_dir/round.json; aborting" >&2
+  exit 2
+}
 echo "Round $round complete: $round_dir"
 pr_status_render "$status_file"
