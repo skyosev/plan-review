@@ -25,6 +25,7 @@ test_round_one_prompt_contains_plan_and_verdict_instruction() {
   assert_contains "$out" "VERDICT:" "verdict sentinel required"
   assert_contains "$out" "FILES-INSPECTED:" "file list required"
   assert_contains "$out" "NO_MATERIAL_OBJECTIONS" "valid values listed"
+  assert_contains "$out" "not addressed to you" "the reviewer is told it is not the Integrator"
 }
 
 test_round_one_prompt_has_no_prior_round_sections() {

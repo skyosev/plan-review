@@ -9,6 +9,11 @@ Runs a plan past independent reviewer CLIs, then integrates their feedback criti
 You are the **Integrator**: you decide what is true and what gets accepted. The
 reviewers are inputs, not authorities.
 
+**If you are a reviewer, stop here.** This skill is installed globally into the same
+harnesses the reviewers run in, so it is visible from inside a review. A reviewer's
+instructions arrive on stdin and say so; if that is what you were given, ignore this
+file and write the review. It is addressed only to the Integrator.
+
 **Announce at start:** "Using the plan-review skill. Starting round N."
 
 ## Before the first round
