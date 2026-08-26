@@ -190,12 +190,32 @@ _pr_reviewer_run_one() {
   # copy can leave a torn tail, accepted because every downstream read uses the
   # same immutable copy. An absent scratch publishes nothing and the size check
   # below fails the reviewer exactly as an absent review always has.
+  #
+  # <meta_out> is read BEFORE publication rather than beside the other judgment
+  # below, because the publication-failure record needs it: a reviewer that
+  # timed out and then failed to publish still timed out, and its model is
+  # still on disk. Its line order is the adapter contract; see
+  # docs/adapter-contract.md. Read as a whole: one builtin, and the positions
+  # stay visibly the contract's line numbers. A short file is not an error --
+  # an adapter that died before writing its version leaves fewer than four
+  # lines, and the missing ones are empty, exactly as the per-line reads left
+  # them.
+  local meta=()
+  [[ -r "$meta_out" ]] && mapfile -t meta < "$meta_out"
   if [[ -e "$review_scratch" ]]; then
     if ! cp "$review_scratch" "$review_out.publish" 2>> "$log" \
        || ! mv "$review_out.publish" "$review_out" 2>> "$log"; then
       pr_status_event "$status_file" "$reviewer" failed "review publication failed"
+      # Every fact the child holds, not just the ruling: `verdict` is empty
+      # because nothing was published to parse one from, and `discard` is
+      # false because a reviewer whose review could not be written is exactly
+      # the case whose sandbox is worth keeping. timed_out and the four meta
+      # lines are carried, so round.json does not claim a timed-out reviewer
+      # finished on time and the duplicate-model warning can still see this
+      # reviewer's model.
       _pr_reviewer_result_write "$reviewer" failed "review publication failed" \
-        "" "" "" "" ""
+        "" "${meta[0]-}" "${meta[1]-}" "${meta[2]-}" "${meta[3]-}" false \
+        "$timed_out_json"
       return 0
     fi
   fi
@@ -242,14 +262,6 @@ _pr_reviewer_run_one() {
   # and three concurrent unlocked read-modify-writes through a shared temp file
   # would drop handles or make one `mv` fail. The caller applies them serially
   # after the fan-out, using the session id carried in this record.
-  # <meta_out> line order is the adapter contract; see docs/adapter-contract.md.
-  # Read as a whole: one builtin, and the positions stay visibly the contract's
-  # line numbers. A short file is not an error -- an adapter that died before
-  # writing its version leaves fewer than four lines, and the missing ones are
-  # empty, exactly as the per-line reads left them.
-  local meta=()
-  [[ -r "$meta_out" ]] && mapfile -t meta < "$meta_out"
-
   # Whether this reviewer's repo copy can go. Decided here, where every input to
   # the decision -- rc, timed_out and the operator's PR_KEEP_SANDBOX, which a
   # background job of this shell sees just as the parent does -- is already in

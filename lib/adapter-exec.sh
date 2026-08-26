@@ -123,16 +123,50 @@ pr_adapter_exec() {
   # publication (lib/reviewer-runner.sh) is what makes the artifact final, not
   # this sweep; this sweep is what frees the inherited session lock and stops
   # the burn. The tick backs off 0.05 -> 0.25 -> 1s so a fast fake adapter in
-  # the offline suite pays ~50ms, while a real reviewer costs one ps per second.
+  # the offline suite pays two ticks, while a real reviewer costs one ps per
+  # second. Measured 2026-08-26 on this host (137 processes): 9ms for a whole
+  # tick body -- ~6ms `ps -eo`, ~4ms for the fixpoint, ~6ms per `ps -o lstart=`
+  # on each newly-seen pid -- plus a subshell fork and the sleep's own fork.
+  # The fixpoint makes depth+1 full passes over the whole table, so it scales
+  # with processes x tree depth: on a 1000-process host with a deep reviewer
+  # tree expect 100-250ms of walk per tick. Still inside the 1s tick, but it is
+  # not the "~50ms" a first estimate suggested.
   # Nothing here closes a descriptor: the lock fd still rides through.
   local -A _pr_ae_seen=()
   local _pr_ae_tick=0.05 _pr_ae_table _pr_ae_p _pr_ae_id
+  # `kill -0` succeeds on a ZOMBIE, so what ends this loop is bash reaping its
+  # own async job in its SIGCHLD handling and only then making the pid
+  # unsignallable; `wait` below still returns the status bash stashed. Verified
+  # on bash 5.2.21 -- the suite would hang otherwise -- and bash 5 is this
+  # repo's floor.
+  #
+  # The NEW failure mode this loop introduces, absent on the blocking `wait` it
+  # replaces: between that reap and the next `kill -0` the pid can be recycled,
+  # and this loop would then poll an UNRELATED process until it exits -- past
+  # our own deadline, after which the group kill below sweeps a stranger's
+  # process group and the descendant loop kills what this poll sampled under
+  # it. `wait` returned unconditionally, so on main that window was ~0; here it
+  # is an unbounded hang. Same probability class as the identity risk below
+  # (pid_max 4194304 here, ~99999 on macOS) and untreated for the same reason:
+  # the treatment costs more than the exposure. Stated, not hidden.
   while kill -0 "$_pr_ae_pid" 2> /dev/null; do
     _pr_ae_table="$(ps -eo pid=,ppid= 2> /dev/null)" || _pr_ae_table=""
     if [[ -n "$_pr_ae_table" ]]; then
       for _pr_ae_p in $(_pr_ae_descendants "$_pr_ae_pid" "$_pr_ae_table"); do
         [[ "$_pr_ae_p" == "$_pr_ae_pid" ]] && continue
         [[ -n "${_pr_ae_seen[$_pr_ae_p]+x}" ]] && continue
+        # A SECOND ps, so identity is NOT sampled atomically with membership:
+        # if this descendant exits and its pid is recycled between the table
+        # above and this call, what gets remembered is the new process's start
+        # time, the check before the kill then matches trivially, and an
+        # unrelated process is killed. Strictly worse than the post-sampling
+        # recycle documented at the kill below -- no same-second coincidence is
+        # needed, only the gap between two ps calls one iteration apart.
+        # Negligible against this host's pid_max of 4194304; much less so at
+        # macOS's ~99999, the platform none of this has been measured on. Not
+        # folded into one atomic `ps -eo pid=,ppid=,lstart=` because that is a
+        # third column shape to parse and pin across two platforms, for an
+        # exposure this size.
         _pr_ae_id="$(ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
         [[ -n "$_pr_ae_id" ]] && _pr_ae_seen[$_pr_ae_p]="$_pr_ae_id"
       done

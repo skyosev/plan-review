@@ -14,7 +14,12 @@ INIT="$PR_ROOT/bin/plan-review"
 # directory to the real PATH would leave whatever is installed on the machine
 # running the suite visible behind it, and "codex is not installed" would then
 # be a property of the developer's laptop rather than of the test.
-PR_INIT_TEST_UTILS="bash env dirname git jq mkdir mv readlink rm tail timeout cat sed"
+# `ps` is here for the doctor's core-utilities check, which init runs at the
+# end: it became a core utility on 2026-08-26 when the execution kernel's
+# descendant sweep started depending on it (lib/adapter-exec.sh). The doctor
+# derives its own list from $PR_DOCTOR_UTILS; this one is the second, silently
+# disagreeing copy the BACKLOG's "no shared fixture vocabulary" entry names.
+PR_INIT_TEST_UTILS="bash env dirname git jq mkdir mv readlink rm tail timeout cat sed ps"
 
 mkpath() {
   local d="$1" u real

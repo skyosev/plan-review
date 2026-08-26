@@ -128,6 +128,16 @@ test_publication_makes_the_review_immune_to_later_scratch_writes() {
   pr_reviewer_run_all "codex=$FAKES/fake-ok.sh"
   assert_file_exists "$round_dir/review-codex.md" "the review was published"
   local before; before="$(< "$round_dir/review-codex.md")"
+  # The load-bearing assertion, and the only one that separates publication
+  # from doing nothing at all: without publication the adapter writes
+  # review-codex.md itself and the append below creates a scratch file nobody
+  # reads, so the other three assertions pass over an unimplemented feature.
+  # It is equally what distinguishes cp+mv from a bare `mv`, which would leave
+  # no scratch behind -- and a bare mv is exactly the implementation this
+  # change exists to prevent, because a survivor holding the open scratch fd
+  # would then be writing into the PUBLISHED inode.
+  assert_file_exists "$round_dir/.review-codex.scratch" \
+    "the adapter wrote to scratch, and publication copied rather than moved it"
   echo "TAINT from a survivor" >> "$round_dir/.review-codex.scratch"
   assert_eq "$(< "$round_dir/review-codex.md")" "$before" \
     "the published review is the publication-time copy"
@@ -151,6 +161,12 @@ test_a_failed_publication_is_a_reviewer_failure() {
   assert_contains "$(jq -r .detail < "$round_dir/.result-codex")" \
     "publication" "and the detail says why"
   assert_file_missing "$round_dir/review-codex.md" "nothing was published"
+  # The record still carries the facts the child had in hand. Without this the
+  # eight-argument call defaults timed_out to false and blanks all four meta
+  # lines, so round.json would report a reviewer that timed out as on time and
+  # the duplicate-model warning could not see its model.
+  assert_eq "$(jq -r '.model, .cli | tostring' < "$round_dir/.result-codex" | tr '\n' ' ')" \
+    "fake-model-1 fake-cli-9.9 " "the meta the adapter wrote survives the failure"
 }
 
 # The module boundary: the round reaches the record through the accessor and

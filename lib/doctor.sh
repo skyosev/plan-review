@@ -156,9 +156,19 @@ pr_doctor_check_bash() {
 # `flock` is the session lock (lib/lock.sh). Not coreutils: util-linux on Linux,
 # and on macOS the separate discoteq `flock` formula, which is a different
 # program with the same name -- see the macOS note in docs/process/BACKLOG.md.
+# `ps` is the execution kernel's descendant sweep (lib/adapter-exec.sh): the
+# poller reads `ps -eo pid=,ppid=` every tick and `ps -o lstart= -p` per new
+# descendant. Load-bearing on the round path since 2026-08-26 -- without it the
+# kernel degrades to the group-only sweep, which P6 measured reaching the
+# spawned command of no shipped reviewer, so a round leaks the survivor AND
+# keeps the session lock. This is a PRESENCE check and presence is not
+# sufficiency: busybox `ps` exists and rejects `-eo`, which produces the same
+# silent degrade with the doctor still reporting the set present. Sufficiency
+# belongs to Tier E (`doctor --smoke`), which runs an adapter for real; this
+# tier stays a `command -v` over a stub PATH by design.
 # This list does NOT reach a round: pr_doctor_preflight never calls
 # pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
-PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock"
+PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps"
 
 pr_doctor_check_utils() {
   local u missing=()
@@ -170,7 +180,7 @@ pr_doctor_check_utils() {
     return 0
   fi
   pr_d_fail "missing core utilities: ${missing[*]}"
-  pr_d_info "Debian/Ubuntu: sudo apt install jq rsync git coreutils diffutils util-linux"
+  pr_d_info "Debian/Ubuntu: sudo apt install jq rsync git coreutils diffutils util-linux procps"
   pr_d_info "macOS: brew install jq rsync coreutils flock, then put the GNU names first:"
   pr_d_info "  PATH=\"\$(brew --prefix)/opt/coreutils/libexec/gnubin:\$PATH\""
   pr_d_info "without that PATH line coreutils installs as greadlink and gtimeout, and this"
@@ -951,6 +961,16 @@ _pr_doctor_smoke_one() {
 
   # Judge on output, not the exit code alone -- the round's rule: Cursor exits
   # 2 on a denied tool call while still producing a correct review (D7).
+  #
+  # $review is read in place: the smoke deliberately does NOT publish it the
+  # way lib/reviewer-runner.sh does. Publication exists so the round's record
+  # and its artifact describe the same bytes; the smoke keeps no record and
+  # judges only alive/dead, and the file is a diagnostic that is deleted three
+  # lines below on success. A survivor appending to it after the sweep could
+  # at worst turn a dead reviewer into a live-looking one -- which is the
+  # reviewer being alive, in the only sense this tier claims to measure. So
+  # CLAUDE.md's and README.md's "publication is what makes the review artifact
+  # final" is a statement about the ROUND, not about this.
   if [[ -s "$review" ]]; then
     pr_d_pass "smoke: $reviewer answered end to end"
     # A smoke session has no next round to carry state into, so the whole
