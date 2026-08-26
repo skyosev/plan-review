@@ -150,6 +150,10 @@ test_round_arg_dir_collapses_doubled_slashes() {
   mkdir -p "$d/art/round-1"; echo '{}' > "$d/art/round-1/round.json"
   assert_eq "$(pr_round_arg_dir --round "$d/art//round-1")" "$d/art/round-1" \
     "a doubled slash in a pasted path is collapsed, not echoed back"
+  # The ordering case. Collapse-after-strip leaves this one as `.../round-1/`:
+  # `%/` takes one slash and the collapse then finds no `//` to work on.
+  assert_eq "$(pr_round_arg_dir --round "$d/art//round-1//")" "$d/art/round-1" \
+    "a trailing doubled slash leaves no trailing slash behind either"
 }
 
 pr_run_tests

@@ -10,22 +10,25 @@ between three terminals.
 and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well, if `agy` or `claude` is in the
 roster — see the `bwrap` note below and "Reviewer roster".
 
-**`claude` is the one that is usually installed and still not found.** Measured on
-2026-08-26: the native installer puts the binary at `~/.local/bin/claude`, a symlink into
-`~/.local/share/claude/versions/<version>`. If `plan-review doctor` says `claude not on PATH`
-while `claude` works in your terminal, the directory is on your *interactive* `PATH` — a shell
-rc file — and a non-interactive shell never reads it; put `~/.local/bin` somewhere every shell
-sees. An older npm install migrated with `claude migrate-installer` instead leaves a shell
-**alias** plus a binary at `~/.claude/local/claude`; an alias is invisible to everything here, so
-that one needs a symlink from a directory that is on `PATH`. Both locations were checked on this
-machine on that date; neither installer's future layout is promised here, so if `claude` is
-elsewhere, `command -v claude` in a non-interactive shell is the question the doctor is asking.
-
 5 is what `make doctor` enforces and it is a support statement rather than a measured
 requirement: nothing here uses a construct newer than `bash` 4 (`${x^^}`, `mapfile`,
 `printf %()T`), so 4.4 would very likely run — it is simply never tested. Its practical job
 is catching macOS's `/bin/bash` 3.2. The one exception is `scripts/install.sh`, which runs
 under 3.2 on purpose, because it is the file that has to deliver that message.
+
+**`claude` is the one that is usually installed and still not found.** Measured here on
+2026-08-26: the native installer had put the binary at `~/.local/bin/claude`, a symlink into
+`~/.local/share/claude/versions/<version>`. If `plan-review doctor` says `claude not on PATH`
+while `claude` works in your terminal, that directory is on your *interactive* `PATH` — a shell
+rc file — and a non-interactive shell never reads it; put `~/.local/bin` somewhere every shell
+sees. The other location to know about is `~/.claude/local/claude`, which an npm install
+migrated with `claude migrate-installer` leaves behind together with a shell **alias** — an
+alias being invisible to everything here, that one needs a symlink from a directory on `PATH`.
+That path was checked on this machine on the same date and **does not exist here**, so the
+migrate-installer behaviour is reported from its documentation and not observed; only the
+native location above was seen. Neither installer's future layout is promised here — if
+`claude` is somewhere else again, `command -v claude` in a non-interactive shell is the
+question the doctor is actually asking.
 
 **macOS** ships `/bin/bash` 3.2 and none of the GNU utilities. Install the reviewer CLIs however
 their vendors say to, and `git` with the Xcode command line tools; the rest is one brew command,

@@ -141,7 +141,17 @@ test_the_printed_removal_line_removes_the_checkout_and_nothing_else() {
 # flag reaches install at all, the link it wrote resolves into THIS checkout
 # (rather than some older plan-review on the machine), and the epilogue's
 # removal line names the same directory -- that last one is not free, because
-# the epilogue re-derives it from $bin_dir with its own default.
+# the epilogue re-derives the path from $bin_dir with its own default rather
+# than reusing what install was given.
+#
+# The removal assertion is scoped to the `rm` LINE, not to the whole output, and
+# that is load-bearing. $d/altbin appears three times in a successful run --
+# install's own `linked ...`, its not-on-PATH note, and the epilogue -- so a
+# whole-output `assert_contains` is satisfied by the first of them and says
+# nothing about the epilogue at all. Measured: with the epilogue's
+# `${bin_dir:-$HOME/.local/bin}` mutated to a bare `$HOME/.local/bin`, the
+# unscoped form stayed green and this one goes red. Same technique, same reason,
+# as test_the_printed_removal_line_removes_the_checkout_and_nothing_else below.
 test_bin_dir_flag_places_the_link_where_told() {
   local d out; d="$(mk_case)"
   out="$(run_bootstrap "$d" "$d/src" --bin-dir "$d/altbin")"
@@ -149,7 +159,8 @@ test_bin_dir_flag_places_the_link_where_told() {
   assert_eq "$(readlink -f "$d/altbin/plan-review")" \
     "$(readlink -f "$(checkout_of "$d")/bin/plan-review")" \
     "and it resolves into the checkout"
-  assert_contains "$out" "$d/altbin" "the epilogue's removal line names it"
+  assert_contains "$(printf '%s\n' "$out" | grep '^ *rm ')" "$d/altbin" \
+    "the epilogue's removal line names it"
 }
 
 test_help_exits_zero_and_touches_nothing() {
@@ -248,6 +259,12 @@ test_ref_switches_the_checkout_between_runs() {
 # The two halves of the split die on the upgrade path. They used to share one
 # message -- "no such ref after fetching" -- which sent someone hunting for a ref
 # that was sitting right there whenever the checkout itself was what failed.
+#
+# Only the SECOND of the two is a guard. This first one is characterisation: it
+# passes with the split fully reverted, because the old conflated die printed
+# this same message for a missing ref too. Measured, not assumed. It is kept
+# because it pins the message a missing ref gets, which is half of what the
+# split is for -- but it is not what would catch the split being undone.
 test_a_ref_that_does_not_exist_is_named_as_missing() {
   local d out rc; d="$(mk_case)"
   run_bootstrap "$d" "$d/src" > /dev/null 2>&1
@@ -258,6 +275,8 @@ test_a_ref_that_does_not_exist_is_named_as_missing() {
 
 # An index.lock is what a concurrent git leaves -- including a second copy of
 # this installer running right now, which is the case the message is written for.
+# THIS is the guard: revert the split and this case goes red while the one above
+# stays green.
 test_a_checkout_that_cannot_run_is_not_reported_as_a_missing_ref() {
   local d out rc; d="$(mk_case)"
   git -C "$d/src" branch experiment > /dev/null 2>&1
@@ -463,6 +482,16 @@ test_bash32_host_refusal_is_the_one_install_sh_promises() {
     return 0
   fi
   pr_test_requires docker || return 0
+  # The binary is not the service. `docker` on PATH with no daemon behind it --
+  # a rootless setup that is not started, Docker Desktop not running -- fails
+  # `docker run` with a connection error, which would read as this case failing
+  # rather than as this machine not being able to run it. `docker info` is the
+  # cheapest question that distinguishes the two.
+  if ! docker info > /dev/null 2>&1; then
+    PR_TESTS_SKIPPED=$((PR_TESTS_SKIPPED + 1))
+    printf '  SKIP %s: docker is on PATH but its daemon is not reachable\n' "$PR_CURRENT_TEST"
+    return 0
+  fi
   # A stub git, because main checks for git BEFORE preflight_host and the
   # bash:3.2 image (measured 2026-08-26: bash 3.2.57, busybox readlink -f
   # resolves, no git) would otherwise be refused for the wrong reason. Nothing

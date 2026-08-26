@@ -45,14 +45,26 @@ pr_round_arg_dir() {
   # implementation's working directory rather than the caller's, and silently
   # point at nothing or at the wrong round.
   [[ "$round_dir" == /* ]] || { echo "--round must be absolute, got: $round_dir" >&2; return 2; }
+  # Doubled slashes first, then the trailing one, and that ORDER is the whole
+  # point: the other way round, `.../round-1//` loses one slash to `%/` and the
+  # collapse then has no `//` left to find, so a trailing slash survives the
+  # function that promises a canonical directory -- and `complete` echoes it back
+  # on the very "Round complete:" line this exists to fix. The Integrator
+  # assembles this path by hand (SKILL.md substitutes
+  # <repo>/.plan-review/<key>/round-N) and every consumer resolves `//` fine, so
+  # this is cosmetic everywhere except the one place it is printed.
+  #
+  # The loop terminates: each pass strictly shortens the string, and it is only
+  # entered while a `//` remains. Checked against `//`, `///`, `////`, `/////`.
+  # Collapsing a LEADING `//` is safe here. POSIX leaves a path beginning with
+  # exactly two slashes implementation-defined; Linux and macOS both treat it as
+  # `/`, and Cygwin -- the one platform where it means a UNC share -- is refused
+  # by name in scripts/install.sh, so no supported host can reach this with a
+  # meaningful `//` prefix.
+  while [[ "$round_dir" == *//* ]]; do round_dir="${round_dir//\/\//\/}"; done
   # A trailing slash would make pr_round_artifact_dir return the round directory
   # itself rather than the session directory the lock lives in.
   round_dir="${round_dir%/}"
-  # Doubled slashes too, not only the trailing one: the Integrator assembles
-  # this path by hand (SKILL.md substitutes <repo>/.plan-review/<key>/round-N),
-  # every consumer resolves `//` fine, but this string is echoed back on the
-  # user-facing "Round complete:" line, so it is canonicalised where it enters.
-  while [[ "$round_dir" == *//* ]]; do round_dir="${round_dir//\/\//\/}"; done
   [[ -f "$round_dir/round.json" ]] || { echo "no round.json in $round_dir" >&2; return 2; }
 
   printf '%s' "$round_dir"
