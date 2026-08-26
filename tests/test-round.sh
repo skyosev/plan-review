@@ -145,4 +145,11 @@ test_set_state_does_not_depend_on_the_callers_variable_name() {
     "state advances regardless of the caller's variable name"
 }
 
+test_round_arg_dir_collapses_doubled_slashes() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/art/round-1"; echo '{}' > "$d/art/round-1/round.json"
+  assert_eq "$(pr_round_arg_dir --round "$d/art//round-1")" "$d/art/round-1" \
+    "a doubled slash in a pasted path is collapsed, not echoed back"
+}
+
 pr_run_tests

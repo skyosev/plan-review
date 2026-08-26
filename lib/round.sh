@@ -48,6 +48,11 @@ pr_round_arg_dir() {
   # A trailing slash would make pr_round_artifact_dir return the round directory
   # itself rather than the session directory the lock lives in.
   round_dir="${round_dir%/}"
+  # Doubled slashes too, not only the trailing one: the Integrator assembles
+  # this path by hand (SKILL.md substitutes <repo>/.plan-review/<key>/round-N),
+  # every consumer resolves `//` fine, but this string is echoed back on the
+  # user-facing "Round complete:" line, so it is canonicalised where it enters.
+  while [[ "$round_dir" == *//* ]]; do round_dir="${round_dir//\/\//\/}"; done
   [[ -f "$round_dir/round.json" ]] || { echo "no round.json in $round_dir" >&2; return 2; }
 
   printf '%s' "$round_dir"
