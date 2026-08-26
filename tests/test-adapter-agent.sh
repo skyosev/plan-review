@@ -128,4 +128,34 @@ test_no_switch_notice_records_the_pin_alone() {
   assert_eq "$(sed -n 2p "$d/m.txt")" "stub-model-high" "no annotation when nothing switched"
 }
 
+# The CLI's stderr is INHERITED, not redirected (2026-08-27). That is what puts
+# it on this adapter's own stderr and so, in a round, into <round>/log-agent.txt
+# via the kernel's `>> "$log" 2>&1`. There are exactly two ways to break it and
+# this pins both, because neither is visible without an assertion here:
+# `2>>"${review_out}.log"` -- the form this replaced -- loses the text to a
+# dotfile no documentation names, and `2>&1` splices it INTO the review, because
+# stdout has already been pointed at "$review_out" by the time it runs. Measured
+# 2026-08-27: the second put "CURSOR CLI FATAL" above the VERDICT marker that
+# lib/verdict.sh parses.
+#
+# `2>&1 >/dev/null` captures stderr ALONE -- fd 2 is duplicated onto the capture
+# pipe first, then fd 1 is sent elsewhere. That is the same ordering rule the fix
+# turns on, which is why it is spelled this way rather than with a temp file.
+test_the_clis_stderr_is_inherited_not_redirected() {
+  local d out; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0; mkdir -p "$d/work"
+  # Line 2 is straight after the shebang, so every stub invocation writes it. The
+  # adapter's own create-chat and --version calls drop stderr with 2>/dev/null,
+  # so what reaches the capture is the review run's stderr and nothing else.
+  sed -i '2i echo "CURSOR CLI FATAL: could not authenticate" >&2' "$d/bin/agent"
+  out="$(echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" 2>&1 >/dev/null)"
+  assert_contains "$out" "CURSOR CLI FATAL" \
+    "the CLI's stderr reaches the adapter's stderr, which the round logs"
+  # Positive first, so the negative below cannot pass vacuously on a missing file.
+  assert_contains "$(cat "$d/r.md")" "<!-- VERDICT: MINOR -->" "the review is intact"
+  assert_not_contains "$(cat "$d/r.md")" "CURSOR CLI FATAL" \
+    "and the error text never enters the artifact the verdict parser reads"
+  assert_file_missing "$d/r.md.log" "no derived .log file beside the review"
+}
+
 pr_run_tests

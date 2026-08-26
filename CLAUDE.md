@@ -24,8 +24,9 @@ is the loosest it has been: 51.6s at `d0d8177` (433 tests) against 62.3s at the 
 branch (455 tests) — **+21%**, measured 2026-08-27, two back-to-back runs each on a clean
 clone. Roughly half of that is the execution kernel's polled descendant sweep, which
 costs every `pr_adapter_exec` a minimum 0.05s tick plus a `ps` fork: stripping the poll
-loop at HEAD runs 56.8s, so the poll is ~5.5s and the remaining ~5.2s is simply the 22
-tests the branch added. Budget against the ~5.5s, not the whole delta, and weigh the next
+loop runs 56.8s on the same 455, so the poll is ~5.5s and the remaining ~5.2s is simply
+the 22 tests that branch added. (457 tests and ~62s as of the two adapter-stderr tests
+that followed.) Budget against the ~5.5s, not the whole delta, and weigh the next
 per-adapter poll before adding it.
 
 There is no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every

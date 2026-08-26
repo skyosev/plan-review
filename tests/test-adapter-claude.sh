@@ -381,4 +381,37 @@ test_a_frame_without_the_field_keeps_the_generic_reason() {
   [[ "$reason" != *"terminal_reason"* ]] || pr_fail "named a field the frame did not carry"
 }
 
+# The sibling of test-adapter-agent.sh's stderr test, and the more valuable of
+# the two: here stdout is the stream-json, not the review, so a re-introduced
+# `2>&1` does not merely misplace the error text -- it interleaves non-JSON into
+# the file jq parses below, jq stops at the first parse error, the init line then
+# reads as absent, and this adapter exits 1 reporting "no stream-json init line
+# ... the envelope has moved". That is a MISDIAGNOSIS of the very failure the
+# stderr exists to explain, and it would fire on every run where the CLI wrote a
+# byte to stderr. Measured 2026-08-27.
+#
+# The other way to break it, `2>>"${review_out}.log"`, is the form this replaced:
+# on the round path review_out is a scratch name, so the text went to
+# <round>/.review-claude.scratch.log, a dotfile nothing named -- and for claude
+# that was the ONLY copy, because log-claude.txt was 0 bytes by construction.
+# Both breakages are pinned below; neither is visible without this test.
+test_the_clis_stderr_is_inherited_not_redirected() {
+  local d; d="$(setup)"
+  # Line 2 is straight after the shebang, so the stub writes this on the single
+  # claude invocation the adapter makes (the version comes off the init line, so
+  # there is no second call).
+  sed -i '2i echo "CLAUDE CLI FATAL: could not authenticate" >&2' "$d/bin/claude"
+  run_adapter "$d"
+  # run_adapter merges both streams into out.txt, which is what the execution
+  # kernel does into <round>/log-claude.txt (`>> "$log" 2>&1`).
+  assert_contains "$(cat "$d/out.txt")" "CLAUDE CLI FATAL" \
+    "the CLI's stderr reaches the adapter's stderr, which the round logs"
+  assert_file_missing "$d/r.md.log" "no derived .log file beside the review"
+  # The stream-json survived the stderr: if it had not, the init-line tripwire
+  # would have exited 1 and neither of these would exist.
+  assert_contains "$(cat "$d/r.md")" "<!-- VERDICT: MINOR -->" \
+    "the stream-json still parsed, so the review was recorded"
+  assert_eq "$(sed -n 4p "$d/m.txt")" "2.1.233" "and the init line was still read"
+}
+
 pr_run_tests
