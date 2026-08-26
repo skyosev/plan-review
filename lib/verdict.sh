@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Parses the machine-readable sentinels a reviewer must append to its review.
 
+# This set plus UNPARSEABLE is stated a second time, in
+# _pr_reviewer_result_valid (lib/reviewer-runner.sh), which refuses a result
+# record whose verdict is outside it. Deliberate duplication, cross-referenced
+# the way the adapters' shared constants are: a fifth verdict has to be added
+# in both places or the runner will reject records it just wrote.
 PR_VERDICT_RE='^[[:space:]]*<!--[[:space:]]*VERDICT:[[:space:]]*(NO_MATERIAL_OBJECTIONS|MINOR|BLOCKING)[[:space:]]*-->[[:space:]]*$'
 
 # pr_parse_verdict <review-file>

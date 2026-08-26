@@ -271,6 +271,8 @@ for reviewer in $reviewer_keys; do
   fi
   # round.json is written straight from the child's record, so no field list is
   # restated here. Only the values the parent actually branches on are read.
+  # Fails on an unparseable round.json too, not only on a refused write -- see
+  # the session-map comment below, which states the same caveat at length.
   pr_round_record_reviewer "$round_dir" "$reviewer" "$(pr_reviewer_result_path "$reviewer")" || {
     echo "cannot write round.json under $round_dir; aborting" >&2
     exit 2
@@ -299,6 +301,25 @@ for reviewer in $reviewer_keys; do
   # failed just loses a resume, but a `del` that failed leaves a forfeited
   # handle in place for the next round to resume -- the exact poisoned resume
   # R1 exists to prevent.
+  #
+  # What no exit here does is clear the map on the way out, and that is a
+  # known, documented hole rather than an oversight: an `exit 2` from any
+  # in-loop guard leaves reviewers this loop had not reached yet holding their
+  # round N-1 handles, because the R1 rule above never ran for them. (The
+  # pre-existing `pr_reviewer_run_all || exit 2` above skips the loop
+  # entirely, so it is the same hole, wider.) `pr_session_clear` here would
+  # fail for exactly the reason the guard fired -- the store is gone -- so it
+  # would trade a known hole for an unreliable guard. The next round after an
+  # `aborting` exit must therefore be `--fresh`; README.md ("When a round does
+  # not finish") and skills/plan-review/SKILL.md say so to the operator, who
+  # is the only one in a position to act on it.
+  #
+  # The message names the likeliest cause, not a diagnosis. pr_session_set and
+  # pr_session_del both read the map through jq, so they fail on a map an
+  # earlier crash left UNPARSEABLE just as they do on a refused write: a round
+  # three reviewers finished can abort saying "cannot write" of a file it can
+  # write but not parse. Recoverable by hand and the safe direction either
+  # way, so it is stated here rather than branched on.
   if [[ "$timed_out_flag" != true && "$status" == ok ]]; then
     pr_session_set "$session_map" "$reviewer" "$session" \
       || { echo "cannot write the session map at $session_map; aborting" >&2; exit 2; }

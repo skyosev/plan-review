@@ -471,7 +471,11 @@ cannot be written, because the disk is full or the directory is not writable —
 abort: the runner prints what it could not write, ending in `aborting`, and exits 2. It
 does not print "Round complete" over an artifact it failed to record, and the state left
 in `round.json` is the last one that actually persisted, so the round is `abort`-able and
-readable exactly as any other unfinished one.
+readable exactly as any other unfinished one. **Run the next round `--fresh`**: the
+serial pass stopped part-way, so every reviewer it had not reached yet still holds the
+resume handle from the round before — including handles this round would have forfeited.
+The runner does not clear the map on its way out, because clearing it needs the same
+store that just refused a write.
 
 **agy runs under a deadline of its own**, derived by the adapter as 90% of
 `PR_TIMEOUT_SECS` and passed as `--print-timeout`. Left unset, agy would apply its own

@@ -23,6 +23,13 @@
 # before the first spawn, where a refusal is loud and synchronous, and this
 # module declares no locals named like contract variables, so its own frames
 # cannot shadow them.
+#
+# That validation covers the FAN-OUT, which is the part that runs in the
+# background. The record accessors below (pr_reviewer_result_path,
+# pr_reviewer_result_read, pr_reviewer_result_ensure) are public too and
+# validate nothing: they read `round_dir`, and _ensure also `status_file`, and
+# they run only in the round's serial pass, in the foreground, where an unset
+# one fails immediately and visibly instead of vanishing with a child.
 _PR_REVIEWER_CONTRACT="repo session_key artifact_dir round_dir round fresh_flag \
 status_file session_map criteria_initial criteria_rereview \
 PR_ROOT PR_TIMEOUT_SECS PR_KILL_GRACE_SECS PR_MAX_ARG_BYTES"
@@ -183,6 +190,14 @@ _pr_reviewer_run_one() {
   # READS as an endless stream of NULs, so the reviewer got zero bytes where
   # the plan should have been, wrote a review of nothing, and the round
   # recorded it ok/MINOR. An empty prompt was the optimistic half of it.
+  #
+  # The residue, since -s closes the empty case and not the class: a prompt
+  # TRUNCATED by a full disk can still arrive here. pr_build_prompt's exit
+  # status is the only defence against that, and it is not airtight --
+  # _pr_emit_section returns 0 early when its file is empty (lib/prompt.sh:26),
+  # so a heredoc that failed partway followed by a skipped last section leaves
+  # rc 0 over a short but non-empty file. It needs an empty plan.snapshot.md to
+  # line up, which is why it is named rather than defended against.
   if ! pr_build_prompt "$artifact_dir" "$round" "$reviewer" "$fresh_flag" \
        "$criteria_initial" "$criteria_rereview" > "$prompt_file" 2>> "$log" \
      || [[ ! -s "$prompt_file" ]]; then

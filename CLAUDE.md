@@ -148,9 +148,9 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   round does not claim to have finished. The all-failed path warns instead of escalating:
   it already exits non-zero and makes no success claim.
 - **The reviewer runner** (`lib/reviewer-runner.sh`) owns the fan-out:
-  `pr_reviewer_run_all` is the only public entry and validates the module's
-  variable contract (fourteen caller variables, listed in the module header)
-  before the first spawn, then waits on collected pids — never bare `wait`, which
+  `pr_reviewer_run_all` is the only public entry to the fan-out and validates
+  the module's variable contract (fourteen caller variables, listed in the
+  module header) before the first spawn, then waits on collected pids — never bare `wait`, which
   in a sourced function would reap a caller's unrelated job. The round caller
   reads each record through `pr_reviewer_result_path` / `pr_reviewer_result_read`
   and retires the round's scratch through `pr_reviewer_scratch_rm`; it composes

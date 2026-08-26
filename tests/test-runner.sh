@@ -717,9 +717,10 @@ test_a_read_only_round_dir_aborts_hard() {
   chmod -R u+w "$d/target/.plan-review" 2> /dev/null
   assert_exit_code "$rc" 2 "store loss is a hard abort, not a completed round"
   assert_contains "$out" "aborting" "with the error on stderr"
-  assert_not_contains \
-    "$(cat "$d/target/.plan-review"/*/round-1/round.json 2>/dev/null)" \
-    "awaiting_integration" "the round never claims a state it could not record"
+  # Positive, not `assert_not_contains awaiting_integration`: an absent
+  # round.json would satisfy the negative form vacuously.
+  assert_eq "$(jq -r .state "$d/target/.plan-review"/*/round-1/round.json)" \
+    reviewing "the round never claims a state it could not record"
 }
 
 # The late-failure half of unit A: everything succeeds except the final

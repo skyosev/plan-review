@@ -233,7 +233,10 @@ meant.
   is gone — a full disk or an unwritable `.plan-review/` — not a reviewer problem. The
   round stopped mid-way and its artifacts are incomplete by definition, so do not read
   verdicts out of them and do not retry until the user has fixed the disk or the
-  permissions. Report the message verbatim; the round directory stays for `abort`.
+  permissions. Report the message verbatim; the round directory stays for `abort`. When
+  the user is ready to run again, the next round **must** be `--fresh`: the serial pass
+  stopped part-way, so reviewers it never reached still hold last round's resume handles,
+  including ones this round would have thrown away.
 - A reviewer's `detail` reads `reviewer result record missing` or `record invalid`: that
   reviewer's job died without leaving a readable record, and the runner synthesized a
   failed entry so `round.json` still lists it. Treat it as a failed reviewer — there is

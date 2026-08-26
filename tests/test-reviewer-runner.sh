@@ -216,6 +216,9 @@ test_a_failed_prompt_write_refuses_to_spawn_the_adapter() {
 # `mapfile`, grew past 3GB RSS in twelve seconds and never returned, under no
 # deadline (the kernel's timeout covers the adapter, not this read). The guard
 # below is what keeps that read from ever being reached.
+#
+# So if you revert that guard, this case does not FAIL -- it eats the machine.
+# Expect an unbounded child, not a red assertion, and kill it by process group.
 test_a_failed_meta_preseed_is_a_reviewer_failure() {
   pr_test_requires /dev/full || return 0
   local d; d="$(pr_test_tmpdir)"
@@ -280,7 +283,10 @@ test_ensure_reports_a_store_it_cannot_write() {
   local d; d="$(pr_test_tmpdir)"
   setup_session "$d"
   ln -s /dev/full "$round_dir/.result-gone"
-  pr_reviewer_result_ensure gone
+  # 2>/dev/null suppresses THIS test's own provoked jq diagnostic, nothing in
+  # shipped code: a green suite that prints `jq: error:` teaches its readers to
+  # skim errors.
+  pr_reviewer_result_ensure gone 2>/dev/null
   assert_exit_code $? 2 "an unwritable store is 2, not a synthesized 1"
 }
 
