@@ -947,16 +947,17 @@ _pr_doctor_smoke_one() {
     return 1
   fi
 
-  # PR_TIMEOUT_SECS is the SMOKE deadline for this call: adapters/agy.sh
-  # derives its inner --print-timeout from it, and the round's 900s default
-  # would put the inner deadline far outside the outer one. TMPDIR per the
-  # adapter contract: a private directory inside the workdir. Both travel as
-  # the kernel's trailing env words. PR_KILL_GRACE_SECS the kernel reads
-  # itself, with the same default this file used to pass.
+  # PR_TIMEOUT_SECS no longer travels as an env word: the kernel exports the
+  # deadline it is handed, and that is exactly $secs -- the SMOKE deadline, not
+  # the round's 900s default, which would put agy's derived inner
+  # --print-timeout far outside the outer one. TMPDIR is the ninth positional,
+  # per the adapter contract a private directory inside the workdir. One value
+  # each, one channel each, so the two cannot drift apart here.
+  # PR_KILL_GRACE_SECS the kernel reads itself, with the same default this file
+  # used to pass.
   local rc=0 timed_out=0
   pr_adapter_exec "$adapter" "$workdir" "" "$review" "$meta" "$reason" \
-    "$log" "$secs" rc timed_out \
-    PR_TIMEOUT_SECS="$secs" TMPDIR="$tmp" \
+    "$log" "$secs" "$tmp" rc timed_out \
     <<< "$PR_DOCTOR_SMOKE_PROMPT"
 
   # Judge on output, not the exit code alone -- the round's rule: Cursor exits

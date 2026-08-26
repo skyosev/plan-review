@@ -14,14 +14,14 @@
 # it, the round has always assumed it.
 
 # pr_adapter_exec <adapter> <workdir> <session> <review> <meta> <reason> <log> \
-#                 <deadline-secs> <rc-var> <timed-out-var> [VAR=val ...]
+#                 <deadline-secs> <tmpdir> <rc-var> <timed-out-var>
 #
 # The prompt arrives on THIS function's stdin; the caller redirects it -- the
 # round from a file, the smoke from a herestring -- and the kernel need not
 # know. The argument order is the adapter contract's argv
-# (docs/adapter-contract.md) plus log and deadline: the contract's names, not
-# free-form strings, which is why ten positionals do not reopen the
-# transposition risk that rejected the result record's nine
+# (docs/adapter-contract.md) plus log, deadline and tmpdir: the contract's
+# names, not free-form strings, which is why eleven positionals do not reopen
+# the transposition risk that rejected the result record's nine
 # (lib/round.sh:199-204).
 #
 # Out, through the two namerefs: the raw exit code, and 0/1 for whether the
@@ -29,13 +29,24 @@
 # Execution facts only -- what they MEAN is the caller's ruling. Always
 # returns 0.
 #
-# Trailing VAR=val words are applied to the adapter's environment via env(1),
-# because an assignment prefixed to a *function* call persists or not by shell
-# mode -- the same reason tests/test-doctor.sh passes PATH as an argument. env
-# execs the adapter's bash in place, so it adds no process to the group and
-# touches no descriptor. PR_KILL_GRACE_SECS (default 15) is read from the
-# caller's shell: both callers already hold it there, and this function runs
-# in that same shell, so no export is needed.
+# The kernel is the SINGLE channel for the two facts every adapter is owed:
+# its deadline (docs/adapter-contract.md; adapters/agy.sh derives its inner
+# --print-timeout from PR_TIMEOUT_SECS) and its private TMPDIR. Both are
+# positionals here and both are exported by env(1), which still execs the
+# adapter's bash in place, so it adds no process to the group and touches no
+# descriptor. env is used rather than an assignment prefixed to this *function*
+# call because such a prefix persists or not by shell mode -- the same reason
+# tests/test-doctor.sh passes PATH as an argument.
+#
+# Deliberately NOT `env PR_TIMEOUT_SECS="$deadline" "$@" bash ...` with the old
+# variadic VAR=val words kept alongside the export: env(1) is
+# last-assignment-wins, so a caller's trailing word could silently override the
+# kernel's deadline -- the exact two-channel divergence this deletes -- and
+# once the deadline is exported the only remaining passenger was TMPDIR. A
+# variadic mechanism for one known variable is not worth its defending
+# paragraph. PR_KILL_GRACE_SECS (default 15) is read from the caller's shell:
+# both callers already hold it there, and this function runs in that same
+# shell, so no export is needed.
 #
 # `timeout` puts ITSELF in a new process group and sends TERM to that whole
 # group on expiry, then SIGKILL after the grace -- but only while the direct
@@ -102,11 +113,10 @@ _pr_ae_descendants() {
 
 pr_adapter_exec() {
   local adapter="$1" workdir="$2" session="$3" review="$4" meta="$5" reason="$6"
-  local log="$7" deadline="$8"
+  local log="$7" deadline="$8" tmpdir="$9"
   # _pr_ae_-prefixed so a caller's own `rc`/`timed_out` can be passed without a
   # nameref self-reference; callers must not pass names starting with _pr_ae_.
-  local -n _pr_ae_rc="$9" _pr_ae_timed_out="${10}"
-  shift 10
+  local -n _pr_ae_rc="${10}" _pr_ae_timed_out="${11}"
 
   # Backgrounded so $! names timeout's pid, which IS the group id. Bash gives
   # an async job /dev/null as stdin unless the job redirects it explicitly --
@@ -117,7 +127,8 @@ pr_adapter_exec() {
   # caller-held lock fd is still inherited by the adapter and everything it
   # spawns.
   timeout --kill-after="${PR_KILL_GRACE_SECS:-15}" "$deadline" \
-    env "$@" bash "$adapter" "$workdir" "$session" "$review" "$meta" "$reason" \
+    env PR_TIMEOUT_SECS="$deadline" TMPDIR="$tmpdir" \
+    bash "$adapter" "$workdir" "$session" "$review" "$meta" "$reason" \
     <&0 >> "$log" 2>&1 &
   local _pr_ae_pid=$!
   # The wait is POLLED, not blocking: a ppid walk only works while the tree is

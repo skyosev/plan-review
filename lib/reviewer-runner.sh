@@ -255,15 +255,17 @@ _pr_reviewer_run_one() {
   # detaches between the last sample and the kill still escapes. So what makes
   # the artifact reads below final is the PUBLICATION step immediately after
   # this call, not the sweep. The adapter is handed the scratch path, never the
-  # published one. TMPDIR travels as a kernel env word, not a prefix assignment
-  # on the function call (tests/test-doctor.sh states why prefixes on function
-  # calls are not relied on here). Nothing in this path closes a descriptor, so
-  # the session lock is still inherited.
+  # published one. TMPDIR is a POSITIONAL now, not a trailing env word: the
+  # kernel is the single writer of the adapter's environment and exports both
+  # the deadline it is handed and this tmpdir itself, so PR_TIMEOUT_SECS is not
+  # passed here at all -- the eighth positional IS what the adapter reads, and
+  # adapters/agy.sh derives its inner --print-timeout from that one value.
+  # Nothing in this path closes a descriptor, so the session lock is still
+  # inherited.
   pr_adapter_exec "$adapter" "$(pr_sandbox_repo "$session_key" "$reviewer")" \
     "$session_in" "$review_scratch" "$meta_out" "$reason_out" \
-    "$log" "$PR_TIMEOUT_SECS" rc timed_out \
-    TMPDIR="$(pr_sandbox_tmp "$session_key" "$reviewer")" \
-    < "$prompt_file"
+    "$log" "$PR_TIMEOUT_SECS" "$(pr_sandbox_tmp "$session_key" "$reviewer")" \
+    rc timed_out < "$prompt_file"
   (( timed_out )) && timed_out_json=true
 
   # Publication. The child owns judgment -- the size check, the verdict and

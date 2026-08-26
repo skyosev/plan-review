@@ -130,6 +130,15 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   no record and judges only alive/dead, so the finality rule above is the
   round's); `pr_doctor_run` keeps its own synchronous two-stream capture — the
   opposite discipline, deliberately not unified.
+- **The kernel is the single channel for the adapter's environment.** It takes the
+  deadline and the tmpdir as positionals (eight and nine of eleven) and exports
+  exactly `PR_TIMEOUT_SECS` and `TMPDIR` through `env(1)`; callers pass no trailing
+  `VAR=val` words, and the variadic mechanism that allowed them was deleted
+  (2026-08-26, `/simplify`). `env` is last-assignment-wins, so keeping both channels
+  would have let a caller's word silently override the deadline the kernel is
+  actually enforcing — on `main` the two agreed only by coincidence, which is what
+  made the divergence latent rather than visible. `env` execs the adapter's bash in
+  place: no extra process in the group, no descriptor touched.
 - **Round state machine** lives in `lib/round.sh`; every mutation of `round.json` happens
   serially in the parent after `wait`, never in a reviewer background job.
 - **Write integrity splits along the blast radius, not the call site.** There is no

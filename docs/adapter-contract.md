@@ -72,6 +72,15 @@ Every adapter — real or fake — is invoked identically:
   *inside* `<workdir>`. Adapters must not override it. It has to be inside the
   workdir because codex removes `$TMPDIR` from its writable roots
   (`exclude_tmpdir_env_var`), so a path outside would not be writable.
+- **`PR_TIMEOUT_SECS`** — the deadline `timeout(1)` is enforcing on *this* call, a
+  positive whole number of seconds. An adapter that derives an inner deadline
+  (`adapters/agy.sh` passes 90% of it as `--print-timeout`) reads it from here, so
+  the inner deadline is guaranteed to sit strictly inside the outer one. Both this
+  and `TMPDIR` are exported by the execution kernel (`lib/adapter-exec.sh`) from
+  the values it was handed as positionals — one fact, one channel, with no way for
+  a caller to set a second, disagreeing copy. An adapter run by hand must therefore
+  set it itself, and refuse a non-positive-integer value the way `adapters/agy.sh`
+  does.
 - **stdin is the contract even when the CLI cannot honour it.** `agy` reads no
   prompt from stdin — its `-p/--print` is a string flag whose value *is* the
   prompt — so `adapters/agy.sh` consumes stdin and re-passes it as an argv entry.
