@@ -23,7 +23,10 @@ Every adapter — real or fake — is invoked identically:
   can exceed.
 - **stdout / stderr** — diagnostics only, captured to a log. The review must never
   arrive on stdout.
-- **`<review_out>`** — the Markdown review, written by the adapter.
+- **`<review_out>`** — the Markdown review, written by the adapter. Write to the
+  path you are given and derive no other: the round hands adapters a scratch path
+  and publishes a copy of it under its own name once the adapter has gone, so a
+  survivor still writing cannot change the artifact the round recorded.
 - **`<meta_out>`** — exactly four lines, any of which may be empty:
 
       line 1   session handle to resume next round ('' if the CLI reports none)
@@ -99,5 +102,7 @@ Every adapter — real or fake — is invoked identically:
   `~/.claude/settings.json` — which defines hooks that run in *their*
   interactive sessions — outside the reviewer's reach.
 - **process group** — the runner invokes adapters under `timeout(1)`, which places
-  each adapter in its own process group and signals the whole group. Adapters do
-  not need to reap their own children.
+  each adapter in its own process group and signals the whole group. A descendant
+  that leaves that group by taking one of its own is swept separately and
+  best-effort, from a `ps` walk sampled while the adapter ran. Adapters do not need
+  to reap their own children.

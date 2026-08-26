@@ -298,15 +298,9 @@ ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Ant
 # npx at all, so without it there is no add to make an assertion about. npx
 # implies node in production, but the suite must not fail on a machine that has
 # neither.
-need_node() {
-  command -v node > /dev/null 2>&1 && return 0
-  printf '  SKIP %s: node is not installed\n' "$PR_CURRENT_TEST"
-  return 1
-}
-
 test_one_add_covers_every_detected_harness() {
   local d log checkout; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   stub_npx "$d/stub" "$ALL_LINKED"
   run_bootstrap "$d" "$d/src" > /dev/null 2>&1
   log="$(cat "$d/npx.log")"
@@ -321,7 +315,7 @@ test_one_add_covers_every_detected_harness() {
 
 test_cursor_is_skipped_when_the_identity_probe_returns_no_version() {
   local d out log; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   # Exit 0, valid JSON, empty field: the case that an exit-status-only probe
   # passes and lib/doctor.sh:408's non-empty .cliVersion test catches.
   pr_test_mkstub "$d/stub/agent" 'printf "{\"cliVersion\":\"\"}\n"; exit 0'
@@ -338,7 +332,7 @@ test_cursor_is_skipped_when_the_identity_probe_returns_no_version() {
 # searched for. A substring hunt -- the first draft -- passes both of these.
 test_a_non_cursor_agent_does_not_pass_the_identity_probe() {
   local d log; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   pr_test_mkstub "$d/stub/agent" \
     'printf "agent: unknown flag --format (try: agent --cliVersion \"1.2\")\n"; exit 0'
   stub_npx "$d/stub" "$ALL_LINKED"
@@ -350,7 +344,7 @@ test_a_non_cursor_agent_does_not_pass_the_identity_probe() {
 
 test_a_missing_display_name_is_not_a_pass() {
   local d out rc; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   # The false positive the previous design could not see: linked into Claude Code
   # alone, while a per-harness `ls -a codex` query would still answer non-empty.
   stub_npx "$d/stub" '[{"name":"plan-review","agents":["Claude Code"]}]'
@@ -363,7 +357,7 @@ test_a_missing_display_name_is_not_a_pass() {
 
 test_unparseable_json_warns_rather_than_passing() {
   local d out rc; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   stub_npx "$d/stub" 'this is not json'
   out="$(run_bootstrap "$d" "$d/src")"; rc=$?
   assert_exit_code "$rc" 0 "unreadable output is not a failed install"
@@ -384,7 +378,7 @@ test_no_skill_takes_npm_out_of_the_install_path() {
 
 test_the_removal_line_appears_only_when_a_skill_was_installed() {
   local d out; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   stub_npx "$d/stub" "$ALL_LINKED"
   out="$(run_bootstrap "$d" "$d/src")"
   assert_contains "$out" "npx skills remove -g plan-review" "printed after a real install"

@@ -262,7 +262,7 @@ ok_count=0
 for reviewer in $reviewer_keys; do
   # round.json is written straight from the child's record, so no field list is
   # restated here. Only the values the parent actually branches on are read.
-  pr_round_record_reviewer "$round_dir" "$reviewer" "$round_dir/.result-$reviewer"
+  pr_round_record_reviewer "$round_dir" "$reviewer" "$(pr_reviewer_result_path "$reviewer")"
   pr_reviewer_result_read "$reviewer" status session discard timed_out_flag
   if [[ "$discard" == true ]]; then
     # Housekeeping, never a verdict on the round: a round that produced three
@@ -290,8 +290,7 @@ for reviewer in $reviewer_keys; do
   # Counted separately from the handle rule above: a timed-out-but-usable review
   # still counts toward the round, as it always has.
   [[ "$status" == ok ]] && ok_count=$((ok_count + 1))
-  rm -f "$round_dir/.result-$reviewer" "$round_dir/.meta-$reviewer" \
-        "$round_dir/.reason-$reviewer" "$round_dir/.prompt-$reviewer.txt"
+  pr_reviewer_scratch_rm "$reviewer"
 done
 
 # One warning, after the round, and only one the artifact can prove: two

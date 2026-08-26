@@ -45,6 +45,20 @@ _PR_REVIEWER_CONTRACT_EMPTY_OK=" criteria_initial criteria_rereview "
 # RULINGS made here. Prose, not nesting -- a facts/rulings split of the JSON
 # would rewrite both readers for no failure caught today.
 
+# pr_reviewer_result_path <reviewer>
+# The record's location, stated once. The round reads the record through this
+# and pr_reviewer_result_read; it composes no scratch name of its own.
+pr_reviewer_result_path() { printf '%s/.result-%s' "$round_dir" "$1"; }
+
+# pr_reviewer_scratch_rm <reviewer>
+# Every scratch name this module owns, retired in one place. The published
+# review and the reviewer log are NOT scratch and are deliberately absent.
+pr_reviewer_scratch_rm() {
+  rm -f "$round_dir/.result-$1" "$round_dir/.meta-$1" "$round_dir/.reason-$1" \
+        "$round_dir/.prompt-$1.txt" "$round_dir/.review-$1.scratch" \
+        "$round_dir/review-$1.md.publish"
+}
+
 # _pr_reviewer_result_write <reviewer> <status> <detail> <verdict> <session>
 #                           <model> <effort> <cli> [discard] [timed_out]
 _pr_reviewer_result_write() {
@@ -53,7 +67,7 @@ _pr_reviewer_result_write() {
         --arg session "$5" --arg model "$6" --arg effort "$7" --arg cli "$8" \
         --argjson discard "${9:-false}" --argjson timed_out "${10:-false}" \
         '{$status, $detail, $verdict, $session, $model, $effort, $cli, $discard, $timed_out}' \
-    > "$round_dir/.result-$reviewer"
+    > "$(pr_reviewer_result_path "$reviewer")"
 }
 
 # pr_reviewer_result_read <reviewer> <status-var> <session-var> <discard-var> <timed-out-var>
@@ -72,7 +86,7 @@ pr_reviewer_result_read() {
   { IFS= read -r _status; IFS= read -r _session; IFS= read -r _discard
     IFS= read -r _timed_out; } < <(
     jq -r '.status, .session, (.discard == true), (.timed_out == true)' \
-      < "$round_dir/.result-$1")
+      < "$(pr_reviewer_result_path "$1")")
 }
 
 # What an exit code is allowed to be reported as.
@@ -105,6 +119,7 @@ _pr_reviewer_run_one() {
   local sandbox review_out meta_out reason_out log prompt_file
   sandbox="$(pr_sandbox_dir "$session_key" "$reviewer")"
   review_out="$round_dir/review-$reviewer.md"
+  local review_scratch="$round_dir/.review-$reviewer.scratch"
   meta_out="$round_dir/.meta-$reviewer"
   reason_out="$round_dir/.reason-$reviewer"
   log="$round_dir/log-$reviewer.txt"
@@ -145,19 +160,45 @@ _pr_reviewer_run_one() {
   local session_in rc=0 timed_out=0 timed_out_json=false
   session_in="$(pr_session_get "$session_map" "$reviewer")"
 
-  # The spawn, the deadline, the 124/137 classification and the group sweep
-  # live in the kernel (lib/adapter-exec.sh), which reads the prompt from ITS
-  # stdin -- the file redirect below -- and sweeps before returning, so the
-  # artifact reads that follow see final files. TMPDIR travels as a kernel env
-  # word, not a prefix assignment on the function call (tests/test-doctor.sh
-  # states why prefixes on function calls are not relied on here). Nothing in
-  # this path closes a descriptor, so the session lock is still inherited.
+  # The spawn, the deadline, the 124/137 classification and the sweeps live in
+  # the kernel (lib/adapter-exec.sh), which reads the prompt from ITS stdin --
+  # the file redirect below -- and before returning sweeps the adapter's
+  # process group and, best-effort, the descendants it sampled while the
+  # adapter ran. Best-effort is the whole point of the qualifier: P6 measured a
+  # reviewer whose tool layer took its own session, and a survivor that
+  # detaches between the last sample and the kill still escapes. So what makes
+  # the artifact reads below final is the PUBLICATION step immediately after
+  # this call, not the sweep. The adapter is handed the scratch path, never the
+  # published one. TMPDIR travels as a kernel env word, not a prefix assignment
+  # on the function call (tests/test-doctor.sh states why prefixes on function
+  # calls are not relied on here). Nothing in this path closes a descriptor, so
+  # the session lock is still inherited.
   pr_adapter_exec "$adapter" "$(pr_sandbox_repo "$session_key" "$reviewer")" \
-    "$session_in" "$review_out" "$meta_out" "$reason_out" \
+    "$session_in" "$review_scratch" "$meta_out" "$reason_out" \
     "$log" "$PR_TIMEOUT_SECS" rc timed_out \
     TMPDIR="$(pr_sandbox_tmp "$session_key" "$reviewer")" \
     < "$prompt_file"
   (( timed_out )) && timed_out_json=true
+
+  # Publication. The child owns judgment -- the size check, the verdict and
+  # files-inspected all run below, before the serial parent -- so the child
+  # publishes too: scratch -> fresh copy -> rename, and every semantic read
+  # after this point uses the published file. The rename is safe because a
+  # survivor holds the SCRATCH inode, never the copy's; what this prevents is
+  # post-publication mutation, so the record and the artifact describe the same
+  # bytes. It is not an instantaneous snapshot: a survivor writing during the
+  # copy can leave a torn tail, accepted because every downstream read uses the
+  # same immutable copy. An absent scratch publishes nothing and the size check
+  # below fails the reviewer exactly as an absent review always has.
+  if [[ -e "$review_scratch" ]]; then
+    if ! cp "$review_scratch" "$review_out.publish" 2>> "$log" \
+       || ! mv "$review_out.publish" "$review_out" 2>> "$log"; then
+      pr_status_event "$status_file" "$reviewer" failed "review publication failed"
+      _pr_reviewer_result_write "$reviewer" failed "review publication failed" \
+        "" "" "" "" ""
+      return 0
+    fi
+  fi
 
   # Judge on output, not exit code alone: Cursor exits 2 on a denied tool call
   # while still producing a correct review (D7).

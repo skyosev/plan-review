@@ -118,4 +118,56 @@ test_run_all_does_not_wait_for_an_unrelated_child() {
   assert_eq "$status" "ok" "and the reviewer itself completed"
 }
 
+# Publication: every semantic read comes from an immutable copy, so a survivor
+# still holding the scratch inode cannot change what the round recorded. Not an
+# instantaneous snapshot -- a torn tail during the copy is accepted, because
+# every downstream read uses the same copy (spec glossary, "Publication").
+test_publication_makes_the_review_immune_to_later_scratch_writes() {
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  pr_reviewer_run_all "codex=$FAKES/fake-ok.sh"
+  assert_file_exists "$round_dir/review-codex.md" "the review was published"
+  local before; before="$(< "$round_dir/review-codex.md")"
+  echo "TAINT from a survivor" >> "$round_dir/.review-codex.scratch"
+  assert_eq "$(< "$round_dir/review-codex.md")" "$before" \
+    "the published review is the publication-time copy"
+  assert_eq "$(jq -r .verdict < "$round_dir/.result-codex")" \
+    "$(pr_parse_verdict "$round_dir/review-codex.md")" \
+    "the record and the published file describe the same bytes"
+}
+
+# A failed publication is a reviewer failure -- a new critical write, checked
+# here rather than deferred to the write-integrity unit.
+test_a_failed_publication_is_a_reviewer_failure() {
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  # A dangling symlink at the publication temp path makes the copy fail
+  # deterministically without touching anything else in the round directory.
+  ln -s "$round_dir/no-such-dir/x" "$round_dir/review-codex.md.publish"
+  pr_reviewer_run_all "codex=$FAKES/fake-ok.sh"
+  local status session discard timed_out
+  pr_reviewer_result_read codex status session discard timed_out
+  assert_eq "$status" failed "publication failure fails the reviewer"
+  assert_contains "$(jq -r .detail < "$round_dir/.result-codex")" \
+    "publication" "and the detail says why"
+  assert_file_missing "$round_dir/review-codex.md" "nothing was published"
+}
+
+# The module boundary: the round reaches the record through the accessor and
+# deletes nothing itself, so a rename inside this module cannot silently break
+# the round (BACKLOG 2026-08-26, /simplify).
+test_the_runner_owns_its_scratch_names() {
+  local d; d="$(pr_test_tmpdir)"
+  setup_session "$d"
+  pr_reviewer_run_all "codex=$FAKES/fake-ok.sh"
+  assert_file_exists "$(pr_reviewer_result_path codex)" "the accessor finds the record"
+  pr_reviewer_scratch_rm codex
+  assert_file_missing "$round_dir/.result-codex"  "record swept"
+  assert_file_missing "$round_dir/.meta-codex"    "meta swept"
+  assert_file_missing "$round_dir/.reason-codex"  "reason swept"
+  assert_file_missing "$round_dir/.prompt-codex.txt" "prompt swept"
+  assert_file_missing "$round_dir/.review-codex.scratch" "review scratch swept"
+  assert_file_exists  "$round_dir/review-codex.md" "the published review is not scratch"
+}
+
 pr_run_tests

@@ -78,4 +78,31 @@ test_sweeps_even_when_the_adapter_exits_cleanly() {
     "a clean exit must not exempt the group from the sweep"
 }
 
+# The P6 gate: a grandchild that took its own session survives the group
+# sweep (measured, probes 2026-08-26); the descendant sweep must reach it.
+test_sweep_reaches_a_setsid_escaper() {
+  pr_test_requires setsid || return 0   # util-linux command; absent on macOS
+  local d; d="$(pr_test_tmpdir)"
+  local rc=-1 timed_out=-1
+  pr_adapter_exec "$PR_ROOT/tests/fixtures/adapters/fake-escaper.sh" "$d" "" \
+    "$d/review.md" "$d/meta" "$d/reason" "$d/log" 30 rc timed_out <<< "prompt"
+  assert_eq "$rc" 0 "the escaper adapter itself exits cleanly"
+  assert_file_exists "$d/escaper.pid" "the fixture recorded its escaper"
+  assert_pid_gone "$(< "$d/escaper.pid")" "the setsid grandchild is swept"
+}
+
+# The one parseable ps table shape the sweep fixes: two whitespace-separated
+# numeric columns. GNU (coreutils 9.4) left-pads with spaces; Darwin pads wider
+# and differently -- the parser must not care. Offline stand-ins for the live
+# macOS check, which is owed to the macOS cycle (BACKLOG).
+test_descendant_walk_parses_a_gnu_shaped_table() {
+  local table=$'    100      1\n    200    100\n    201    200\n    300      1'
+  assert_eq "$(_pr_ae_descendants 100 "$table")" " 100 200 201 " "fixpoint over GNU shape"
+}
+
+test_descendant_walk_parses_a_darwin_shaped_table() {
+  local table=$'  100     1\n  200   100\n  201   200\n  300     1'
+  assert_eq "$(_pr_ae_descendants 100 "$table")" " 100 200 201 " "fixpoint over Darwin shape"
+}
+
 pr_run_tests

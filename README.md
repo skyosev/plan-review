@@ -117,8 +117,8 @@ are reported without failing. Nothing it runs costs tokens — unless you pass `
 why that one is opt-in.
 
 `--smoke` sends every reviewer in the roster one trivial prompt, through its adapter exactly as a
-round would send one — same sandbox layout, same stdin contract, same process-group sweep on
-timeout — under a short deadline (`PR_SMOKE_TIMEOUT_SECS`, default 90s) instead of the round's. It
+round would send one — same sandbox layout, same stdin contract, same process-group and
+descendant sweep — under a short deadline (`PR_SMOKE_TIMEOUT_SECS`, default 90s) instead of the round's. It
 exists because the auth checks hit status endpoints, and the exec path is different code in a
 vendor's CLI: it can hang on an interactive login prompt the auth check never reaches, or die on
 flag drift the version check only warns about. Alive means the adapter produced a review file, the
@@ -445,10 +445,18 @@ rather than in preflight, because `PR_SKIP_PREFLIGHT=1` turns preflight off;
 expiry and the SIGKILL that follows. It applies to the **adapter itself and not to its
 descendants**: `timeout` stops escalating as soon as the direct child is reaped, so an
 adapter that handles TERM politely used to leave a TERM-ignoring grandchild behind
-forever. On a timeout the runner now kills the reviewer's whole process group, before it
-reads any artifact — which is what makes the review file final, but also means a
-descendant mid-write loses whatever it had buffered. A reviewer that exits on its own is
-not swept; the deadline is what triggers it.
+forever. The runner now kills the reviewer's whole process group — on every round, not
+only on a timeout, since a cleanly exiting adapter can leak a child too — and then, on a
+best-effort basis, any descendant that escaped the group by taking one of its own. Those
+are sampled while the reviewer runs, one `ps` per second, and killed afterwards only if
+their start time still matches, so a recycled pid is not signalled by mistake. A
+descendant that detaches after the last sample still escapes; when one does, it keeps the
+session's lock, and the next command on that session waits rather than writing over it.
+The cost of the sweep is that a descendant mid-write loses whatever it had buffered.
+
+What makes the review file final is not the sweep but **publication**: the adapter writes
+to a scratch file, and the runner copies it into place before reading anything from it. A
+survivor still writing to the scratch file cannot change the review the round recorded.
 
 **agy runs under a deadline of its own**, derived by the adapter as 90% of
 `PR_TIMEOUT_SECS` and passed as `--print-timeout`. Left unset, agy would apply its own

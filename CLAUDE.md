@@ -92,17 +92,39 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
 - **R1: a reviewer forfeits its resume handle on a timeout *or* a failure**, and only
   its own. The parent branches on the `timed_out` field the child records, not on
   `status` — a timed-out reviewer with partial output is still `ok` but must not resume.
-- **The execution kernel sweeps the adapter's process group unconditionally**
-  (`kill -KILL -- -$pid` after `wait`, `lib/adapter-exec.sh`), before any artifact
-  is read — `timeout --kill-after` stops escalating once the direct child is
-  reaped, so a TERM-ignoring grandchild otherwise survives and can still append to
-  `review-<reviewer>.md`; and it never fires at all for an adapter that exits
-  cleanly, which is why the sweep is not conditional on the timeout.
-  `PR_KILL_GRACE_SECS` therefore covers the adapter only, not its descendants. The
-  round (`lib/reviewer-runner.sh`) and `doctor --smoke` both spawn through the
-  kernel — the smoke's call guarded by `declare -F` so the stub-PATH doctor tests
-  stay green; `pr_doctor_run` keeps its own synchronous two-stream capture — the
-  opposite discipline, deliberately not unified.
+- **The execution kernel sweeps the adapter's process group unconditionally, and
+  then its remembered descendants best-effort** (`lib/adapter-exec.sh`).
+  `timeout --kill-after` stops escalating once the direct child is reaped, and
+  never fires at all for an adapter that exits cleanly, which is why the group
+  kill is not conditional on the timeout; `PR_KILL_GRACE_SECS` therefore covers
+  the adapter only, not its descendants. But the group sweep alone reaches the
+  spawned command of **neither shipped reviewer** (P6, `docs/process/probes/2026-08-26-roster-sweep-reach/`):
+  `agy`/`claude` are contained by their adapters' bwrap, `codex` by its own
+  `--as-pid-1`, and `agent` by nothing — its tool layer takes its own process
+  group *and* session. So `wait` is polled: each tick walks a `ps -eo pid=,ppid=`
+  fixpoint from the adapter's pid (`_pr_ae_descendants`, bash builtins over a
+  table so both GNU and Darwin shapes are fixture-tested offline) and remembers
+  each descendant with its `ps -o lstart=` start time. After the group kill, a
+  remembered pid is signalled only if that start time still string-equals the
+  remembered one. `lstart` has one-second resolution, so the identity is
+  probabilistic: a pid recycled within the round to a process born in the same
+  wall-clock second would be killed in error — a stated residual risk, not an
+  impossibility, and narrower the larger `pid_max` is. Any failure to read
+  identity skips the pid, degrading to group-only cleanup: never an unsafe kill,
+  never a broken round. The sweep is **best-effort by construction** — a
+  fork-and-detach between the last sample and the kill escapes. What makes the
+  review artifact final is therefore *not* the sweep but the child's
+  **publication** step in `lib/reviewer-runner.sh`: the adapter writes
+  `.review-<reviewer>.scratch`, the child copies it to `review-<reviewer>.md`
+  before any judgment, and a survivor holding the scratch inode can no longer
+  change what the round recorded. A survivor the poller misses keeps the
+  inherited session lock, and later operations on that session fail closed until
+  it exits — the accepted availability cost. Nothing in the poller closes a
+  descriptor. macOS descendant cleanup is unverified live (first row of the macOS
+  cycle). The round (`lib/reviewer-runner.sh`) and `doctor --smoke` both spawn
+  through the kernel — the smoke's call guarded by `declare -F` so the stub-PATH
+  doctor tests stay green; `pr_doctor_run` keeps its own synchronous two-stream
+  capture — the opposite discipline, deliberately not unified.
 - **Round state machine** lives in `lib/round.sh`; every mutation of `round.json` happens
   serially in the parent after `wait`, never in a reviewer background job.
 - **The reviewer runner** (`lib/reviewer-runner.sh`) owns the fan-out:
@@ -110,8 +132,11 @@ no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs 
   variable contract (fourteen caller variables, listed in the module header)
   before the first spawn, then waits on collected pids — never bare `wait`, which
   in a sourced function would reap a caller's unrelated job. The round caller
-  reads each record through `pr_reviewer_result_read` and keeps every
-  `round.json` and session-map mutation serial, in the parent.
+  reads each record through `pr_reviewer_result_path` / `pr_reviewer_result_read`
+  and retires the round's scratch through `pr_reviewer_scratch_rm`; it composes
+  no scratch name of its own, so a rename inside the module cannot silently
+  break the round. Every `round.json` and session-map mutation stays serial, in
+  the parent.
 - **Confinement is per-adapter and not uniform**: codex and Cursor confine themselves;
   `agy` and `claude` are wrapped in bubblewrap by their adapters and **fail closed** when
   `bwrap` is missing. `claude` additionally rebuilds the environment from a whitelist
