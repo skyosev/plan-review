@@ -19,7 +19,11 @@ complete — read the relevant section before changing behaviour it documents.
     bin/plan-review doctor --repo <dir> --show-config
 
 The suite is offline and takes seconds: every test drives the runner with fake adapters
-from `tests/fixtures/adapters/` via `PR_ADAPTER_MAP`, so nothing costs tokens. There is
+from `tests/fixtures/adapters/` via `PR_ADAPTER_MAP`, so nothing costs tokens. "Seconds"
+is now the loosest it has been: the execution kernel's polled descendant sweep costs
+every `pr_adapter_exec` a minimum 0.05s tick plus a `ps` fork, which took the suite from
+44s to 62s (+41%, measured `d0d8177` vs the kernel branch). Budget for it before adding
+another per-adapter poll — the next such addition is the one that breaks the promise. There is
 no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
 `test_*` function in the sourcing file. Anything that would break "offline and seconds"
 is opt-in behind a flag and skips by default — `PR_TEST_BASH32=1` is the only one, and it

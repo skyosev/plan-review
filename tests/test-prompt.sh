@@ -31,7 +31,11 @@ test_round_one_prompt_contains_plan_and_verdict_instruction() {
   # "run a command to check a claim" was too broad: `doctor --smoke` spawns every
   # adapter and spends real tokens. The permitted and forbidden sides are both
   # enumerated, and both spellings are pinned here so neither can quietly widen.
-  assert_contains "$out" "doctor --show-config" "read-only investigation is named as allowed"
+  # `plan-review --help`, not `doctor --show-config`: the latter was in the
+  # permitted list until it was found not to run (exits 2 without --repo, and
+  # lib/sandbox.sh keeps .plan-review/ out of the reviewer's tree anyway). The
+  # permitted side must name a command that actually works.
+  assert_contains "$out" "plan-review --help" "read-only investigation is named as allowed"
   assert_contains "$out" "doctor --smoke" "and the one costly doctor flag is named as forbidden"
   assert_contains "$out" "spends real tokens" "with the reason its name does not give away"
 }

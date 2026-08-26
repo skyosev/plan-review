@@ -57,10 +57,13 @@ test_kernel_exports_deadline_and_tmpdir_to_the_adapter() {
 # reads final files.
 #
 # This and the clean-exit case below take the fixture's DEFAULT pidfile,
-# `<workdir>/child.pid`: the kernel's environment is closed to callers now --
-# PR_TIMEOUT_SECS and TMPDIR are all it writes -- so PR_TEST_CHILD_PIDFILE has
-# no channel through it. Nothing is lost; the default path is the one
-# tests/test-runner.sh already exercises the override against.
+# `<workdir>/child.pid`: the kernel has no PER-CALL environment channel -- its
+# `env` writes PR_TIMEOUT_SECS and TMPDIR and takes no caller-supplied
+# assignments -- so there is no argument to pass PR_TEST_CHILD_PIDFILE through.
+# The ambient environment is of course still inherited (env(1) ADDS to it), and
+# tests/test-runner.sh:147,163 and tests/test-doctor.sh:994 drive fixtures
+# through exactly that; nothing here forbids it, it is just not needed. The
+# default path is the one test-runner.sh already exercises the override against.
 test_classifies_the_deadline_and_sweeps_the_group() {
   local d rc=99 timed_out=99; d="$(pr_test_tmpdir)"; mkdir -p "$d/w"
   PR_KILL_GRACE_SECS=1 \
@@ -102,17 +105,19 @@ test_sweep_reaches_a_setsid_escaper() {
 }
 
 # The one parseable ps table shape the sweep fixes: two whitespace-separated
-# numeric columns. GNU (coreutils 9.4) left-pads with spaces; Darwin pads wider
-# and differently -- the parser must not care. Offline stand-ins for the live
-# macOS check, which is owed to the macOS cycle (BACKLOG).
+# numeric columns, which is what `ps -eo pid=,ppid=` gives on GNU and (per the
+# man pages) on Darwin. The pair below differ only in COLUMN WIDTH, so what the
+# second pins is that the parser does not care about padding -- it is NOT macOS
+# coverage and must not be read as any: no Darwin ps produced either fixture.
+# The live macOS check is still owed to the macOS cycle (BACKLOG).
 test_descendant_walk_parses_a_gnu_shaped_table() {
   local table=$'    100      1\n    200    100\n    201    200\n    300      1'
   assert_eq "$(_pr_ae_descendants 100 "$table")" " 100 200 201 " "fixpoint over GNU shape"
 }
 
-test_descendant_walk_parses_a_darwin_shaped_table() {
+test_descendant_walk_ignores_column_width() {
   local table=$'  100     1\n  200   100\n  201   200\n  300     1'
-  assert_eq "$(_pr_ae_descendants 100 "$table")" " 100 200 201 " "fixpoint over Darwin shape"
+  assert_eq "$(_pr_ae_descendants 100 "$table")" " 100 200 201 " "fixpoint, narrower padding"
 }
 
 pr_run_tests

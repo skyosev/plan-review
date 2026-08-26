@@ -23,10 +23,15 @@ Every adapter — real or fake — is invoked identically:
   can exceed.
 - **stdout / stderr** — diagnostics only, captured to a log. The review must never
   arrive on stdout.
-- **`<review_out>`** — the Markdown review, written by the adapter. Write to the
-  path you are given and derive no other: the round hands adapters a scratch path
-  and publishes a copy of it under its own name once the adapter has gone, so a
-  survivor still writing cannot change the artifact the round recorded.
+- **`<review_out>`** — the Markdown review, written by the adapter. Write the review
+  to exactly the path you are given and to no other: the round hands adapters a
+  scratch path and publishes a copy of it under its own name once the adapter has
+  gone, so a survivor still writing cannot change the artifact the round recorded.
+  An adapter may derive a *sibling diagnostic* path from it — `adapters/claude.sh`
+  and `adapters/agent.sh` both write `<review_out>.log` — but nothing that is, or
+  could be mistaken for, the review. The round sweeps the derived `.log` names it
+  knows about (`pr_reviewer_scratch_rm`, `lib/reviewer-runner.sh`); a new one is a
+  new file left behind in the round directory, so add it there too.
 - **`<meta_out>`** — exactly four lines, any of which may be empty:
 
       line 1   session handle to resume next round ('' if the CLI reports none)

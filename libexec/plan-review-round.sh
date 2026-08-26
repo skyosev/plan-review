@@ -145,8 +145,12 @@ mkdir -p "$artifact_dir"
 # about the work, written once; the lock is a fact about right now, and it is
 # held by every process the runner spawned, so it stays held while an orphan is
 # still writing into the round.
-# Busy and broken both exit 2 here, matching every other pre-start refusal in
-# this file; they stay distinguishable by what pr_lock_hold printed.
+# Busy and broken both exit 2 here, matching the other pre-start refusals in
+# this file; they stay distinguishable by what pr_lock_hold printed. 2 is this
+# file's only failure status and so does not identify the failure -- the
+# store-loss aborts further down mean the opposite thing (a round exists, is
+# half-written, and the next must be --fresh) and exit 2 as well. Nothing
+# branches on the status; docs and humans disambiguate by message text.
 pr_lock_hold "$artifact_dir" "a review of $plan_rel is already running." || exit 2
 
 # Round numbering is monotonic and never reused, including after --fresh.

@@ -206,7 +206,21 @@ pr_adapter_exec() {
   # risk, stated as such; never claim "never". A pid that is gone, or whose
   # identity cannot be read, is skipped -- that IS the degrade-to-group-only
   # path.
+  #
+  # `kill -0` FIRST, because _pr_ae_seen accumulates every distinct descendant
+  # ever sampled and never shrinks, while the survivors it must actually kill
+  # are a handful at most: without this line the loop spends one `ps -o lstart=`
+  # fork per REMEMBERED pid, after `wait`, with the session lock held and
+  # nothing printed. Measured 2026-08-27 on this host, an adapter churning ~60
+  # short-lived grandchildren/second for 20s: 434 pids remembered, 2.82s of
+  # post-exit sweep -- and that term is unbounded in the round's own deadline,
+  # which defaults to 900s and whose prompt (lib/prompt.sh) tells reviewers to
+  # run builds. Same workload with the guard: 428 pids, 0.0067s (~420x). It
+  # changes no semantics -- it skips exactly the pids `kill -KILL` could not
+  # have signalled anyway (ESRCH, or EPERM, which `ps` would not have helped
+  # with either). Zombies still pass `kill -0` and are handled below as before.
   for _pr_ae_p in "${!_pr_ae_seen[@]}"; do
+    kill -0 "$_pr_ae_p" 2> /dev/null || continue
     _pr_ae_id="$(ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
     [[ -n "$_pr_ae_id" && "$_pr_ae_id" == "${_pr_ae_seen[$_pr_ae_p]}" ]] || continue
     kill -KILL "$_pr_ae_p" 2> /dev/null

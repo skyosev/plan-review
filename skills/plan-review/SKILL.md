@@ -238,7 +238,11 @@ meant.
   is gone — a full disk or an unwritable `.plan-review/` — not a reviewer problem. The
   round stopped mid-way and its artifacts are incomplete by definition, so do not read
   verdicts out of them and do not retry until the user has fixed the disk or the
-  permissions. Report the message verbatim; the round directory stays for `abort`. When
+  permissions. Report the message verbatim. The round directory stays, but it stays in
+  state `reviewing`: `abort` writes `round.json` through the same directory that just
+  refused a write, so running it now fails too, with a raw `Permission denied` naming a
+  `.tmp` file and exit 2. Do not run it until the store is writable again — which is also
+  the only point at which it is worth running. When
   the user is ready to run again, the next round **must** be `--fresh`: the serial pass
   stopped part-way, so reviewers it never reached still hold last round's resume handles,
   including ones this round would have thrown away.
