@@ -52,6 +52,8 @@ source "$PR_ROOT/lib/session.sh"
 source "$PR_ROOT/lib/doctor.sh"
 source "$PR_ROOT/lib/roster.sh"
 source "$PR_ROOT/lib/config.sh"
+source "$PR_ROOT/lib/adapter-exec.sh"
+source "$PR_ROOT/lib/reviewer-runner.sh"
 
 PR_TIMEOUT_SECS="${PR_TIMEOUT_SECS:-900}"
 PR_KILL_GRACE_SECS="${PR_KILL_GRACE_SECS:-15}"
@@ -245,241 +247,23 @@ if [[ "$round" -gt 1 && "$fresh" -ne 1 && -f "$prev_dir/round.json" ]]; then
   fi
 fi
 
-# --- child-to-parent result records -----------------------------------------
-# JSON, not a delimited line. The first attempt was tab-separated and read back
-# with `IFS=$'\t' read`, which is silently wrong: tab is IFS *whitespace*, so a
-# run of tabs collapses into one delimiter and an empty field — the normal case,
-# since `detail` is empty on success — shifts every later field left by one. The
-# verdict lands in `detail`, the session id in `verdict`, and the last variable
-# comes back empty. jq has no delimiter to get wrong.
-write_result() {
-  local reviewer="$1"
-  jq -n --arg status "$2" --arg detail "$3" --arg verdict "$4" \
-        --arg session "$5" --arg model "$6" --arg effort "$7" --arg cli "$8" \
-        --argjson discard "${9:-false}" --argjson timed_out "${10:-false}" \
-        '{$status, $detail, $verdict, $session, $model, $effort, $cli, $discard, $timed_out}' \
-    > "$round_dir/.result-$reviewer"
-}
-
-# read_result <reviewer> <status-var> <session-var> <discard-var> <timed-out-var>
-# The only values the parent branches on, in one jq rather than one each.
-#
-# `discard` is read as "true or nothing". A truncated or unparseable record
-# leaves every variable empty, which means keep -- the safe direction, since the
-# copy exists to be looked at when something went wrong.
-read_result() {
-  local -n _status="$2" _session="$3" _discard="$4" _timed_out="$5"
-  # Cleared first: `read` leaves a variable alone when it has nothing to read,
-  # and these are reused across the loop, so an unreadable record would silently
-  # inherit the previous reviewer's answer.
-  _status="" _session="" _discard="" _timed_out=""
-  { IFS= read -r _status; IFS= read -r _session; IFS= read -r _discard
-    IFS= read -r _timed_out; } < <(
-    jq -r '.status, .session, (.discard == true), (.timed_out == true)' \
-      < "$round_dir/.result-$1")
-}
-
-# What an exit code is allowed to be reported as.
-#
-# `exit 143` run by a script and death by SIGTERM are the same number through
-# $?, and nothing downstream can separate them. So this NAMES the signal the
-# code is consistent with and states what the runner does know -- that its own
-# deadline had not elapsed -- rather than asserting a signal was delivered. The
-# only kills this runner can speak for are the ones it initiated, which are the
-# 124 and 137 that timeout(1) reports and the caller handles separately.
-exit_detail() {
-  local rc="$1" sig=""
-  if (( rc > 128 && rc < 193 )); then
-    sig="$(kill -l "$((rc - 128))" 2>/dev/null)"
-  fi
-  if [[ -n "$sig" ]]; then
-    printf "exit %s (consistent with SIG%s); the runner's deadline had not elapsed" "$rc" "$sig"
-  else
-    printf 'exit %s' "$rc"
-  fi
-}
-
-# --- run one reviewer -------------------------------------------------------
-# `timeout` puts ITSELF in a new process group and sends TERM to that whole
-# group on expiry, then SIGKILL after PR_KILL_GRACE_SECS -- but only while the
-# direct child is still alive. Measured 2026-08-19: an adapter that handles
-# TERM and exits is reaped at once, timeout returns 124, and a TERM-ignoring
-# grandchild survives indefinitely. `bwrap --die-with-parent` does not save
-# agy and claude either; without --unshare-pid it is PR_SET_PDEATHSIG on the
-# immediate command, not tree cleanup. So the group is swept below, by hand.
-#
-# The sweep runs BEFORE any artifact is read, and that ordering is the point.
-# adapters/agent.sh points the CLI's stdout straight at review_out and every
-# adapter's descendants inherit the round log, so a survivor can still append
-# after its adapter is gone. Killing the group is what makes the file final.
-#
-# The price: descendants no longer get PR_KILL_GRACE_SECS, only the direct
-# child does. Buffered review text, log lines and vendor session state can be
-# lost mid-write. Accepted -- output that arrives after the adapter has gone
-# cannot be attributed to the round recording it, and 15s per leaking reviewer
-# is a high price for a partial line. (The Go orchestrator in the process-note
-# survey reaches group signalling the same way; the measurement above is ours.)
-#
-# Do not reach for `setsid` here: plain `setsid cmd &` forks and the parent exits
-# immediately, so `wait` returns 0 in milliseconds and the reviewer is judged
-# before the adapter has written anything. `setsid -w` waits but then $! is the
-# setsid parent, which is no longer in the child's group, so a group kill misses
-# the child anyway. timeout(1) does both jobs correctly with no watchdog.
-run_reviewer() {
-  local reviewer="$1" adapter="$2"
-  local sandbox review_out meta_out reason_out log prompt_file
-  sandbox="$(pr_sandbox_dir "$session_key" "$reviewer")"
-  review_out="$round_dir/review-$reviewer.md"
-  meta_out="$round_dir/.meta-$reviewer"
-  reason_out="$round_dir/.reason-$reviewer"
-  log="$round_dir/log-$reviewer.txt"
-  prompt_file="$round_dir/.prompt-$reviewer.txt"
-
-  pr_status_event "$status_file" "$reviewer" started
-
-  # The prompt is built BEFORE the sandbox copy so a reviewer that cannot be
-  # given this prompt at all is refused without first rsyncing a full copy of
-  # the repository for it. pr_build_prompt reads only the artifact directory,
-  # never the sandbox, so the order is free.
-  pr_build_prompt "$artifact_dir" "$round" "$reviewer" "$fresh_flag" \
-    "$criteria_initial" "$criteria_rereview" > "$prompt_file"
-
-  # Keyed on the adapter PATH, never the reviewer name -- the rule
-  # pr_doctor_preflight follows, and for the same reason: tests run fakes under
-  # real reviewer names, and a fake has no argv cap. adapters/agy.sh enforces
-  # this itself and is the authority; this copy only saves the rsync.
-  local prompt_bytes
-  if [[ "$adapter" == "$PR_ROOT/adapters/agy.sh" ]]; then
-    prompt_bytes="$(pr_prompt_bytes "$prompt_file")"
-    if (( prompt_bytes >= PR_MAX_ARG_BYTES )); then
-      local cap_detail="prompt is $prompt_bytes bytes, over agy's $PR_MAX_ARG_BYTES argv cap"
-      pr_status_event "$status_file" "$reviewer" failed "$cap_detail"
-      write_result "$reviewer" failed "$cap_detail" "" "" "" "" ""
-      return 0
-    fi
-  fi
-
-  if ! pr_sandbox_refresh "$repo" "$sandbox" >> "$log" 2>&1; then
-    pr_status_event "$status_file" "$reviewer" failed "sandbox refresh failed"
-    write_result "$reviewer" failed "sandbox refresh failed" "" "" "" "" ""
-    return 0
-  fi
-
-  printf '\n\n\n' > "$meta_out"
-
-  local session_in timed_out=0 timed_out_json=false rc=0
-  session_in="$(pr_session_get "$session_map" "$reviewer")"
-
-  # Backgrounded so $! names timeout's pid, which IS the group id. Backgrounding
-  # does not change stdin: the explicit `< "$prompt_file"` overrides bash's
-  # /dev/null default for background jobs. Nothing here closes a descriptor, so
-  # the session lock is still inherited.
-  TMPDIR="$(pr_sandbox_tmp "$session_key" "$reviewer")" \
-  timeout --kill-after="$PR_KILL_GRACE_SECS" "$PR_TIMEOUT_SECS" \
-    bash "$adapter" \
-      "$(pr_sandbox_repo "$session_key" "$reviewer")" \
-      "$session_in" "$review_out" "$meta_out" "$reason_out" \
-      < "$prompt_file" >> "$log" 2>&1 &
-  local timeout_pid=$!
-  wait "$timeout_pid"
-  rc=$?
-  # 124 = TERM deadline reached; 137 = the KILL grace also elapsed.
-  [[ "$rc" -eq 124 || "$rc" -eq 137 ]] && timed_out=1 timed_out_json=true
-  # Harmless when nothing survived: the group is already empty.
-  [[ "$timed_out" -eq 1 ]] && kill -KILL -- "-$timeout_pid" 2> /dev/null
-
-  # Judge on output, not exit code alone: Cursor exits 2 on a denied tool call
-  # while still producing a correct review (D7).
-  local status detail=""
-  if [[ -s "$review_out" ]]; then
-    status=ok
-    if [[ "$timed_out" -eq 1 ]]; then
-      detail="timed out after ${PR_TIMEOUT_SECS}s, partial output kept"
-    elif [[ "$rc" -ne 0 ]]; then
-      detail="$(exit_detail "$rc"), output kept"
-    fi
-  else
-    status=failed
-    if [[ "$timed_out" -eq 1 ]]; then
-      detail="timed out after ${PR_TIMEOUT_SECS}s"
-    else
-      detail="$(exit_detail "$rc"), no output"
-    fi
-  fi
-
-  # An adapter that knows why it went the way it did outranks anything inferred
-  # from an exit code -- including on a successful round, where a swapped model
-  # or a denied tool call has nothing else to report it. First line only, any
-  # trailing CR stripped, truncated: this lands in a status line and round.json.
-  if [[ -s "$reason_out" ]]; then
-    local reason=""
-    IFS= read -r reason < "$reason_out"
-    reason="${reason%$'\r'}"
-    [[ -n "$reason" ]] && detail="${reason:0:200}"
-  fi
-
-  if [[ "$status" == ok ]]; then
-    pr_parse_files_inspected "$review_out" > "$round_dir/files-inspected-$reviewer.txt"
-    pr_status_event "$status_file" "$reviewer" finished "$detail"
-  else
-    pr_status_event "$status_file" "$reviewer" \
-      "$([[ "$timed_out" -eq 1 ]] && echo timed_out || echo failed)" "$detail"
-  fi
-
-  # The session map is NOT written here. This function runs as a background job,
-  # and three concurrent unlocked read-modify-writes through a shared temp file
-  # would drop handles or make one `mv` fail. The parent applies them serially
-  # after `wait`, using the session id carried in this record.
-  # <meta_out> line order is the adapter contract; see docs/adapter-contract.md.
-  # Read as a whole: one builtin, and the positions stay visibly the contract's
-  # line numbers. A short file is not an error -- an adapter that died before
-  # writing its version leaves fewer than four lines, and the missing ones are
-  # empty, exactly as the per-line reads left them.
-  local meta=()
-  [[ -r "$meta_out" ]] && mapfile -t meta < "$meta_out"
-
-  # Whether this reviewer's repo copy can go. Decided here, where status, rc and
-  # Decided here, where every input to the decision -- rc, timed_out and the
-  # operator's PR_KEEP_SANDBOX, which a background job of this shell sees just as
-  # the parent does -- is already in hand; acted on by the parent, because cleanup that
-  # warns has to write round.json and every mutation of that file happens in the
-  # serial pass. `$$` inside a subshell is the PARENT's pid, so two children
-  # warning at once would collide on one temp file in _pr_round_edit.
-  #
-  # `status == ok` alone is not "finished cleanly" -- Cursor exits 2 on a denied
-  # tool call while still producing a correct review, and a timed-out reviewer's
-  # partial output is kept precisely so its tree can be read.
-  local discard=false
-  [[ "${PR_KEEP_SANDBOX:-0}" != 1 && "$status" == ok && "$timed_out" -eq 0 && "$rc" -eq 0 ]] \
-    && discard=true
-
-  write_result "$reviewer" "$status" "$detail" \
-    "$(pr_parse_verdict "$review_out")" \
-    "${meta[0]-}" "${meta[1]-}" "${meta[2]-}" "${meta[3]-}" "$discard" \
-    "$timed_out_json"
-}
-
 # --- fan out ----------------------------------------------------------------
-# Every process below inherits the session lock's descriptor, and that
-# inheritance IS the mechanism: an orphan that outlives this runner keeps the
-# session held, so the next round waits instead of writing over it. Anything
-# added here that closes descriptors -- a `>&-` in a wrapper, an `env -i` style
-# sanitiser -- would silently narrow that to whoever still holds the fd.
-reviewers=()
-for pair in $adapter_map; do
-  reviewers+=("${pair%%=*}")
-  run_reviewer "${pair%%=*}" "${pair#*=}" &
-done
-wait
+# The whole dispatch -- prompt build, sandbox refresh, spawn, deadline, sweep,
+# result records -- lives in lib/reviewer-runner.sh (lib/adapter-exec.sh
+# beneath it) and reads this shell's variables through the contract
+# pr_reviewer_run_all validates before spawning anything. A refusal is a
+# programming error, not an operator one: it exits like any other mid-round
+# failure and leaves the round for `plan-review abort`.
+pr_reviewer_run_all "$adapter_map" || exit 2
 
 # Serial: every mutation of round.json and session-map.json happens here, in the
 # parent, after all reviewers have finished. Nothing below races.
 ok_count=0
-for reviewer in "${reviewers[@]}"; do
+for reviewer in $reviewer_keys; do
   # round.json is written straight from the child's record, so no field list is
   # restated here. Only the values the parent actually branches on are read.
   pr_round_record_reviewer "$round_dir" "$reviewer" "$round_dir/.result-$reviewer"
-  read_result "$reviewer" status session discard timed_out_flag
+  pr_reviewer_result_read "$reviewer" status session discard timed_out_flag
   if [[ "$discard" == true ]]; then
     # Housekeeping, never a verdict on the round: a round that produced three
     # good reviews must not be reported broken because a temp copy would not
