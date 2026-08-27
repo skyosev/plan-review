@@ -57,7 +57,13 @@ if ! mkdir -p "$cfg" 2>/dev/null; then
   echo "claude adapter: cannot create the private config dir at $cfg" >&2
   exit 1
 fi
-creds="$HOME/.claude/.credentials.json"
+# ${HOME:-} rather than $HOME, here and in the whitelist below: set -u is on and
+# PR_CACHE_ROOT lets the runner work in an environment with no HOME at all, where
+# bare $HOME would take this reviewer out with a bash-internal "unbound variable"
+# on a path that otherwise runs fine. No credentials file to bind is a state the
+# [[ -f ]] below already handles. The reasoning is adapters/codex.sh:97's, at
+# length; adapters source nothing, so the pointer is the cross-reference.
+creds="${HOME:-}/.claude/.credentials.json"
 
 jail=(
   bwrap
@@ -74,6 +80,12 @@ jail+=(
   --die-with-parent
   --unshare-uts
   --unshare-ipc
+  # --unshare-pid is what makes --die-with-parent tree cleanup rather than
+  # PDEATHSIG on the immediate command (measured 2026-08-27,
+  # probes/2026-08-27-pid-namespace-adapters). Without it a grandchild
+  # survives the jail and only the kernel's best-effort descendant sweep
+  # stands between it and files the round has already read.
+  --unshare-pid
 )
 
 # The environment is rebuilt from nothing, not inherited. A Claude Code session
@@ -89,7 +101,7 @@ jail+=(
 # that it might be needed -- an untested variable here is an untested jail.
 env_clean=(
   env -i
-  HOME="$HOME"
+  HOME="${HOME:-}"
   PATH="$PATH"
   TERM="${TERM:-dumb}"
   LANG="${LANG:-C.UTF-8}"

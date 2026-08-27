@@ -108,6 +108,15 @@ test_jail_binds_the_workdir_writable_and_the_root_readonly() {
   assert_contains "$argv" "--chdir" "cwd set explicitly; claude honours it"
 }
 
+# Same measurement as agy's: --die-with-parent alone lets grandchildren
+# survive; --unshare-pid is the tree cleanup (2026-08-27,
+# probes/2026-08-27-pid-namespace-adapters).
+test_jail_unshares_pid() {
+  local d; d="$(setup)"; run_adapter "$d"
+  assert_contains "$(< "$d/bin/bwrap-argv.txt")" "--unshare-pid" \
+    "pid namespace requested"
+}
+
 test_the_credentials_file_is_bound_read_only_never_copied() {
   local d argv; d="$(setup)"; run_adapter "$d"
   argv="$(cat "$d/bin/bwrap-argv.txt")"

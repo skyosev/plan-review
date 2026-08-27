@@ -3,6 +3,22 @@ set -uo pipefail
 PR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PR_ROOT/tests/helpers.sh"
 
+# Sourced here as well as inside doctor_run's fresh bash, because the jail-probe
+# cases below call _pr_doctor_bwrap_probe directly: it returns a status and
+# fills a nameref, and neither survives a `$BASH -c` subshell. Sourcing lib/ is
+# side-effect free by convention, so this costs nothing the other cases notice.
+source "$PR_ROOT/lib/paths.sh"
+source "$PR_ROOT/lib/doctor.sh"
+
+# The probe now WAITS for a marker that must never appear, so its pass path
+# costs ticks x 0.1s. Ten is the operator-facing default (generous against a
+# loaded host); two is what keeps the offline suite inside CLAUDE.md's budget.
+# Exported at file scope rather than per test, because the probe is reached
+# three ways here -- directly, through pr_doctor_check_bwrap_jail, and through
+# a real `plan-review doctor` whose roster happens to include agy or claude --
+# and only the first of those is obvious at the call site.
+export PR_BWRAP_PROBE_TICKS=2
+
 # Each case runs the checks in a fresh bash so the pass/warn/fail counters start
 # at zero, and appends a `counts <pass> <warn> <fail>` line for the assertions.
 #
@@ -56,6 +72,44 @@ test_present_core_utilities_pass_as_one_check() {
   assert_contains "$out" "counts 1 0 0" "one pass for the whole set"
 }
 
+# The group sweep asserts GNU timeout's own-process-group behaviour
+# (lib/adapter-exec.sh header, measured 2026-08-27). busybox timeout stays in
+# the caller's group, so under it `kill -- -$pid` is silently inert. README
+# already requires GNU coreutils; this checks the requirement -- and FAILS,
+# not warns, because a silently inert sweep is the kind of degrade nothing
+# else would ever surface.
+#
+# Through doctor_run, like every other check case here, and asserting the
+# `counts` line rather than the return status: rc=1 alone cannot tell a FAIL
+# from a `pr_d_warn` that happens to return 1, and fail-vs-warn is the whole
+# claim above. It also keeps the counters in a fresh bash -- calling the check
+# in this file's own shell would print a red [FAIL] block in the middle of a
+# green run and leave PR_DOCTOR_FAIL raised for every case after it.
+# The stub answers on STDERR with nothing on stdout and a non-zero exit, because
+# that is what busybox does -- measured, v1.36.1: an unrecognized long option
+# gets `timeout: unrecognized option '<opt>'` and the usage block, all on stderr,
+# rc=1. An earlier version of this stub echoed to STDOUT, which made the case
+# pass over a real defect: doctor_run merges 2>&1 itself, so "BusyBox" appeared
+# in $out whether or not the check had put it on the `got:` line, and it had not
+# (pr_doctor_run's stdout replay is unguarded, so $v arrived with a leading
+# newline and the line printed empty). Hence the assertion below is on
+# `got: BusyBox`, not on `BusyBox`: the substring alone proves nothing here.
+test_doctor_fails_a_non_gnu_timeout() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/timeout" 'echo "BusyBox v1.36.1 multi-call binary" >&2; exit 1'
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_gnu_timeout')"
+  assert_contains "$out" "not GNU coreutils" "names what is wrong"
+  assert_contains "$out" "got: BusyBox" "the diagnostic reaches the got: line, not just the stream"
+  assert_contains "$out" "counts 0 0 1" "non-GNU timeout is a FAILURE, not a warning"
+}
+
+test_doctor_passes_gnu_timeout() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/timeout" 'echo "timeout (GNU coreutils) 9.4"'
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_gnu_timeout')"
+  assert_contains "$out" "counts 1 0 0" "GNU coreutils timeout passes, cleanly"
+}
+
 test_absent_reviewer_cli_points_at_the_roster_escape_hatch() {
   local d; d="$(pr_test_tmpdir)"
   mkdir -p "$d/bin"
@@ -99,11 +153,102 @@ test_broken_jail_is_distinguished_from_missing_bwrap() {
   assert_contains "$out" "counts 0 0 1" "a failure"
 }
 
+# The truthful pass stub -- the payload ran (spawned appears) and the detached
+# writer died with the namespace (survived never lands) -- lives in helpers.sh,
+# because test-init.sh needs the same shape.
 test_working_jail_passes() {
   local d; d="$(pr_test_tmpdir)"
-  pr_test_mkstub "$d/bin/bwrap" 'exit 0'
+  install_containing_bwrap_stub "$d/bin"
   local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_bwrap_jail')"
   assert_contains "$out" "counts 1 0 0" "a working jail is one pass"
+  assert_contains "$out" "contains a detached process" \
+    "and the message says what was proved, not merely which flags started"
+}
+
+# The probe must MEASURE containment, not flag acceptance: a bwrap that
+# starts the jail fine but lets a detached process outlive it (the exact
+# shape of --die-with-parent without --unshare-pid) has to fail. The stub
+# runs the payload with plain host bash -- uncontained by construction -- so
+# both markers appear and the probe must notice within its wait window.
+install_escaping_bwrap_stub() {
+  pr_test_mkstub "$1/bwrap" 'args=("$@")
+for i in "${!args[@]}"; do
+  [[ "${args[$i]}" == bash ]] && exec "${args[@]:$i}"
+done
+exit 0'
+}
+
+test_bwrap_probe_fails_when_a_detached_process_survives() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  install_escaping_bwrap_stub "$d/bin"
+  local out rc=0
+  PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=5 \
+    _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  assert_eq "$rc" "1" "an escaping writer is a failed jail"
+  assert_contains "$out" "survived" "the failure names what happened"
+}
+
+# A bwrap that exits 0 without ever running the payload must FAIL, not pass:
+# silence is not containment. This is the case a one-marker probe gets wrong.
+test_bwrap_probe_fails_when_the_payload_never_ran() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/bwrap" 'exit 0'
+  local out rc=0
+  PATH="$d/bin:$PATH" _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  assert_eq "$rc" "1" "no spawned marker means the measurement never happened"
+  assert_contains "$out" "never started" "the failure names what happened"
+}
+
+# A garbage tick count must not silently disable the containment window:
+# `(( _i < abc ))` reads an unset name as 0, so an unclamped bound would skip
+# the loop entirely and report an escaping jail as contained -- a false pass on
+# the one thing this probe adds. The stub is the escaping one, so the correct
+# answer is still a failure. (It costs ~0.2s, not the clamped ten ticks: the
+# loop breaks as soon as `survived` lands.)
+test_a_non_numeric_tick_count_is_clamped_not_honoured() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  install_escaping_bwrap_stub "$d/bin"
+  local out rc=0
+  PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=abc \
+    _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  assert_eq "$rc" "1" "the escape is still caught with a garbage tick count"
+  assert_contains "$out" "survived" "the window ran at the clamped default"
+}
+
+test_bwrap_probe_passes_when_the_jail_contains() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  install_containing_bwrap_stub "$d/bin"
+  local out rc=0
+  PATH="$d/bin:$PATH" _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  assert_eq "$rc" "0" "spawned without survived is containment"
+}
+
+# agent's bwrap is a pid fence, not a write barrier, and its adapter degrades
+# to unwrapped rather than refusing -- so a jail that does not work is a WARN
+# here, not the failure pr_doctor_check_bwrap_jail reports for agy and claude.
+# Failing would refuse a roster that works.
+test_a_broken_jail_only_warns_for_agent() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/bwrap" 'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1'
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agent_pid_fence')"
+  assert_contains "$out" "counts 0 1 0" "a warning, not a failure"
+  assert_contains "$out" "runs without a pid namespace" "says what was lost"
+  assert_contains "$out" "still runs" "and that the reviewer is not lost with it"
+}
+
+test_a_missing_bwrap_only_warns_for_agent() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_agent_pid_fence')"
+  assert_contains "$out" "counts 0 1 0" "no bwrap is a warning here; macOS never has one"
+  assert_contains "$out" "session lock" "names the consequence of a survivor"
+}
+
+test_a_working_jail_passes_for_agent_as_a_fence() {
+  local d; d="$(pr_test_tmpdir)"
+  install_containing_bwrap_stub "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agent_pid_fence')"
+  assert_contains "$out" "counts 1 0 0" "a working jail is one pass"
+  assert_contains "$out" "not a write barrier" "and the report says what it is not"
 }
 
 test_unwritable_cache_root_fails() {
@@ -906,7 +1051,25 @@ test_a_codex_only_roster_does_not_check_the_bubblewrap_jail() {
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
   out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "no reviewer here needs the bubblewrap jail" "skipped, and said so"
-  assert_not_contains "$out" "bwrap jail works" "the probe did not run"
+  assert_not_contains "$out" "bwrap jail contains" "the probe did not run"
+}
+
+# agent wraps every vendor invocation in a pid-namespace bwrap now, so the old
+# "no reviewer here needs the bubblewrap jail" was false for this roster.
+test_an_agent_roster_checks_the_pid_fence_instead_of_skipping() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkrepo_with_config "$d/repo" '{"reviewers": ["codex", "agent"]}'
+  # `agent` is stubbed even though this case runs on the real PATH: the roster
+  # makes the doctor run pr_doctor_check_agent_identity, and that invokes the
+  # real Cursor CLI. Nothing in this suite may call a real CLI.
+  pr_test_mkstub "$d/bin/agent" \
+    '[[ "$1 $2" == "about --format" ]] && { echo "{\"cliVersion\":\"stub\"}"; exit 0; }
+exit 1'
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
+         bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
+  assert_not_contains "$out" "no reviewer here needs the bubblewrap jail" \
+    "agent needs one now, and the report no longer claims otherwise"
+  assert_contains "$out" "pid namespace" "the fence is what is reported"
 }
 
 test_an_agy_roster_does_check_the_bubblewrap_jail() {
@@ -992,6 +1155,21 @@ test_smoke_fails_a_dead_reviewer_and_quotes_its_reason() {
   assert_contains "$out" "the vendor said no" "reason_out outranks the exit code"
   assert_not_contains "$out" "a second line nobody should read" "first line only"
   assert_contains "$out" "counts 0 0 1" "a failure"
+}
+
+# A failed smoke keeps its directory for diagnosis and nothing ever cleans it,
+# so a copied credential left in there is permanent -- one per failed smoke,
+# under a doctor-smoke.$$ key, invisible to `codex logout`. The token is the one
+# thing the diagnosis never needs, so it goes before the "kept" line names the
+# directory. The fixture sites it exactly where adapters/codex.sh does.
+test_a_failed_smoke_keeps_the_evidence_but_not_the_credentials() {
+  local d out; d="$(pr_test_tmpdir)"
+  out="$(smoke_run "codex=$FAKES/fake-fail-leaving-credentials.sh")"
+  assert_contains "$out" "kept for diagnosis" "the directory is still kept"
+  local home=("$d"/cache/doctor-smoke.*/codex/codex-home)
+  assert_file_missing "${home[0]}/auth.json" "the credential copy is gone"
+  assert_file_exists "${home[0]}/config.toml" \
+    "and only the credential -- the rest of the private home is evidence"
 }
 
 # The case the smoke exists for, and the round's measured lesson in one: an

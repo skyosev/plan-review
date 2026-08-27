@@ -10,8 +10,37 @@
 # substitution is the opposite discipline, and folding it in would be the
 # flag-driven single entry point that note refused.
 #
-# Requires timeout(1). Callers own the fallback: the smoke tier skips without
+# Requires GNU timeout(1) -- not merely a timeout(1). The group sweep below
+# rests on GNU coreutils putting timeout in a process group of ITS OWN, which
+# is what makes `kill -- -$pid` on timeout's pid reach the adapter's whole
+# tree. Measured 2026-08-27, GNU coreutils 9.4, in both a script and a
+# `bash -c`, the runner never being timeout's group:
+#
+#     runner  pid=2189488 pgid=2189488
+#     timeout pid=2189492 pgid=2189492
+#
+# busybox's timeout does not do this: with no setpgid, its pid is not the
+# pgid of any existing group, so `kill -- -$pid` addresses a process group
+# that does not exist -- ESRCH, nothing killed. Not a self-kill: the runner's
+# own group has a different number and is never the target. The group sweep
+# is simply SILENTLY inert -- in the same environment where
+# busybox `ps` already rejects `-eo` and degrades just as silently.
+# `pr_doctor_check_gnu_timeout` (lib/doctor.sh) exists to catch exactly that,
+# and FAILS rather than warning, because nothing else would ever surface it.
+# Callers own the fallback for outright ABSENCE: the smoke tier skips without
 # it, the round has always assumed it.
+#
+# The MIXED host -- GNU `ps`, non-GNU `timeout` -- is worth naming, because the
+# `ps` caps below all use `--kill-after` and a busybox timeout rejects the long
+# option, so every capped read there returns empty and descendant tracking is
+# entirely off. That is NOT a regression the caps introduced: the adapter spawn
+# a few lines down has passed `timeout --kill-after=` since this kernel landed,
+# so on such a host no adapter is spawned at all and there is no tree left to
+# track. Measured 2026-08-27, BusyBox v1.36.1: `timeout --kill-after=1 1 true`
+# answers `timeout: unrecognized option '--kill-after=1'`, rc=1. A busybox
+# `timeout` is a host where the round produces nothing whatever, before and
+# after the caps alike -- which is why the doctor FAILS on it rather than
+# degrading, and why nothing here carries a non-GNU fallback.
 
 # pr_adapter_exec <adapter> <workdir> <session> <review> <meta> <reason> <log> \
 #                 <deadline-secs> <tmpdir> <rc-var> <timed-out-var>
@@ -52,9 +81,11 @@
 # group on expiry, then SIGKILL after the grace -- but only while the direct
 # child is still alive. Measured 2026-08-19: an adapter that handles TERM and
 # exits is reaped at once, timeout returns 124, and a TERM-ignoring grandchild
-# survives indefinitely. `bwrap --die-with-parent` does not save agy and
-# claude either; without --unshare-pid it is PR_SET_PDEATHSIG on the immediate
-# command, not tree cleanup. So the group is swept below, by hand, BEFORE this
+# survives indefinitely. `bwrap --die-with-parent` alone did not save agy and
+# claude either -- without --unshare-pid it is PR_SET_PDEATHSIG on the
+# immediate command, not tree cleanup, measured both ways 2026-08-27 (probes
+# 2026-08-27-pid-namespace-adapters). Their adapters now pass --unshare-pid, so
+# the jail does its half; the group is still swept below, by hand, BEFORE this
 # function returns -- the caller reads artifacts only after the group is dead.
 #
 # The sweep is UNCONDITIONAL, not post-timeout: --kill-after never fires for
@@ -74,21 +105,46 @@
 #
 # What the group sweep does NOT do is bound a leaking reviewer. P6 (probes
 # 2026-08-26) established that it reaches the spawned command of no shipped
-# reviewer: agy and claude are already contained by their adapters' bwrap,
-# codex by its own --as-pid-1, and `agent` by nothing at all -- its tool layer
-# takes its own process group AND its own session, so a group kill on the
-# timeout pid cannot address it. One real 90s round left `sleep 900` running
-# after the round had returned, holding the inherited session-lock fd. So the
-# group kill is followed by a DESCENDANT sweep over the pids sampled during
-# the polled wait below. That sweep is best-effort by construction and is what
-# bounds the leak and frees the lock; what makes the review artifact final is
-# the caller's publication step (lib/reviewer-runner.sh), not either sweep.
+# reviewer: codex is contained by its own --as-pid-1, and `agent` was contained
+# by nothing at all -- its tool layer takes its own process group AND its own
+# session, so a group kill on the timeout pid cannot address it. One real 90s
+# round left `sleep 900` running after the round had returned, holding the
+# inherited session-lock fd.
+#
+# P6 also asserted that agy and claude "are covered by the adapter's bwrap".
+# That half was inference, not measurement -- P6 ran only codex and agent --
+# and it was false: --die-with-parent without --unshare-pid contains nothing
+# below the immediate command. Measured 2026-08-27 and fixed the same day; all
+# three bwrap-wrapped adapters now pass --unshare-pid, and `agent` gained a
+# pid-namespace-only bwrap of its own (probes
+# 2026-08-27-pid-namespace-adapters). On Linux, therefore, every shipped
+# reviewer is contained. None of that is true on macOS, which has no bwrap and
+# no pid namespaces, and none of it is guaranteed for a reviewer added later.
+#
+# So the group kill is followed by a DESCENDANT sweep over the pids sampled
+# during the polled wait below. That sweep is best-effort by construction and
+# is what bounds the leak and frees the lock wherever the jail does not; what
+# makes the review artifact final is the caller's publication step
+# (lib/reviewer-runner.sh), not either sweep.
 #
 # Do not reach for `setsid` here: plain `setsid cmd &` forks and the parent
 # exits immediately, so `wait` returns 0 in milliseconds and the adapter is
 # judged before it has written anything. `setsid -w` waits but then $! is the
 # setsid parent, no longer in the child's group, so a group kill misses the
 # child anyway. timeout(1) does both jobs correctly with no watchdog.
+
+# _pr_ae_ps <ps-args...> -- every `ps` this module runs, capped.
+#
+# One function rather than three spellings of the same command substitution:
+# the cap variable, the `--kill-after` escalation and the `2>/dev/null` are a
+# single contract, argued at length at the first call site, and three copies of
+# it are three places for that contract to drift. `_pr_ae_cap` is reached by
+# dynamic scope from pr_adapter_exec, which is the only caller's caller.
+#
+# No extra process: every call site was already a command substitution.
+_pr_ae_ps() {
+  timeout --kill-after=1 "$_pr_ae_cap" ps "$@" 2> /dev/null
+}
 
 # _pr_ae_descendants <root-pid> <pid-ppid-table> -> _pr_ae_desc, space-padded
 #
@@ -155,6 +211,13 @@ pr_adapter_exec() {
   # Nothing here closes a descriptor: the lock fd still rides through.
   local -A _pr_ae_seen=()
   local _pr_ae_tick=0.05 _pr_ae_table _pr_ae_p _pr_ae_id _pr_ae_desc
+  # PR_PS_CAP_SECS exists so the offline suite can shrink the hang tests --
+  # but it is read from the environment, and GNU timeout accepts a
+  # syntactically valid huge duration verbatim, so an inherited
+  # PR_PS_CAP_SECS=999999 would stretch every bound below to days. Clamped
+  # once: outside 1..5 means the default.
+  local _pr_ae_cap="${PR_PS_CAP_SECS:-5}"
+  [[ "$_pr_ae_cap" =~ ^[1-5]$ ]] || _pr_ae_cap=5
   # `kill -0` succeeds on a ZOMBIE, so what ends this loop is bash reaping its
   # own async job in its SIGCHLD handling and only then making the pid
   # unsignallable; `wait` below still returns the status bash stashed. Verified
@@ -171,7 +234,34 @@ pr_adapter_exec() {
   # (pid_max 4194304 here, ~99999 on macOS) and untreated for the same reason:
   # the treatment costs more than the exposure. Stated, not hidden.
   while kill -0 "$_pr_ae_pid" 2> /dev/null; do
-    _pr_ae_table="$(ps -eo pid=,ppid= 2> /dev/null)" || _pr_ae_table=""
+    # Capped: timeout(1) above bounds the ADAPTER, not this loop watching it,
+    # and an uncapped ps that never returns would hang the round forever with
+    # the session lock held (unbounded wait: certain; the stall itself:
+    # plausible, a /proc read against uninterruptible sleep, NOT reproduced --
+    # do not upgrade this comment to "measured" until it is). A read that
+    # dies here leaves the table EMPTY-AS-UNKNOWN, not empty-as-no-processes:
+    # the || branch skips the walk for this tick rather than concluding the
+    # tree has no members, which is why tidying it into "table is empty, no
+    # descendants" would be wrong. One extra fork per tick; measured against
+    # the suite budget in CLAUDE.md. PR_PS_CAP_SECS exists so the offline
+    # suite can shrink the hang test, not as an operator knob.
+    #
+    # --kill-after (the flag lives in _pr_ae_ps, with every other ps here),
+    # because `timeout N` does not RETURN at N -- it signals and
+    # then WAITS for its child, the same escalation the adapter's own timeout
+    # above needs and for the same reason. Measured 2026-08-27, GNU coreutils
+    # 9.4: `timeout 1 bash -c 'trap "" TERM; sleep 5'` took 5.003s, and the
+    # identical command with `--kill-after=1` took 2.002s.
+    #
+    # What that does NOT buy: a ps wedged in UNINTERRUPTIBLE sleep -- the very
+    # /proc-read stall named as the credible trigger three sentences up --
+    # takes neither TERM nor KILL, so timeout blocks in waitpid, this command
+    # substitution never closes, and the round wedges exactly as it would
+    # have. Neither this cap nor the sweep deadline below bounds that case,
+    # and nothing here should be read as claiming they do. What the cap does
+    # bound is every stall a signal can end, which is every stall anyone has
+    # actually seen.
+    _pr_ae_table="$(_pr_ae_ps -eo pid=,ppid=)" || _pr_ae_table=""
     if [[ -n "$_pr_ae_table" ]]; then
       _pr_ae_descendants "$_pr_ae_pid" "$_pr_ae_table"
       for _pr_ae_p in $_pr_ae_desc; do
@@ -189,7 +279,10 @@ pr_adapter_exec() {
         # folded into one atomic `ps -eo pid=,ppid=,lstart=` because that is a
         # third column shape to parse and pin across two platforms, for an
         # exposure this size.
-        _pr_ae_id="$(ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
+        # Capped for the same reason as the table read above; the existing
+        # `[[ -n ]]` guard already treats a failed read as skip-this-pid --
+        # unknown, never empty.
+        _pr_ae_id="$(_pr_ae_ps -o lstart= -p "$_pr_ae_p")"
         [[ -n "$_pr_ae_id" ]] && _pr_ae_seen[$_pr_ae_p]="$_pr_ae_id"
       done
     fi
@@ -224,9 +317,36 @@ pr_adapter_exec() {
   # changes no semantics -- it skips exactly the pids `kill -KILL` could not
   # have signalled anyway (ESRCH, or EPERM, which `ps` would not have helped
   # with either). Zombies still pass `kill -0` and are handled below as before.
+  # A deadline over the sweep, stamped before it starts and checked before
+  # each read: the per-call cap bounds each read, not their sum, and N
+  # survivors x 5s is unbounded in principle even though the kill -0 guard
+  # cuts N to a handful. "A handful" is IMPLIED BY, not counted in, the
+  # measurement two paragraphs above: 434 pids remembered and a guarded sweep
+  # of 0.0067s at ~6ms per ps leaves room for single digits of survivors. The
+  # 428 in that paragraph is the remembered count with the guard, not the
+  # survivor count; nobody has counted survivors directly.
+  #
+  # The true bound is this deadline PLUS one per-call cap of slack -- a read
+  # that starts just under the wire still runs to its own cap -- and that
+  # holds only for reads a signal can end. The deadline is checked BEFORE
+  # each read, so a single uninterruptible read never returns to be
+  # deadlined: see the poll loop's comment above, where the same hole is
+  # stated at length. Stopping early skips the identity check and the kill for the
+  # remaining pids -- degrading to group-only cleanup, the same documented
+  # degradation as a failed read. 30s is deliberate slack: at the measured
+  # survivor counts the sweep ends in well under one cap's worth of time, so
+  # this trips only when something is already wrong with ps itself.
+  #
+  # ACCEPTED VERIFICATION GAP: no test reaches this `break`. Forcing it needs
+  # several REMEMBERED survivors whose reads all hang at sweep time, and that
+  # machinery outweighs a one-line guard whose failure mode is "sweeps longer
+  # than it had to". The per-call cap on the read below IS covered
+  # (tests/test-adapter-exec.sh); the deadline is not. Do not claim otherwise.
+  local _pr_ae_sweep_deadline=$(( SECONDS + 30 ))
   for _pr_ae_p in "${!_pr_ae_seen[@]}"; do
+    (( SECONDS >= _pr_ae_sweep_deadline )) && break
     kill -0 "$_pr_ae_p" 2> /dev/null || continue
-    _pr_ae_id="$(ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
+    _pr_ae_id="$(_pr_ae_ps -o lstart= -p "$_pr_ae_p")"
     [[ -n "$_pr_ae_id" && "$_pr_ae_id" == "${_pr_ae_seen[$_pr_ae_p]}" ]] || continue
     kill -KILL "$_pr_ae_p" 2> /dev/null
   done

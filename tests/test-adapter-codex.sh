@@ -3,6 +3,12 @@ set -uo pipefail
 PR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PR_ROOT/tests/helpers.sh"
 
+# The adapter copies $HOME/.codex/auth.json into the private CODEX_HOME. Point
+# HOME at a path that cannot exist, for the whole file, so no test that does not
+# set its own HOME can copy the operator's real credentials into a tmpdir. The
+# two tests that care about the copy override this per invocation.
+HOME=/nonexistent/pr-test-home
+
 # Installs a stub `codex` mimicking 0.147.0: banner on stderr, final message
 # written to the file named by -o.
 # `effort_echo` overrides what the banner reports, so a mismatch can be forced.
@@ -13,6 +19,7 @@ install_stub() {
   cat > "$bindir/codex" <<STUB
 #!/usr/bin/env bash
 printf '%s\n' "\$@" > "$bindir/argv.txt"
+printf 'CODEX_HOME=%s\n' "\${CODEX_HOME:-}" > "$bindir/env.txt"
 cat > "$bindir/stdin.txt"
 out=""
 prev=""
@@ -158,7 +165,7 @@ test_review_file_holds_only_the_review() {
 }
 
 test_unexpected_sandbox_header_aborts_with_no_review() {
-  local d rc; d="$(pr_test_tmpdir)"
+  local d rc line; d="$(pr_test_tmpdir)"
   install_stub "$d/bin" "sandbox: danger-full-access"
   mkdir -p "$d/work"
   echo "prompt" | PATH="$d/bin:$PATH" \
@@ -168,11 +175,29 @@ test_unexpected_sandbox_header_aborts_with_no_review() {
   assert_file_missing "$d/r.md" "no review written"
   assert_contains "$(cat "$d/out.txt")" "workspace-write [workdir]" "explains the expectation"
   # The symptom names no file, so both the log and the reason -- the only line
-  # the round's summary shows -- must name the likeliest cause.
-  assert_contains "$(cat "$d/out.txt")" "~/.codex/config.toml" \
+  # the round's summary shows -- must name the likeliest cause. That file is the
+  # config.toml codex writes into the private CODEX_HOME, NOT the operator's
+  # ~/.codex, which this reviewer no longer reads: a diagnostic pointing at a
+  # file the reviewer does not read is worse than none.
+  assert_contains "$(cat "$d/out.txt")" "codex-home/config.toml" \
     "the log names the file the operator has to look in"
-  assert_contains "$(cat "$d/reason.txt")" "~/.codex/config.toml" \
-    "and so does the reason carried back to the round"
+  assert_not_contains "$(cat "$d/out.txt")" "~/.codex/config.toml" \
+    "and not the one the private home took out of scope"
+  # The reason is NOT the same text as the log. lib/reviewer-runner.sh does
+  # `detail="${reason:0:200}"`, and the sandbox path it would have interpolated
+  # (~/.cache/plan-review/<hash>-<slug>/<reviewer>/codex-home) pushed the old
+  # wording to 210-240 characters for a realistic key -- so round.json's detail,
+  # the one line the round summary shows, lost its tail and for a long plan slug
+  # was cut inside the path. The reason names the file without spelling out
+  # where it is; the log, which nothing truncates, keeps the absolute path.
+  assert_contains "$(cat "$d/reason.txt")" "CODEX_HOME's config.toml" \
+    "the reason names the file too, without the path that overflowed the cap"
+  assert_not_contains "$(cat "$d/reason.txt")" "$d" \
+    "no sandbox path in the reason: its length must not depend on the cache key"
+  # And it must fit the cap outright, not merely today.
+  IFS= read -r line < "$d/reason.txt"
+  [[ ${#line} -le 200 ]] \
+    || pr_fail "reason is ${#line} chars; lib/reviewer-runner.sh truncates at 200"
 }
 
 # A missing banner is not a pass. --json suppresses it, and so would any future
@@ -191,6 +216,63 @@ STUB
   rc=$?
   assert_exit_code "$rc" 1 "aborts on a silent CLI"
   assert_contains "$(cat "$d/out.txt")" "no sandbox line" "says the banner was absent"
+}
+
+# The operator's ~/.codex/config.toml took a reviewer out once already
+# (P6 side-finding: an obsolete top-level field failed --strict-config and
+# codex never started -- still reproducible on this host at codex-cli 0.150.1,
+# probes/2026-08-27-codex-private-home leg 0). A private CODEX_HOME, sibling to
+# the repo copy so rollouts survive pr_sandbox_refresh's per-round wipe, removes
+# the operator's user-level config from the round.
+test_codex_runs_under_a_private_home_with_hooks_off() {
+  local d; d="$(pr_test_tmpdir)"
+  install_stub "$d/bin" "sandbox: workspace-write [workdir]"
+  mkdir -p "$d/sandbox/repo" "$d/home/.codex"
+  echo '{"tokens": "operator"}' > "$d/home/.codex/auth.json"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/codex.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  assert_contains "$(< "$d/bin/env.txt")" \
+    "CODEX_HOME=$d/sandbox/codex-home" "private home, sibling to the repo copy"
+  assert_contains "$(< "$d/bin/argv.txt")" "features.hooks=false" \
+    "repo-supplied hooks are off"
+  assert_file_exists "$d/sandbox/codex-home/auth.json" \
+    "auth material copied in, not pointed at"
+  assert_eq "$(< "$d/home/.codex/auth.json")" '{"tokens": "operator"}' \
+    "the operator's real auth file is untouched"
+}
+
+# set -u is on and PR_CACHE_ROOT lets the runner work with no HOME at all. A
+# bare $HOME in the auth-copy test would then take the reviewer out with a
+# bash-internal "unbound variable" on a path that otherwise runs fine.
+test_no_home_still_runs_with_the_private_home() {
+  local d rc; d="$(pr_test_tmpdir)"
+  install_stub "$d/bin" "sandbox: workspace-write [workdir]"
+  mkdir -p "$d/sandbox/repo"
+  echo "prompt" | env -u HOME PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/codex.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > "$d/out.txt" 2>&1
+  rc=$?
+  assert_exit_code "$rc" 0 "no HOME is not a reason to lose the reviewer"
+  assert_not_contains "$(cat "$d/out.txt")" "unbound variable" "and not this way"
+  assert_contains "$(< "$d/bin/env.txt")" "CODEX_HOME=$d/sandbox/codex-home" \
+    "the private home is still set"
+  assert_file_missing "$d/sandbox/codex-home/auth.json" "nothing to copy, nothing copied"
+}
+
+# Reviewer-scoped write integrity: an uncreatable home fails THIS reviewer
+# before the CLI is spawned -- claude's and agy's shape.
+test_uncreatable_codex_home_fails_before_spawning() {
+  local d rc; d="$(pr_test_tmpdir)"
+  install_stub "$d/bin" "sandbox: workspace-write [workdir]"
+  mkdir -p "$d/sandbox/repo"; chmod 555 "$d/sandbox"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/codex.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  rc=$?
+  chmod 755 "$d/sandbox"
+  assert_exit_code "$rc" 1 "refuses when the private home is uncreatable"
+  assert_file_missing "$d/bin/argv.txt" "the CLI was never invoked"
 }
 
 pr_run_tests

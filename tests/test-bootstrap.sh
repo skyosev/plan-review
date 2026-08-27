@@ -3,6 +3,19 @@ set -uo pipefail
 PR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PR_ROOT/tests/helpers.sh"
 
+# Every case here runs `scripts/install.sh`, which calls `plan-review doctor
+# --offline` as a subprocess -- roughly twenty doctor runs across the file --
+# and the jail probe's PASS path always waits out its containment window in
+# full (~1.04s at the operator-facing default of 10 ticks, lib/doctor.sh).
+# tests/test-doctor.sh and tests/test-init.sh already export this for the same
+# reason; this file reaches the probe indirectly, through a subprocess that
+# inherits the environment identically, which is why it was missed. Measured
+# 2026-08-27, twice by two people on this host: 26.707s / 26.928s without this
+# line against 10.674s / 10.720s with it, same 26 run / 0 failed / 1 skipped
+# either way. CLAUDE.md's budget paragraph cites the first of those two runs.
+# "Offline and seconds" is the constraint it was costing.
+export PR_BWRAP_PROBE_TICKS=2
+
 # The clone source is a local clone of this checkout, not PR_ROOT itself. Three
 # cases mutate the source -- one adds a branch, one rewrites `origin`, one adds a
 # commit -- and mutating the developer's own repository to run the suite is not

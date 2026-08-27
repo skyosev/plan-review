@@ -25,9 +25,52 @@ branch (455 tests) — **+21%**, measured 2026-08-27, two back-to-back runs each
 clone. Roughly half of that is the execution kernel's polled descendant sweep, which
 costs every `pr_adapter_exec` a minimum 0.05s tick plus a `ps` fork: stripping the poll
 loop runs 56.8s on the same 455, so the poll is ~5.5s and the remaining ~5.2s is simply
-the 22 tests that branch added. (457 tests and ~62s as of the two adapter-stderr tests
-that followed.) Budget against the ~5.5s, not the whole delta, and weigh the next
-per-adapter poll before adding it.
+the 22 tests that branch added.
+
+The 457/~62s figure that stood here was stale in its count but not in its clock. Measured
+2026-08-27 on this host (32 cores, load ~0.5), two back-to-back `make test` runs per tree,
+a `git worktree` per revision:
+
+| tree | tests | run 1 | run 2 |
+| --- | --- | --- | --- |
+| `ea2b59e` (pre-`reviewer-isolation-hardening`) | 467 | 62.159s | 62.214s |
+| + tasks 1–2 of that branch | 485 | 85.243s | 85.359s |
+| + task 3, as first written | 490 | 93.993s | 94.060s |
+| **+ task 3 review fixes — the current cost** | **491** | **84.624s** | **84.460s** |
+
+So ~62s was still right for `main`: the whole delta is this branch's, not host drift —
+worth stating, because "the host got slower" was the first explanation offered and it was
+wrong. Per-file timing of both trees found where it went, and one line of it was a **bug**:
+`tests/test-bootstrap.sh` had gone 6.156s → 26.707s, a file this branch never edited. It
+drives `plan-review doctor` as a subprocess ~20 times, and task 1 gave
+`_pr_doctor_bwrap_probe` a containment window the pass path always waits out — ~1.04s per
+doctor run at the operator default `PR_BWRAP_PROBE_TICKS=10`. `tests/test-doctor.sh` and
+`tests/test-init.sh` already export `PR_BWRAP_PROBE_TICKS=2` at file scope for exactly
+this; `test-bootstrap.sh` reaches the probe through a *subprocess*, which inherits the
+environment identically, and that indirection is why it was missed. Adding the export took
+it to 10.674s. **Any new suite that shells out to `plan-review doctor`, `init` or a round
+needs that export**, and the indirect ones are the easy misses.
+`tests/test-runner.sh` (29.5s, still the single largest file) never moved.
+
+Task 3 itself **costs ~+15s** and **all of it is in `tests/test-adapter-exec.sh`**
+(3.028s → 18.004s; `tests/test-doctor.sh`'s 9.479s → 11.684s was tasks 1–2, and task 3's
+two checks there cost 0.03s on top). That +15s against the bootstrap fix's −16.0s is the
+whole reason the tree lands marginally *cheaper* than before task 3 started — 84.6s at 491
+tests against 85.3s at 485 — and the two numbers have to be read together: the saving paid
+for the coverage exactly once, and the next contributor gets no such refund. **Budget the
++15s, not the net.** Every second of it is four clamp/hang tests that stall a stubbed `ps`
+on purpose and assert the cap cuts it short: `PR_PS_CAP_SECS=1` for the two hang cases, and
+~5s each for the clamped `999999` and `0`. That is the price of a clamp — there is nothing
+observable about one but the consequence — and the `0` case in particular buys real
+coverage, since GNU `timeout` reads `0` as *disabling* the timeout. The fifth,
+`abc`, is checked against the escaper instead of the clock for ~1s, because an unclamped
+`abc` makes the suite *faster* while silently switching descendant tracking off.
+
+The production cost of task 3 — one extra `timeout` fork per poll tick and per identity
+read, beside the `ps` it wraps — stays below this host's noise floor; run-to-run spread on
+an identical tree is under 0.2s. Budget against the ~5.5s poll and the ~1s-per-doctor
+probe, not against test wall-clock that a missing knob export can explain; weigh the next
+per-adapter poll, and the next always-waited probe window, before adding either.
 
 There is no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
 `test_*` function in the sourcing file. Anything that would break "offline and seconds"
@@ -122,9 +165,17 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   the adapter only, not its descendants. But the group sweep alone reaches the
   spawned command of **no shipped reviewer**
   (P6, `docs/process/probes/2026-08-26-roster-sweep-reach/`):
-  `agy`/`claude` are contained by their adapters' bwrap, `codex` by its own
-  `--as-pid-1`, and `agent` by nothing — its tool layer takes its own process
-  group *and* session. So `wait` is polled: each tick walks a `ps -eo pid=,ppid=`
+  `codex` is contained by its own `--as-pid-1`, and `agent`'s tool layer takes
+  its own process group *and* session. P6's other claim — that `agy`/`claude`
+  were already contained by their adapters' bwrap — was inference, and false:
+  `--die-with-parent` without `--unshare-pid` is `PR_SET_PDEATHSIG` on the
+  immediate command, so a detached grandchild survives. Measured both ways
+  2026-08-27 and fixed the same day
+  (`docs/process/probes/2026-08-27-pid-namespace-adapters/`): `agy`, `claude`
+  and now `agent` all pass **`--unshare-pid`**, so on **Linux** every shipped
+  reviewer is contained by a jail. On **macOS** none of them is — no bwrap, no
+  pid namespaces — and the sweep below is the only bound there. So `wait` is
+  polled: each tick walks a `ps -eo pid=,ppid=`
   fixpoint from the adapter's pid (`_pr_ae_descendants`, bash builtins over a
   table so both GNU and Darwin shapes are fixture-tested offline) and remembers
   each descendant with its `ps -o lstart=` start time. After the group kill, a
@@ -145,6 +196,40 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   it exits — the accepted availability cost. Nothing in the poller closes a
   descriptor. `ps` is therefore a core utility (`PR_DOCTOR_UTILS`), though that
   is a presence check and busybox's `ps` rejects `-eo`, which degrades silently.
+  **Every one of those three `ps` calls is wrapped in
+  `timeout --kill-after=1`**, and the post-`wait` sweep additionally carries a
+  30s deadline stamped before it starts: `timeout(1)` bounds the *adapter*,
+  never the loop watching it, so an uncapped `ps` that never returned would
+  wedge the round forever with the session lock held. The cap is
+  `PR_PS_CAP_SECS`, read once and clamped to `1..5` — it exists so the offline
+  suite can shrink its hang tests, not as an operator knob, and it is clamped
+  because the environment is still input and GNU `timeout` accepts a
+  syntactically valid `999999` verbatim (and reads `0` as *disabling* the
+  timeout, which is why the clamp rejects it too). The
+  sweep's true bound is the deadline **plus one cap of slack**, since a read
+  that starts just under the wire still runs to its own cap. `--kill-after` is
+  load-bearing in that sentence: `timeout N` does not *return* at N, it signals
+  and then waits for its child, so without the escalation a TERM-ignoring `ps`
+  is still unbounded (measured 2026-08-27: 5.003s against 2.002s). What
+  **nothing** here bounds is a `ps` in uninterruptible sleep — it takes neither
+  signal, `timeout` blocks in `waitpid`, and the deadline is checked *before*
+  each read so it is never reached. That is the one case the caps do not cover,
+  and it is also the one nobody has reproduced. That a `ps` ever stalls at all
+  is *unmeasured* — a `/proc` read against a task in uninterruptible sleep is
+  the credible mechanism, not reproduced — and the comments say so; the
+  unbounded wait itself was certain. Both degradations, a capped read and a
+  tripped deadline, land on the same documented group-only cleanup.
+  Which makes **GNU** `timeout` load-bearing twice over: the group kill only
+  reaches the adapter's tree because GNU `timeout` puts *itself* in a new
+  process group (measured 2026-08-27, transcript in `lib/adapter-exec.sh`'s
+  header), and busybox's does not, leaving the sweep silently inert in the same
+  environment its `ps` already breaks. `pr_doctor_check_gnu_timeout` therefore
+  **fails** rather than warns. The mixed host — GNU `ps`, busybox `timeout` — is
+  not the extra hazard it looks like: the `--kill-after` the `ps` caps use is
+  rejected there (measured 2026-08-27, BusyBox 1.36.1), but so is the identical
+  flag on the *adapter* spawn, which has carried it since the kernel landed. A
+  busybox `timeout` is a host that runs no reviewer at all, which is why nothing
+  carries a non-GNU fallback.
   macOS descendant cleanup is unverified live (first row of the macOS cycle).
   The round (`lib/reviewer-runner.sh`) and `doctor --smoke` both spawn
   through the kernel — the smoke's call guarded by `declare -F` so the stub-PATH
@@ -201,11 +286,59 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   no scratch name of its own, so a rename inside the module cannot silently
   break the round. Every `round.json` and session-map mutation stays serial, in
   the parent.
-- **Confinement is per-adapter and not uniform**: codex and Cursor confine themselves;
-  `agy` and `claude` are wrapped in bubblewrap by their adapters and **fail closed** when
-  `bwrap` is missing. `claude` additionally rebuilds the environment from a whitelist
-  (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail) and runs
-  `--safe-mode`. Never add an unconfined fallback.
+- **Confinement is per-adapter and not uniform**: codex confines its own *writes*, and
+  Cursor is supposed to but was re-measured not doing so at `2026.08.25-3e8eec8` (leg 4 of
+  the pid-namespace probe: a tool-call write reached `/tmp` and `$HOME`, wrapped and
+  unwrapped alike), which is why the macOS roster is one self-confining reviewer and one
+  confining nothing; `agy` and `claude` are wrapped in bubblewrap by their adapters and
+  **fail closed** when `bwrap` is missing. `claude` additionally rebuilds the environment from a
+  whitelist (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail)
+  and runs `--safe-mode`. Never add an unconfined fallback — for those two.
+  `adapters/agent.sh` is the exception and is deliberately **not** fail-closed: its bwrap
+  supplies the pid namespace and nothing else (`/` is bound read-write on purpose), so
+  where the jail does not *work* it runs unwrapped and the kernel's sweep is the bound,
+  exactly as `docs/adapter-contract.md`'s containment clause says — and that gate is a
+  trial run of the flags, not `command -v`, because a host with bwrap installed and its
+  userns denied would otherwise lose the reviewer outright. Both fail-closed adapters also
+  keep a **private state directory** beside the repo copy — `<sandbox>/config` for claude,
+  `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
+  *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
+  because agy cannot be told to look elsewhere, while claude's is bound at its own path
+  and named by `CLAUDE_CONFIG_DIR`. Neither operator directory is ever a bind **source**:
+  both CLIs run hooks out of `~/.claude` and `~/.gemini` in the operator's own later
+  sessions, which is what makes a writable bind of one a persistence channel out of the
+  jail. agy's file list came from a measurement, not a guess — the obvious-looking
+  `oauth_creds.json` is the wrong answer
+  (`docs/process/probes/2026-08-27-pid-namespace-adapters/`, leg 3). agy's mount is also
+  why `adapters/agy.sh` `mkdir -p`s `~/.gemini` before building the jail: bwrap makes a
+  missing bind destination with `mkdir`, and under `--ro-bind / /` it cannot, so on a host
+  that had never run agy the jail refused to start and the adapter blamed auto-denied tool
+  permissions (bubblewrap 0.9.0). Neither the doctor's jail probe nor preflight sees that —
+  both bind a `$TMPDIR` directory they created first.
+
+  **codex has the third private directory, and it is not a bind at all**:
+  `$(dirname "$workdir")/codex-home`, exported as `CODEX_HOME`, sited beside the repo
+  copy for the same reason claude's is — the rollouts `codex exec resume` needs must
+  survive `pr_sandbox_refresh`'s per-round wipe of `<sandbox>/repo`. codex confines its
+  own writes, so this is an *ambient-state* change, not a sandbox one: the `-c` overrides
+  already outranked every config file and still do. It moves codex's **user** layer only;
+  managed/MDM, enterprise-requirements, session-flag, plugin and **project** layers stay
+  in scope, and nothing here detects a conflicting managed layer. `auth.json` is **copied
+  in** rather than bound, because the reviewer needs it writable and must never write the
+  operator's — a second credential at rest, and the stated remedy for staleness is
+  deleting it. `_pr_doctor_smoke_one` removes that copy, by path, from a smoke directory it
+  keeps for diagnosis: the smoke's session key is `doctor-smoke.$$`, nothing ever cleans a
+  kept one, and the smoke fails most often while codex auth is what is being debugged. The adapter seeds no `config.toml`; codex writes one itself recording the
+  workdir's trust level, which is why the Q8 diagnostics now name *that* file and no
+  longer name `~/.codex`. codex also passes `-c features.hooks=false`: the repository
+  under review can ship a `.codex/hooks.json` and codex was measured reading it, while
+  handlers from an untrusted source were measured **not** executing at 0.150.1. *Why*
+  they did not is inference, not measurement — on the binary's own evidence a per-source
+  `trusted_hash` written by an interactive TUI review is the gate, and a headless `exec`
+  cannot reach it; trusting a hook and re-running was never attempted, so the
+  once-trusted path is unproven in both directions. The flag's comment carries that same
+  hedge and claims no sentinel it never saw fire
+  (`docs/process/probes/2026-08-27-codex-private-home/`).
 
 - **`PR_TIMEOUT_SECS` must be a positive integer**, enforced in
   `libexec/plan-review-round.sh` before preflight (which `PR_SKIP_PREFLIGHT=1` can

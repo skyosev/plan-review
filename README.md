@@ -7,8 +7,14 @@ between three terminals.
 ## Requirements
 
 `bash` 5+, `git`, `jq`, `rsync`, GNU coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`,
-and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well, if `agy` or `claude` is in the
-roster — see the `bwrap` note below and "Reviewer roster".
+and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well: required if `agy` or `claude` is
+in the roster, and used by `agent` when it is there — see the `bwrap` note below and "Reviewer
+roster".
+
+The GNU part of "GNU coreutils" is now enforced rather than merely asked for: `plan-review
+doctor` **fails** on a `timeout` that is not GNU coreutils (busybox's, typically). The process
+cleanup after every reviewer relies on GNU `timeout` putting itself in its own process group,
+and under a `timeout` that does not, that cleanup silently does nothing.
 
 5 is what `make doctor` enforces and it is a support statement rather than a measured
 requirement: nothing here uses a construct newer than `bash` 4 (`${x^^}`, `mapfile`,
@@ -51,12 +57,16 @@ runner calls the unprefixed names. `flock` is its own formula — `util-linux` i
 installing it does not put `flock` on `PATH`.
 
 `bwrap` is not optional if `agy` or `claude` is in the roster: it is those reviewers' only write
-barrier, and both adapters refuse to run without it. A project config naming neither — `"reviewers":
-["codex"]` — needs no `bwrap` at all, and the doctor skips the check rather than failing the machine
-for it.
+barrier, and both adapters refuse to run without it. `agent` uses one too, but only as a pid fence
+and never as a requirement — it runs unwrapped when the jail does not work, so the doctor reports
+that case as a warning rather than failing the machine. A project config naming none of the three —
+`"reviewers": ["codex"]` — needs no `bwrap` at all, and the doctor skips the check entirely.
 
 `bwrap` is Linux-only, and no macOS equivalent is wired up yet, so on macOS the roster is
-`codex` and `agent` — both of which confine themselves. All four CLIs still work there as
+`codex` and `agent` — of which only `codex` confines itself. Cursor's write barrier was
+measured gone at `2026.08.25-3e8eec8` (see *What the sandbox is and is not* below), and with
+no `bwrap` it has no pid fence there either, so a macOS roster today is one self-confining
+reviewer and one confining nothing. All four CLIs still work there as
 orchestrators and as skill targets; only reviewing is affected.
 
 **What has actually been run on macOS** is one manual pass, on 2026-08-20, on Darwin 25 with the
@@ -106,9 +116,12 @@ Three things the runner cannot check for you:
   warning — string equality is the only version of this the artifact can prove.
 - **Cost, when `claude` reviews.** Claude Code hands a reviewer its full tool surface, which
   includes `Task` and `Workflow` (subagents, so unbounded spend), the `Cron*` tools and
-  `ScheduleWakeup` (work that would outlive the round), and `SendMessage` / `RemoteTrigger`. The
-  bubblewrap jail confines writes and the environment scrub closes the messaging channel, but
-  neither bounds cost. `PR_TIMEOUT_SECS` (default 900) is what actually caps a runaway reviewer.
+  `ScheduleWakeup` (work scheduled to run later), and `SendMessage` / `RemoteTrigger`. The
+  bubblewrap jail confines writes, its `--unshare-pid` collapses the reviewer's whole process
+  tree when the round ends — so a process the reviewer left running does not outlive the round,
+  though nothing here reaches a schedule registered somewhere other than this machine — and the
+  environment scrub closes the messaging channel. None of the three bounds cost.
+  `PR_TIMEOUT_SECS` (default 900) is what actually caps a runaway reviewer.
 
 Check all of it with:
 
@@ -148,6 +161,13 @@ The bubblewrap check runs the jail with `adapters/agy.sh`'s exact flags rather t
 `unshare --user --map-root-user true`. The two are not equivalent: Ubuntu 24.04 defaults
 `kernel.apparmor_restrict_unprivileged_userns=1`, which leaves `unshare` working while denying
 `bwrap`, so the shorter check passes on a machine where `agy` cannot run at all.
+
+It also **measures containment** rather than flag acceptance. The jail runs a payload that
+detaches a writer; the writer stamps a `spawned` marker, the payload exits once it sees it,
+and the writer would stamp a `survived` marker a fraction of a second later. A pass is
+`spawned` present and `survived` absent — the jail ran the payload *and* disposed of the
+detached process. Both signals are needed: "no marker" on its own cannot tell containment
+from a payload that never ran.
 
 The offline half of these checks also runs automatically before every round, for the reviewers in
 that round's roster, so a missing `bwrap` or an unset pin costs a second rather than a forfeited
@@ -440,14 +460,17 @@ round marked `fresh` whose reviewers resume from the handles it failed to drop.
                      clean one; kept when anything went wrong, to be read
       repo/.pr-tmp/  that reviewer's private TMPDIR
       config/        claude only: its private CLAUDE_CONFIG_DIR, and durable
+      gemini-state/  agy only: its private state directory, bound over ~/.gemini
+      codex-home/    codex only: its private CODEX_HOME, holding the session
+                     rollouts and one copy of auth.json
 
 `repo/` is rebuilt from scratch every round rather than synced, so keeping it between
 rounds buys nothing but post-hoc debugging — which is exactly when it is kept. A copy
 is discarded only when that reviewer finished cleanly, on time and with exit 0;
 a timeout, a failure or a non-zero exit keeps its tree. `PR_KEEP_SANDBOX=1` keeps
-every copy whatever happened. `config/` is never touched: it is a *sibling* of the
-copy precisely so it outlives the wipe, and it is where Claude Code's resume state
-lives.
+every copy whatever happened. The three private directories are never touched: each
+is a *sibling* of the copy precisely so it outlives the wipe, and each is where that
+reviewer's resume state lives.
 
 `TMPDIR` sits *inside* `repo/` on purpose. Codex drops `$TMPDIR` from its writable
 roots, so a sibling directory would not be writable at all.
@@ -469,9 +492,15 @@ forever. The runner now kills the reviewer's whole process group — on every ro
 only on a timeout, since a cleanly exiting adapter can leak a child too — and then, on a
 best-effort basis, any descendant that escaped the group by taking one of its own. Those
 are sampled while the reviewer runs, one `ps` per second, and killed afterwards only if
-their start time still matches, so a recycled pid is not signalled by mistake. A
-descendant that detaches after the last sample still escapes; when one does, it keeps the
-session's lock, and the next command on that session waits rather than writing over it.
+their start time still matches, so a recycled pid is not signalled by mistake. Every one
+of those `ps` calls is itself capped, and the sweep as a whole gets 30 seconds, because a
+`ps` that never returned would otherwise wedge the round forever with the session lock
+held. So there are three ways a descendant survives: it detaches after the last sample, a
+capped `ps` dies before it can confirm the descendant's identity, or the sweep's own
+deadline trips first. All three degrade to the same place — the process group is still
+killed, and the survivor is left alone rather than killed blind. When one does survive it
+keeps the session's lock, and the next command on that session waits rather than writing
+over it.
 The cost of the sweep is that a descendant mid-write loses whatever it had buffered.
 
 What makes the review file final is not the sweep but **publication**: the adapter writes
@@ -543,16 +572,69 @@ file and locks that, and both run at once.
 
 ## What the sandbox is and is not
 
-An accidental-dirtiness barrier, not a security boundary. Every reviewer is
-write-confined, but not by the same thing:
+An accidental-dirtiness barrier, not a security boundary. Three of the four reviewers are
+write-confined, each by a different thing, and one currently is not:
 
-- **codex** and **Cursor** confine themselves, via their own OS sandboxes. Writes land
-  inside the disposable copy; writes outside it are denied.
+- **Cursor is not write-confined at `2026.08.25-3e8eec8`.** Its `--sandbox enabled` is
+  meant to be its barrier; re-measured 2026-08-27, a tool-call write to `/tmp` and to
+  `$HOME` both succeeded, wrapped and unwrapped alike. Treat it as unconfined for writes at
+  that version until a probe says otherwise — `adapters/agent.sh`'s bubblewrap is a pid
+  fence, and deliberately not a write barrier.
+- **codex** confines itself, via its own OS sandbox. Writes land inside the disposable
+  copy; writes outside it are denied.
+
+  codex additionally runs under a private `CODEX_HOME` beside the repo copy —
+  `<sandbox>/codex-home` — so the operator's user-level `~/.codex` is never read and never
+  written, beyond one copy of `auth.json` into the private home on the first round. That
+  is not a sandbox change; it removes ambient configuration that had already taken a
+  reviewer out. Measured, and still reproducible: one obsolete top-level field in the
+  operator's `config.toml` failed codex's `--strict-config` and the reviewer never
+  started. The private home also holds the session rollouts, which is why it sits beside
+  the repo copy rather than inside it — the copy is wiped every round. What `CODEX_HOME`
+  does **not** move: codex's managed/MDM, enterprise-requirements, session-flag, plugin
+  and *project* configuration layers all stay in scope.
+
+  The copied `auth.json` is a second credential at rest, and it goes stale when the
+  operator re-authenticates. The remedy is deleting `<sandbox>/codex-home/auth.json`; the
+  next round copies a fresh one in. A failed `plan-review doctor --smoke` keeps its
+  throwaway directory for diagnosis and removes the copy from it first, so repeated smokes
+  do not leave a trail of credentials under `~/.cache/plan-review/` — `PR_KEEP_SANDBOX=1`
+  is the explicit exception, and keeps everything.
+
+  **One round is lost for a plan that was already mid-loop when this landed.** A stored
+  codex session handle names a rollout in the operator's `~/.codex/sessions/`, which the
+  private home does not have, so the first resume after the change fails before the
+  banner — measured at codex 0.150.1 as `no rollout found for thread id <id>`, rc=1 — and
+  the round records that reviewer as failed. Nothing is corrupted and no action is
+  required: the failure drops the handle, and the next round starts codex cold. `--fresh`
+  skips the wasted round if you would rather not spend it — at the price it always carries:
+  it drops *every* reviewer's handle and the history baseline, not just codex's, so spending
+  the one wasted codex round is usually the cheaper of the two.
+
+  Repo-supplied codex hooks are disabled for reviews, via `-c features.hooks=false`.
+  A repository can ship a `.codex/hooks.json`, and codex was measured reading the one in
+  the workspace under review; with the flag it is not read at all. Handlers from an
+  untrusted source did not actually execute at codex-cli 0.150.1 — codex *appears to gate*
+  them behind an interactive trust review a headless `codex exec` cannot reach — so this
+  closes a read ahead of an execution path, rather than an exploit anyone has landed. The
+  hedge is deliberate in both halves: the non-execution was measured, the gate was inferred
+  from the binary's own strings, and trusting a hook and re-running was never attempted.
 - **agy** does not. Its `--sandbox` flag exists, reports itself as enabled, and was
   measured allowing a write to `/tmp` anyway. It is confined by **bubblewrap**, which
   this project applies in `adapters/agy.sh` — so that one barrier is ours to maintain
   and ours to get wrong. The adapter refuses to run if `bwrap` is unavailable rather
   than falling back to running unconfined.
+
+  Its conversations live in a private state directory beside the repo copy —
+  `<sandbox>/gemini-state`, bound over `~/.gemini` — for the same reasons claude's
+  config directory does, and the operator's real `~/.gemini` is **never written**. agy
+  honours workspace hooks under `.agents/`, so a read-write bind of the real directory
+  would let a hostile workspace plant something that runs later in the operator's own
+  sessions. Exactly one file comes in, read-only and by path:
+  `~/.gemini/antigravity-cli/antigravity-oauth-token`, which is the minimum agy needs to
+  authenticate — measured on 2026-08-27 by binding candidates one at a time from an
+  empty private directory. What is lost is agy history from *other* sessions, which
+  nothing here relied on: resume is per-session and the session map carries the handles.
 - **claude** has no sandbox flag to ask for at all, so `adapters/claude.sh` uses the same
   bubblewrap jail and fails closed the same way. Two additions specific to it. It runs with
   `--safe-mode`, because without it the *target repo's* `.claude/settings.json` hooks
@@ -569,6 +651,21 @@ write-confined, but not by the same thing:
 `agy` additionally runs with `--dangerously-skip-permissions`, because headless tool
 calls are auto-denied otherwise and a reviewer that cannot run commands cannot check
 the plan's claims. The jail is what makes that acceptable.
+
+**Process containment is a separate axis from writes.** A reviewer that spawns a
+background process can leave it running after the round has returned, still holding the
+round's session lock. On Linux every reviewer is now contained by a pid namespace:
+`agy`, `claude` and `agent` pass `bwrap --unshare-pid`, and codex uses its own
+`--as-pid-1`. `--die-with-parent` alone was not enough — measured 2026-08-27, a detached
+`setsid sleep` survived the jail's exit without `--unshare-pid` and was gone with it. For
+`agent` the bubblewrap is *only* a pid fence: `/` is bound read-write, the write barrier
+stays Cursor's own, and where the jail does not work — macOS has no `bwrap` at all, and
+some Linux hosts have it installed with user namespaces denied — the adapter runs
+unwrapped rather than refusing, because refusing would remove the reviewer for a barrier
+it never supplied. It decides by trying the flags once, not by looking for the binary,
+so a broken jail costs the fence and not the review; `plan-review doctor` reports that
+case as a warning. On macOS there are no pid namespaces at all, and the runner's best-effort
+descendant sweep is the only bound.
 
 Reads are unconfined for every reviewer. Codex has open network access; Cursor's is
 default-deny with a host allowlist; agy's is open. Point this only at repos you already

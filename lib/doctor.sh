@@ -188,6 +188,59 @@ pr_doctor_check_utils() {
   return 1
 }
 
+# Presence is not sufficiency: PR_DOCTOR_UTILS proves timeout EXISTS, and the
+# execution kernel's group sweep additionally requires GNU coreutils'
+# behaviour -- timeout placing ITSELF in a new process group, which is what
+# makes `kill -- -$pid` reach the adapter's tree (measured 2026-08-27; the
+# transcript is in lib/adapter-exec.sh's header). busybox timeout stays in
+# the caller's group and the sweep is then silently inert, in the same
+# environment where busybox ps already rejects -eo. A FAIL, not a warning:
+# README's Requirements already demand GNU coreutils, and a warning invites
+# running with a load-bearing sweep that does nothing.
+# The version check, not a capability probe: `timeout 1 sleep 0` is racy --
+# the child can exit before ps samples it -- and would argue against the
+# project's own stated baseline. Bash-builtin match on purpose: this file
+# parses with builtins only, so the stub-PATH doctor tests stay green.
+pr_doctor_check_gnu_timeout() {
+  local v
+  # Through pr_doctor_run like every other version read in this file, not a bare
+  # command substitution: a substitution is held open by any descendant that
+  # inherited stdout, and the two-file capture is what bounds that. The risk from
+  # `timeout --version` itself is small; being the one probe here that does not
+  # follow the file's own rule is the actual cost. Watchdogging timeout WITH
+  # timeout is circular but harmless -- the outer copy only has to wait, and
+  # where the inner one is not GNU the outer is the same binary and the FAIL
+  # below is what the operator gets either way.
+  # 2>&1, unlike pr_doctor_version_of: busybox timeout answers --version with a
+  # usage block on STDERR and NOTHING on stdout, and that block is the whole
+  # diagnostic the `got:` line exists to print. Safe here because the match is
+  # the fixed string "GNU coreutils", which no notice on stderr turns into a
+  # false pass.
+  #
+  # The strip is what makes that actually arrive. pr_doctor_run replays stdout
+  # through an UNGUARDED `printf '%s\n' "$(< "$out")"` -- unlike the stderr
+  # replay below it, which is guarded by [[ -s ]] -- so a command that wrote
+  # nothing to stdout still contributes one newline, and $v comes back as
+  # "\n<stderr>". Command substitution strips trailing newlines, not leading
+  # ones, so the `${v%%...}` below then cut at that first newline and printed
+  # `got: ` empty. MEASURED, not reasoned: against a stub with busybox's exact
+  # shape (usage on stderr, nothing on stdout, rc=1) the line was blank before
+  # this strip and carries the usage text after it. Fixed here rather than in
+  # pr_doctor_run, because guarding that shared printf would change what every
+  # other probe in this file receives for a one-line problem in one caller.
+  v="$(pr_doctor_run 10 timeout --version 2>&1)"
+  v="${v#$'\n'}"
+  if [[ "$v" == *"GNU coreutils"* ]]; then
+    pr_d_pass "timeout is GNU coreutils (the kernel's group sweep depends on its process-group behaviour)"
+    return 0
+  fi
+  pr_d_fail "timeout is not GNU coreutils; the execution kernel's group sweep would be silently inert"
+  pr_d_info "got: ${v%%$'\n'*}"
+  pr_d_info "macOS: brew install coreutils, then put the GNU names first:"
+  pr_d_info "  PATH=\"\$(brew --prefix)/opt/coreutils/libexec/gnubin:\$PATH\""
+  return 1
+}
+
 # What to say when a reviewer CLI is absent. No install URLs: the three CLIs are
 # installed by different mechanisms that change independently of this repo, and a
 # stale command line printed with authority is worse than none. codex and agy do
@@ -231,10 +284,10 @@ pr_doctor_check_cli() {
   return 1
 }
 
-# _pr_doctor_bwrap_probe <probe-name> [output-var]
+# _pr_doctor_bwrap_probe <probe-name> [output-var] [root-bind-flag]
 #
-# Runs bwrap with adapters/agy.sh's and claude.sh's exact flag set against a
-# throwaway directory, and returns its exit status. It deliberately does NOT use
+# Runs bwrap with a shipped adapter's exact flag set against a throwaway
+# directory, and returns its exit status. It deliberately does NOT use
 # the README's `unshare --user --map-root-user true`, because the two are not
 # equivalent: Ubuntu 24.04 defaults
 # kernel.apparmor_restrict_unprivileged_userns=1, which leaves unshare(1)
@@ -242,25 +295,132 @@ pr_doctor_check_cli() {
 # one reviewer that needs a jail cannot run at all.
 #
 # The flag set is the point of this function: it must match what the adapters
-# run, so it is written once here rather than once per caller.
+# run, so it is written once here rather than once per caller. The adapters do
+# NOT all run the same one, though: agy and claude bind / read-only, while
+# adapters/agent.sh binds it READ-WRITE (its bwrap is a pid fence, not a write
+# barrier). So the root bind is the third positional, defaulting to the strict
+# form -- a probe that certified agent's fence with agy's flags would be back
+# to measuring a proxy, and would report a working fence on any host that
+# refuses a read-write bind of / while allowing a read-only one. Nothing else
+# about the two invocations is material to the property being measured: what
+# fails here is the namespace, not the mounts.
 #
 # 200 means the probe directory could not be created, which is a different
 # failure from a jail that does not work. It is deliberately outside the range
-# bwrap reports (125/126/127 for its own errors) and outside anything the `true`
-# child can return, so the two cannot be confused.
+# bwrap reports (125/126/127 for its own errors) and outside anything the
+# payload can return, so the two cannot be confused.
 # The locals are underscore-prefixed because <output-var> names a variable in the
 # CALLER's scope: an ordinary `out` here would shadow the very variable the
 # nameref is supposed to reach.
 _pr_doctor_bwrap_probe() {
-  local _probe="${TMPDIR:-/tmp}/$1.$$" _said _rc
+  local _probe="${TMPDIR:-/tmp}/$1.$$" _said _rc _i _ticks _rootbind="${3:---ro-bind}"
   mkdir -p "$_probe" 2>/dev/null || return 200
-  _said="$(bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
+  # Two signals, because "no marker" alone cannot tell containment from a
+  # payload that never ran (a no-op bwrap, a quoting error, a bwrap that
+  # cannot start at all -- see the AppArmor note below -- all look like
+  # silence). The detached writer stamps `spawned` FIRST; the payload exits
+  # only once it sees that stamp, so the jail cannot tear the writer down
+  # before the stamp exists; the writer stamps `survived` 0.2s later. In a jail
+  # that contains -- these flags are the adapters' flags, so --unshare-pid is
+  # asserted by construction -- the namespace dies between the two stamps. In
+  # one that does not (--die-with-parent alone is PDEATHSIG on the immediate
+  # command, not tree cleanup), `survived` lands. Measured both ways on
+  # 2026-08-27 with exactly this flag set, which is what the probe now checks
+  # rather than assumes
+  # (docs/process/probes/2026-08-27-pid-namespace-adapters).
+  #
+  # Pass = bwrap exited 0 AND spawned exists AND survived never appears within
+  # the wait window. The payload's own wait on `spawned` is bounded at 100
+  # hundredths, so a writer that never starts cannot hang the probe; it then
+  # falls off the end at 0 and the `spawned` check below is the SINGLE arbiter
+  # of that case. Deliberately not `exit 1` there: a non-zero payload reads
+  # back here as "the jail did not work", losing the one wording that names
+  # what actually happened.
+  #
+  # The wait window is the probe's whole cost, because the pass path always
+  # waits it out for a marker that must never appear: measured on this host
+  # 2026-08-27, 1.04s at the default 10 ticks against 0.33s at 3. It is
+  # generous against a loaded host, and PR_BWRAP_PROBE_TICKS is what lets the
+  # offline suite and the round's preflight shrink it -- not a knob for
+  # operators to tune. A non-numeric value is CLAMPED to the default rather
+  # than honoured: `(( _i < abc ))` reads an unset name as 0, which would skip
+  # the containment window entirely and pass a jail that does not contain --
+  # a silent false pass on the one thing this probe exists to measure. Clamped
+  # rather than refused because the knob is ours, not operator input, and the
+  # measurement is still correct at the default.
+  #
+  # The payload takes $_probe as an ARGV word, not by interpolation into the
+  # `bash -c` string: $_probe derives from $TMPDIR, so a `$(...)` or a backtick
+  # in an operator's TMPDIR would otherwise execute here.
+  #
+  # No `setsid`: a plain `&` measures the same thing, and setsid is util-linux,
+  # a dependency PR_DOCTOR_UTILS never declared and whose absence would fail
+  # this probe -- and so block `plan-review init` -- on a machine whose jail is
+  # fine. All the writer has to be is NOT the immediate command bwrap set
+  # PR_SET_PDEATHSIG on, and a background job already is not; the namespace
+  # teardown that contains it cares about neither process group nor session.
+  # Measured both ways 2026-08-27 with exactly this payload: `survived` lands
+  # without --unshare-pid and never with it.
+  #
+  # The writer's own output goes to /dev/null on purpose: this is a command
+  # substitution, and a descendant that inherited the pipe would hold it open
+  # past bwrap's exit -- the same trap adapters/agy.sh documents.
+  _said="$(bwrap "$_rootbind" / / --dev /dev --proc /proc --tmpfs /tmp \
                  --bind "$_probe" "$_probe" --die-with-parent \
-                 --unshare-uts --unshare-ipc true 2>&1)"
+                 --unshare-uts --unshare-ipc --unshare-pid \
+                 bash -c '{ : > "$1/spawned"; sleep 0.2; : > "$1/survived"; } \
+                            > /dev/null 2>&1 &
+                          for (( i = 0; i < 100; i++ )); do
+                            [[ -e "$1/spawned" ]] && exit 0
+                            sleep 0.01
+                          done' _ "$_probe" 2>&1)"
   _rc=$?
-  rmdir "$_probe" 2>/dev/null
+  if (( _rc == 0 )) && [[ ! -e "$_probe/spawned" ]]; then
+    _said="the probe payload never started its detached writer"
+    _rc=1
+  fi
+  # SLEEP FIRST, then check. Same wall time, one more useful check inside it:
+  # the writer stamps `survived` 0.2s after `spawned`, so a check at t=0 can
+  # never see anything and the last sleep of a check-first loop was thrown away.
+  # Measured 2026-08-27 on this host, against this payload with --unshare-pid
+  # REMOVED so the marker really does land, ten runs each: check-first at three
+  # ticks caught it at the third and last check every time -- zero spare checks,
+  # not the "delay plus half again" the preflight comment used to claim -- and
+  # sleep-first at three ticks caught it at the second, leaving one whole tick
+  # of slack. Sixty-four spinners on thirty-two cores did not move either
+  # number. The failure direction is what makes this worth the swap: a marker
+  # that lands after the last check reads as a PASS.
+  if (( _rc == 0 )); then
+    _ticks="${PR_BWRAP_PROBE_TICKS:-10}"
+    [[ "$_ticks" =~ ^[1-9][0-9]*$ ]] || _ticks=10
+    for (( _i = 0; _i < _ticks; _i++ )); do
+      sleep 0.1
+      if [[ -e "$_probe/survived" ]]; then
+        _said="a detached process survived the jail's exit and wrote its marker"
+        _rc=1
+        break
+      fi
+    done
+  fi
+  # rm -rf, not rmdir: the probe directory now holds markers, and on the
+  # failing paths it holds one written by a process the jail did not contain.
+  rm -rf "$_probe" 2>/dev/null
   if [[ -n "${2:-}" ]]; then local -n _sink="$2"; _sink="$_said"; fi
   return "$_rc"
+}
+
+# _pr_doctor_bwrap_diagnosis <probe-output> -- what a failed jail usually means.
+#
+# Shared by the two callers of the probe, which differ in severity (fail-closed
+# for agy/claude, warn for agent's fence) but not in the diagnosis: the cause is
+# the same kernel policy either way, and a 24.04 note that has to be updated in
+# two places is a note that will be updated in one. Each caller keeps its own
+# closing sentence, which is the part that genuinely differs.
+# Builtins only, like the rest of this file.
+_pr_doctor_bwrap_diagnosis() {
+  [[ -n "$1" ]] && pr_d_info "bwrap said: ${1%%$'\n'*}"
+  pr_d_info "On Ubuntu 24.04 and later this is usually AppArmor. Check with:"
+  pr_d_info "  sysctl kernel.apparmor_restrict_unprivileged_userns"
 }
 
 pr_doctor_check_bwrap_jail() {
@@ -285,16 +445,58 @@ pr_doctor_check_bwrap_jail() {
   fi
 
   if (( rc == 0 )); then
-    pr_d_pass "bwrap jail works with the flags adapters/agy.sh and claude.sh use"
+    pr_d_pass "bwrap jail contains a detached process (the flags adapters/agy.sh and claude.sh run)"
     return 0
   fi
   pr_d_fail "bwrap is installed but the jail those reviewers run in does not work (exit $rc)"
-  [[ -n "$out" ]] && pr_d_info "bwrap said: ${out%%$'\n'*}"
-  pr_d_info "On Ubuntu 24.04 and later this is usually AppArmor. Check with:"
-  pr_d_info "  sysctl kernel.apparmor_restrict_unprivileged_userns"
+  _pr_doctor_bwrap_diagnosis "$out"
   pr_d_info "A 1 there denies bwrap while leaving unshare(1) working, which is why"
   pr_d_info "this probe runs bwrap itself rather than the unshare check in the README."
   return 1
+}
+
+# adapters/agent.sh's bwrap is a PID FENCE, not a write barrier, and unlike agy
+# and claude that adapter does not fail closed: with no working jail it runs the
+# reviewer unwrapped and the execution kernel's best-effort descendant sweep
+# becomes the only bound (docs/adapter-contract.md, the containment clause).
+# So this reports a WARN, never a failure -- there is no refusal here to
+# predict, and failing a machine for it would refuse a roster that works.
+#
+# It exists because the alternative was worse: with agent on the roster and
+# neither agy nor claude, the doctor used to print "no reviewer here needs the
+# bubblewrap jail", which stopped being true the moment agent started using one.
+# Only called in that case; when agy or claude is present,
+# pr_doctor_check_bwrap_jail runs the same probe under the strict rule.
+pr_doctor_check_agent_pid_fence() {
+  local out rc
+  if ! pr_doctor_have bwrap; then
+    pr_d_warn "no bwrap: agent runs without a pid namespace"
+    pr_d_info "Cursor's tool layer takes its own process group AND session, so a"
+    pr_d_info "background process it spawns can outlive the round and keep holding"
+    pr_d_info "the session lock. bwrap --unshare-pid is what disposes of it."
+    pr_d_info "Debian/Ubuntu: sudo apt install bubblewrap. Expected on macOS, which"
+    pr_d_info "has neither bubblewrap nor pid namespaces."
+    return 0
+  fi
+  # --bind, not the default --ro-bind: adapters/agent.sh binds / READ-WRITE,
+  # and certifying its fence with agy's stricter flags would pass a host that
+  # allows a read-only bind of / and refuses a read-write one.
+  _pr_doctor_bwrap_probe pr-doctor-agent-fence out --bind
+  rc=$?
+  if (( rc == 0 )); then
+    pr_d_pass "bwrap pid namespace available for agent (a fence, not a write barrier)"
+    return 0
+  fi
+  if (( rc == 200 )); then
+    pr_d_warn "cannot create a probe directory under ${TMPDIR:-/tmp}; agent's pid fence is unverified"
+    return 0
+  fi
+  pr_d_warn "bwrap is installed but its jail does not work; agent runs without a pid namespace"
+  _pr_doctor_bwrap_diagnosis "$out"
+  pr_d_info "The reviewer still runs -- adapters/agent.sh degrades to unwrapped rather"
+  pr_d_info "than refusing -- but a process it leaks is bounded only by the runner's"
+  pr_d_info "best-effort descendant sweep."
+  return 0
 }
 
 pr_doctor_check_cache_root() {
@@ -1020,6 +1222,27 @@ _pr_doctor_smoke_one() {
     pr_d_info "A trivial prompt should not need the round's deadline; a hang here"
     pr_d_info "usually means an interactive login prompt the auth check cannot reach."
   fi
+  # The kept directory holds whatever the adapter sited BESIDE the repo copy,
+  # and for codex that is a private CODEX_HOME containing a copy of the
+  # operator's ~/.codex/auth.json -- adapters/codex.sh copies it in because the
+  # reviewer needs it writable. Nothing ever cleans a kept smoke directory: the
+  # session key is doctor-smoke.$$, so the rmdir in pr_doctor_check_smoke fails
+  # on a non-empty directory and every failed smoke would strand another
+  # credential copy under the cache root. The smoke fails most often while an
+  # operator is debugging codex auth, i.e. repeatedly, and `codex logout` cannot
+  # see any of them. Mode 600 (cp preserves it), so this is sprawl rather than
+  # exposure -- but there is no `plan-review clean` to sweep it later.
+  #
+  # Diagnosis needs the log, the meta and the reason file; it never needs the
+  # token. Named by path rather than found by a `find`: this is the doctor's
+  # file, and a scan for "auth.json" would be a second place that has to learn
+  # every adapter's private-directory layout. An adapter that starts copying a
+  # credential somewhere else has to be added here too -- which is the same
+  # rule docs/adapter-contract.md now states for the copy case.
+  #
+  # Only on this path: the success path already removed the whole directory,
+  # and PR_KEEP_SANDBOX is an explicit "keep the evidence whatever happened".
+  rm -f "$dir/codex-home/auth.json" 2> /dev/null
   pr_d_info "kept for diagnosis: $dir"
   return 1
 }
@@ -1095,10 +1318,36 @@ pr_doctor_preflight() {
     esac
   done
 
-  # The jail probe is worth its ~10ms only when a reviewer that needs one is
+  # `agent` is deliberately NOT in $jail_for: its bwrap is a pid fence, its
+  # adapter degrades to unwrapped rather than refusing, and a preflight that
+  # failed the round for it would refuse a roster that works. The doctor reports
+  # that case as a warning instead (pr_doctor_check_agent_pid_fence).
+  #
+  # The jail probe is worth its cost only when a reviewer that needs one is
   # actually in the roster. Without it, that adapter fails after the sandbox copy
   # and the session bookkeeping, which forfeits its resume handle for the price of
   # a check we could have run first.
+  #
+  # That cost is no longer ~10ms. Since the probe started MEASURING containment
+  # it always waits its window out for a marker that must never appear: 1.04s at
+  # the default ten ticks, measured on this host 2026-08-27. A second on every
+  # round with agy or claude in the roster is not worth paying for a margin that
+  # exists to absorb a loaded interactive `doctor`, so preflight shrinks the
+  # window to three ticks -- 0.33s measured the same way. Three is not arbitrary,
+  # but the margin is thinner than it sounds: the writer stamps `survived` 0.2s
+  # after `spawned`, bwrap has already exited by the time this loop starts, and
+  # the loop checks at 0.1s, 0.2s and 0.3s. So the marker is seen on the SECOND
+  # of three checks -- one whole tick of slack, and no more. Measured, ten runs
+  # each, with --unshare-pid removed from the probe payload so the marker really
+  # lands: caught at the second check every time, unchanged under 64 spinners on
+  # 32 cores. Before that measurement this loop checked BEFORE its first sleep
+  # and the marker landed on the last check with nothing to spare; the ordering
+  # in _pr_doctor_bwrap_probe is what buys the tick, at no extra wall time.
+  # Widen this rather than trim it: the failure direction is a false PASS.
+  # `local` rather than an assignment prefixed to the call, because the probe
+  # reads the variable and bash's rules for whether such a prefix persists past a
+  # FUNCTION call are the ones tests/test-doctor.sh already refuses to rely on.
+  local PR_BWRAP_PROBE_TICKS=3
   if [[ -n "$jail_for" ]]; then
     if ! pr_doctor_have bwrap; then
       echo "preflight: bwrap not found, and these adapters refuse to run without it:" >&2

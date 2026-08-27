@@ -75,10 +75,73 @@ if (( prompt_bytes >= PR_MAX_ARG_BYTES )); then
   exit 1
 fi
 
+# A private state directory, SIBLING to the repo copy rather than inside it:
+# pr_sandbox_refresh wipes <sandbox>/repo every round, and the conversations
+# that make round-to-round resume possible live in here. It is bound OVER
+# ~/.gemini so agy still finds its state at the path it expects.
+#
+# Isolating it also keeps the operator's real ~/.gemini out of the reviewer's
+# reach. agy honours workspace hooks under .agents/, so a hostile workspace
+# can make the reviewer write into its state directory -- and a read-write
+# bind of the real one would hand that write a persistence channel that
+# outlives the jail, running later in the operator's own sessions. Same
+# argument, same shape, as adapters/claude.sh's private CLAUDE_CONFIG_DIR;
+# adapters source nothing, so the reasoning is restated here by convention.
+# What is lost is agy history from OTHER sessions, which nothing here ever
+# relied on: resume is per-session by design and the session map carries the
+# handles. Auth material is ro-bound in by path below, never copied.
+state="$(dirname "$workdir")/gemini-state"
+if ! mkdir -p "$state" 2>/dev/null; then
+  echo "agy adapter: cannot create the private state dir at $state" >&2
+  exit 1
+fi
+
+# The bind DESTINATION has to exist on the host as well. bwrap creates a missing
+# destination by mkdir'ing it, and under `--ro-bind / /` it cannot: on a host
+# with no ~/.gemini the jail refuses to start with
+#
+#     bwrap: Can't mkdir /home/<user>/.gemini: Read-only file system
+#
+# and an rc=1 that produced no output lands in the empty-response branch at the
+# bottom of this file, which then tells the operator to check tool permissions
+# -- the wrong cause, on every round, for as long as the directory is absent.
+# Reproduced against bubblewrap 0.9.0, 2026-08-27. Nothing upstream catches it:
+# pr_doctor_check_bwrap_jail and pr_doctor_preflight both bind a directory under
+# $TMPDIR that they `mkdir -p` first, so their mountpoint always exists and they
+# pass on exactly the host this fails on.
+#
+# Creating it is the whole fix: an empty ~/.gemini is what agy itself would
+# leave on a first run, and the jail overmounts it, so nothing of the
+# operator's is touched. Checked by hand like the state dir above -- there is
+# no set -e here -- and fatal, because the jail would refuse to start anyway.
+# ${HOME:-} in the TEST rather than $HOME for the reason adapters/codex.sh:97
+# states at length: set -u is on, and PR_CACHE_ROOT makes a round with no HOME
+# reachable. Past this guard the bare form is correct and used: an empty HOME
+# has already exited, and `:-` there would quietly resolve a later slip to
+# "/.gemini" instead of failing.
+# But unlike codex, agy cannot DEGRADE to a round without one: an unset HOME
+# would resolve every path here to "/", and "/.gemini" is a real destination --
+# mkdir fails for an ordinary user, and for root it would create a directory at
+# the filesystem root. So an absent HOME is refused outright rather than
+# resolved. Nothing is lost by refusing: the auth file the loop below needs is
+# looked up under the same HOME, so that round could not have authenticated.
+if [[ -z "${HOME:-}" ]] || ! mkdir -p "$HOME/.gemini" 2>/dev/null; then
+  echo "agy adapter: cannot create the bind destination ${HOME:-<HOME is unset>}/.gemini" >&2
+  echo "agy's private state is bound over ~/.gemini, and bwrap cannot mkdir that" >&2
+  echo "destination itself under --ro-bind / /. Refusing to run agy without it." >&2
+  exit 1
+fi
+
 # The jail: everything read-only, the disposable repo copy read-write, a private
-# /tmp so a stray absolute write lands nowhere real, and agy's own state
-# directory writable so conversations and logs still persist across rounds.
+# /tmp so a stray absolute write lands nowhere real, and the private state
+# directory above mounted where agy expects to find ~/.gemini, so conversations
+# and logs still persist across rounds.
 # --die-with-parent matters because the runner kills the process group on timeout.
+#
+# --unshare-pid is what makes --die-with-parent tree cleanup instead of
+# PDEATHSIG on the immediate command: measured 2026-08-27 with this exact flag
+# shape, a detached `setsid sleep` survived bwrap's exit without it and was
+# contained with it (probes/2026-08-27-pid-namespace-adapters).
 jail=(
   bwrap
   --ro-bind / /
@@ -86,11 +149,21 @@ jail=(
   --proc /proc
   --tmpfs /tmp
   --bind "$workdir" "$workdir"
+  --bind "$state" "$HOME/.gemini"
   --die-with-parent
   --unshare-uts
   --unshare-ipc
+  --unshare-pid
 )
-[[ -d "$HOME/.gemini" ]] && jail+=(--bind "$HOME/.gemini" "$HOME/.gemini")
+# The minimal auth material, measured in leg 3 of the probe above: the one file
+# the CLI needs to authenticate, bound read-only and by path over the private
+# dir. It is the probe's output, not a guess -- and the guess would have been
+# wrong. Starting from an empty private dir, agy answered "authentication
+# required" with nothing bound AND with the obvious-looking oauth_creds.json
+# bound; it authenticated on the nested antigravity-cli token alone. Re-run leg
+# 3 before changing this path, or before adding a second one beside it.
+creds="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+[[ -f "$creds" ]] && jail+=(--ro-bind "$creds" "$creds")
 
 # --sandbox is passed for defence in depth, not because it works: Task 0 measured
 # it as inert here. If a future release makes it real, this costs nothing.

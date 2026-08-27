@@ -46,6 +46,15 @@ STUB
 
 export PR_AGY_MODEL=gemini-3.1-pro-high
 
+# Every case below spawns the adapter, and the adapter now CREATES its ~/.gemini
+# bind destination -- bwrap cannot mkdir one under `--ro-bind / /`, so it has to
+# exist on the host first. Nothing in the offline suite may write into the
+# operator's real home, so HOME is redirected for the whole file here; the cases
+# that care about its CONTENT still set their own per test, which shadows this.
+# Removed after pr_run_tests rather than through a trap: helpers.sh cleans its
+# own root the same way, and a trap here would be the only one in the suite.
+HOME="$(mktemp -d "${TMPDIR:-/tmp}/pr-test-agy-home-XXXXXX")"; export HOME
+
 # The runner validates this too, but an adapter run by hand has no runner.
 test_a_fractional_timeout_is_refused_by_the_adapter() {
   local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
@@ -123,6 +132,116 @@ test_jail_binds_the_workdir_writable_and_the_root_readonly() {
   assert_contains "$argv" "$d/work" "the workdir is the writable path"
   assert_contains "$argv" "--tmpfs" "private /tmp, so a /tmp escape lands nowhere real"
   assert_contains "$argv" "--die-with-parent" "jail dies with the timeout"
+}
+
+# The jail must take a pid namespace (bwrap --die-with-parent alone is
+# PR_SET_PDEATHSIG on the immediate command, not tree cleanup — measured
+# 2026-08-27, probes/2026-08-27-pid-namespace-adapters) and must NOT hand the
+# reviewer the operator's real ~/.gemini read-write: that directory feeds the
+# operator's own later sessions, so a writable bind is a persistence channel
+# out of the jail. The state that persists across ROUNDS is the private
+# sibling directory, exactly like claude's config dir.
+test_jail_unshares_pid_and_binds_a_private_state_dir() {
+  local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  mkdir -p "$d/sandbox/repo" "$d/home/.gemini"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  local argv; argv="$(< "$d/bin/bwrap-argv.txt")"
+  assert_contains "$argv" "--unshare-pid" "pid namespace requested"
+  assert_contains "$argv" "$d/sandbox/gemini-state" \
+    "private state dir, sibling to the repo copy, bound over ~/.gemini"
+  # The rw bind of the operator's real state must be gone: no --bind whose
+  # SOURCE is the real ~/.gemini. (--ro-bind of individual auth files inside
+  # it is allowed, which is why this greps the pair, not the path.)
+  assert_eq "$(grep -Fx -A1 -- '--bind' "$d/bin/bwrap-argv.txt" \
+               | grep -cFx "$d/home/.gemini")" "0" \
+    "the operator's real ~/.gemini is never bound read-write"
+  # helpers' assert_file_exists is [[ -f ]] and would always fail on a dir
+  [[ -d "$d/sandbox/gemini-state" ]] || pr_fail "the adapter created the dir"
+}
+
+# The one file agy actually needs to authenticate, measured in leg 3 of
+# probes/2026-08-27-pid-namespace-adapters: it is nested, and it is NOT the
+# obvious-looking oauth_creds.json, which was tried first and failed. Bound
+# read-only and by path, so nothing the reviewer writes can reach it.
+test_the_measured_auth_file_is_ro_bound_and_nothing_else_is() {
+  local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  mkdir -p "$d/sandbox/repo" "$d/home/.gemini/antigravity-cli"
+  : > "$d/home/.gemini/antigravity-cli/antigravity-oauth-token"
+  : > "$d/home/.gemini/oauth_creds.json"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  local argv; argv="$(< "$d/bin/bwrap-argv.txt")"
+  assert_contains "$argv" "--ro-bind" "auth material comes in read-only"
+  assert_contains "$argv" "$d/home/.gemini/antigravity-cli/antigravity-oauth-token" \
+    "the file the probe measured"
+  assert_not_contains "$argv" "oauth_creds.json" \
+    "the candidate that failed the probe is not bound just because it exists"
+}
+
+# Reviewer-scoped write integrity: a state dir that cannot be created fails
+# THIS reviewer before the CLI is spawned, claude.sh's shape.
+test_uncreatable_state_dir_fails_before_spawning() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  mkdir -p "$d/sandbox/repo"; chmod 555 "$d/sandbox"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  rc=$?
+  chmod 755 "$d/sandbox"
+  assert_exit_code "$rc" 1 "refuses when the private state dir is uncreatable"
+  assert_file_missing "$d/bin/agy-argv.txt" "the CLI was never invoked"
+}
+
+# Regression, reproduced against bubblewrap 0.9.0 on 2026-08-27: bwrap creates a
+# missing bind DESTINATION by mkdir'ing it, and under `--ro-bind / /` it cannot,
+# so on a host that has never run agy the jail refused to start ("Can't mkdir
+# .../.gemini: Read-only file system") and the adapter reported the auto-deny
+# signature instead -- the wrong cause, every round. The stub bwrap here cannot
+# reproduce the refusal, so what is pinned is the fix rather than the symptom:
+# the mountpoint exists before the jail is built. Note the missing `.gemini`
+# in the mkdir below -- that absence IS the case, and the two tests above both
+# create it.
+test_the_gemini_mountpoint_is_created_when_the_host_has_none() {
+  local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  mkdir -p "$d/sandbox/repo" "$d/home"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  # helpers' assert_file_exists is [[ -f ]] and would always fail on a dir
+  [[ -d "$d/home/.gemini" ]] || pr_fail "the adapter created the bind destination"
+  assert_file_exists "$d/r.md" "and the round still produced a review"
+}
+
+# Reviewer-scoped write integrity, the state dir's shape: a mountpoint that
+# cannot be created fails THIS reviewer before the CLI is spawned, rather than
+# leaving bwrap to say it in its own words after the session bookkeeping.
+test_an_uncreatable_gemini_mountpoint_fails_before_spawning() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  mkdir -p "$d/sandbox/repo" "$d/home"; chmod 555 "$d/home"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  rc=$?
+  chmod 755 "$d/home"
+  assert_exit_code "$rc" 1 "refuses when the ~/.gemini mountpoint is uncreatable"
+  assert_file_missing "$d/bin/agy-argv.txt" "the CLI was never invoked"
+}
+
+# An unset HOME is the one case the adapter must not "handle": every path here
+# would resolve to "/", and mkdir -p /.gemini is a no-op for root rather than an
+# error. codex degrades gracefully with no HOME (there is simply no auth to
+# copy); agy cannot, because the token it needs is looked up under the same HOME.
+test_an_unset_home_is_refused_rather_than_resolved_to_the_filesystem_root() {
+  local d rc out; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/sandbox/repo"
+  out="$(echo "prompt" | PATH="$d/bin:$PATH" env -u HOME \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" 2>&1)"
+  rc=$?
+  assert_exit_code "$rc" 1 "an absent HOME is refused, not resolved to /"
+  assert_contains "$out" "HOME is unset" "and the message says which"
+  assert_file_missing "$d/bin/agy-argv.txt" "the CLI was never invoked"
 }
 
 test_prompt_is_passed_as_argv_because_agy_cannot_read_stdin() {
@@ -289,3 +408,6 @@ test_a_missing_reason_argument_is_not_an_error() {
 }
 
 pr_run_tests
+pr_test_rc=$?
+rm -rf "$HOME"
+exit "$pr_test_rc"

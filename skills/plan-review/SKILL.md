@@ -120,9 +120,10 @@ Three things to watch that the runner cannot check for you:
   different family in that case. After a round, two reviewers whose recorded models are
   the exact same string produce a warning in `round.json`; report it.
 - **Cost, when `claude` is a reviewer.** Claude Code hands a reviewer its full tool
-  surface, including subagents. The jail confines writes and the environment scrub
-  closes the messaging channel, but neither bounds spend — `PR_TIMEOUT_SECS` (default
-  900) is the only thing that does.
+  surface, including subagents. The jail confines writes, the environment scrub closes
+  the messaging channel, and `--unshare-pid` means a background process the reviewer
+  spawns dies with the round — but none of them bounds spend. `PR_TIMEOUT_SECS`
+  (default 900) is the only thing that does.
 
 ## Running a round
 
@@ -281,7 +282,46 @@ meant.
 - `agy` or `claude` fails with a `bwrap` error: that is the adapter refusing to run a
   reviewer whose CLI does not confine its own writes. This is correct behaviour, not a
   bug. Report it and continue with the other reviewers; do not work around it by editing
-  the adapter.
+  the adapter. `agent` never fails this way — its bubblewrap supplies only a pid
+  namespace, not a write barrier, so with no working `bwrap` it runs unwrapped by design.
+  The doctor warns for that case rather than failing; report the warning, and do not
+  treat it as a reason to drop the reviewer.
+- The doctor's jail check now says "bwrap jail **contains** a detached process". It
+  measures containment, not whether the flags were accepted, so a failure there means a
+  reviewer could leave a process running after the round returns — not merely that a
+  flag was rejected. Report the doctor's own diagnosis verbatim.
+- **`agy` no longer sees the user's real `~/.gemini`.** It runs against a private state
+  directory beside the disposable repo copy, with one auth file bound in read-only. If a
+  user asks why agy cannot see a conversation from their own interactive session, that is
+  why, and it is deliberate: a writable bind of their state directory would be a
+  persistence channel out of the jail. Round-to-round resume is unaffected — the session
+  map carries the handles.
+- **`codex` no longer reads the user's `~/.codex` either.** It runs under a private
+  `CODEX_HOME` beside the disposable repo copy, holding a copy of `auth.json` and nothing
+  else the operator put there. This closes a real failure: an obsolete field in the
+  user's own `config.toml` failed codex's `--strict-config` and the reviewer never
+  started. Two things to say when it comes up. First, the copied `auth.json` goes stale
+  when the user re-authenticates — the fix is deleting `<sandbox>/codex-home/auth.json`,
+  and the next round copies a fresh one in. Second, if codex still refuses to start with
+  a config error, the file to look in is `<sandbox>/codex-home/config.toml`, which codex
+  writes itself; the adapter's own message names it. Their `~/.codex` is not the cause
+  any more, and telling them to edit it would waste their time.
+- **A plan that was mid-loop when the private home landed loses one codex round.** Its
+  stored handle names a rollout in the user's `~/.codex/sessions/`, which the private home
+  does not have, so the resume fails before the banner and codex is recorded as failed for
+  that round. Say what it is rather than debugging it: the handle is dropped by that
+  failure and the next round starts codex cold, so running again is the whole fix.
+  `--fresh` skips the wasted round if the user would rather not spend it, but say what it
+  costs: it drops EVERY reviewer's handle and the history baseline, not just codex's, so
+  spending the one wasted round is usually cheaper. This happens once per plan, never again.
+- **Repo-supplied codex hooks are off for reviews** (`-c features.hooks=false`). A
+  repository can ship a `.codex/hooks.json` and codex was measured reading the one in the
+  workspace under review. Handlers from an untrusted source were measured *not* executing
+  at codex-cli 0.150.1 — codex *appears to gate* them behind an interactive trust review a
+  headless run cannot reach — so do not describe this to a user as a closed exploit. The
+  non-execution was measured; the gate is inferred from the binary's own strings and the
+  once-trusted path was never attempted. It closes a read, ahead of an execution path that
+  is codex's to open.
 - A reviewer's recorded model reads `<something> (requested: <pin>)`: the CLI swapped the
   model out mid-run and the adapter caught it. The pin did not answer. Say so when
   reporting verdicts — that round is not comparable to one run on the pinned model.

@@ -23,6 +23,34 @@ printf '# Cursor review\n<!-- VERDICT: MINOR -->\n<!-- FILES-INSPECTED: src/a.ts
 exit $exit_code
 STUB
   chmod +x "$bindir/agent"
+  # Every test in this file now resolves `bwrap`, because the adapter wraps all
+  # three of its invocations. A host whose real bwrap is installed but unusable
+  # (userns restrictions, no bwrap at all) must not decide unit-test outcomes,
+  # so the stub goes in unconditionally and the no-bwrap case removes it again.
+  install_bwrap_stub "$bindir"
+}
+
+# Records argv one per line, then execs the real command from the first
+# `agent` in the argument list — same shape as agy's bwrap stub.
+install_bwrap_stub() {
+  local bindir="$1"
+  cat > "$bindir/bwrap" <<STUB
+#!/usr/bin/env bash
+args=("\$@")
+for i in "\${!args[@]}"; do
+  # The adapter's readiness probe is \`bwrap <flags> true\`: presence on PATH is
+  # not a working jail, so it tries the flags before deciding to wrap. It is
+  # not a vendor invocation, so it is answered but NOT recorded -- the argv log
+  # counts wrapped \`agent\` calls and the count assertion below depends on that.
+  [[ "\${args[\$i]}" == true ]] && exit 0
+  if [[ "\${args[\$i]}" == agent ]]; then
+    printf '%s\n' "\$@" >> "$bindir/bwrap-argv.txt"
+    exec "\${args[@]:\$i}"
+  fi
+done
+exit 1
+STUB
+  chmod +x "$bindir/bwrap"
 }
 
 # Every test below pins a model, because the adapter now requires one.
@@ -111,6 +139,10 @@ printf 'Claude Opus 5 hit a safety filter, and the conversation was automaticall
 exit 0
 STUB
   chmod +x "$bindir/agent"
+  # Same reason as in install_stub: this helper builds its own `agent` rather
+  # than calling that one, so it has to supply the bwrap stub itself or the
+  # test would run against whatever bwrap the host happens to have.
+  install_bwrap_stub "$bindir"
 }
 
 test_a_mid_run_model_switch_is_recorded_not_the_pin() {
@@ -156,6 +188,79 @@ test_the_clis_stderr_is_inherited_not_redirected() {
   assert_not_contains "$(cat "$d/r.md")" "CURSOR CLI FATAL" \
     "and the error text never enters the artifact the verdict parser reads"
   assert_file_missing "$d/r.md.log" "no derived .log file beside the review"
+}
+
+# Cursor confines its own WRITES (--sandbox enabled) but nothing contains its
+# process tree: P6 measured its tool layer taking its own process group AND
+# session, out of reach of the kernel's group kill. bwrap here supplies ONLY
+# the pid namespace — and EVERY agent invocation goes through it, create-chat
+# and --version included, because "short-lived, nothing to contain" is an
+# assumption nobody measured.
+test_every_agent_invocation_runs_in_a_pid_namespace_when_bwrap_exists() {
+  local d; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0
+  mkdir -p "$d/work"
+  echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  local argv; argv="$(< "$d/bin/bwrap-argv.txt")"
+  assert_contains "$argv" "--unshare-pid" "pid namespace requested"
+  assert_contains "$argv" "--die-with-parent" "dies with the runner"
+  # The stub appends one argv block per invocation, and every wrapped
+  # invocation carries --unshare-pid exactly once — so the count IS the
+  # number of wrapped calls. Three call sites exist; create-chat and
+  # --version are named below, which pins the third as the review run.
+  # A concatenated-contains check alone would pass an implementation that
+  # wraps only one of them.
+  assert_eq "$(grep -cx -- '--unshare-pid' "$d/bin/bwrap-argv.txt")" "3" \
+    "all three agent invocations are wrapped"
+  assert_contains "$argv" "create-chat" "session creation is wrapped"
+  assert_contains "$argv" "--version" "the meta version read is wrapped"
+}
+
+# No bwrap is not an error here, unlike agy/claude: bwrap is not this
+# adapter's write barrier, only its pid fence, and macOS has no bwrap at all.
+# The kernel's descendant sweep is the documented bound in that case.
+test_review_still_runs_without_bwrap() {
+  local d rc b; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0
+  rm -f "$d/bin/bwrap"
+  mkdir -p "$d/work"
+  # PATH is narrowed so `command -v bwrap` genuinely misses; bash goes by
+  # "$BASH" because it is no longer on that PATH either (agy's
+  # test_missing_bwrap_fails_closed pattern). Unlike agy, this adapter runs
+  # to completion unwrapped, so the narrowed PATH must carry every external
+  # the adapter and stub call: sed and head (the Switched-to parse), tail
+  # and tr (create-chat and the meta version read), cat (the stub) -- and
+  # bash, because the stub's `#!/usr/bin/env bash` resolves the interpreter
+  # through PATH, so without it the CLI cannot start and the test would fail
+  # for a reason that has nothing to do with bwrap.
+  for b in sed head tail tr cat bash; do ln -s "$(command -v "$b")" "$d/bin/$b"; done
+  echo "prompt" | PATH="$d/bin" \
+    "$BASH" "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 0 "runs unwrapped when the platform has no mechanism"
+  assert_file_exists "$d/bin/argv.txt" "the CLI ran"
+}
+
+# Presence on PATH is not a working jail. On a host with bwrap installed but
+# its user namespaces denied (Ubuntu 24.04's
+# kernel.apparmor_restrict_unprivileged_userns=1 — the exact case
+# lib/doctor.sh diagnoses), a wrap gated on `command -v` made all three
+# invocations fail and the round lost this reviewer with "create-chat produced
+# no session id". The adapter tries the flags instead, so a jail that will not
+# start costs the pid fence and not the review.
+test_a_broken_jail_costs_the_fence_not_the_reviewer() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0
+  pr_test_mkstub "$d/bin/bwrap" \
+    'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1'
+  mkdir -p "$d/work"
+  echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 0 "the review still runs unwrapped"
+  assert_file_exists "$d/bin/argv.txt" "the CLI ran"
+  assert_file_missing "$d/bin/bwrap-argv.txt" "and no vendor call was wrapped"
 }
 
 pr_run_tests

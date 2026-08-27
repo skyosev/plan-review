@@ -6,7 +6,9 @@
 # storage), not network-off; an early probe against a host outside that
 # allowlist was misread as the sandbox blocking all traffic. Verified against
 # 2026.08.11-e8db854: github.com 200, api.github.com 200, write inside the
-# workdir OK, write outside denied with no file created.
+# workdir OK, write outside denied with no file created -- but that last
+# clause is NO LONGER TRUE at 2026.08.25-3e8eec8, where a tool-call write to
+# both /tmp and $HOME succeeded; see the wrap comment below.
 #
 # Cursor exits 2 when a tool call is denied while still producing a correct
 # review, so the adapter normalises that to 0 when output exists.
@@ -46,9 +48,62 @@ fi
 
 cd "$workdir" || exit 1
 
+# Cursor's --sandbox enabled is meant to supply write confinement and the host
+# allowlist; what nothing supplied until now is process-TREE containment. P6
+# (probes 2026-08-26) measured the tool layer taking its own process group
+# and session, so neither the kernel's group kill nor a session sweep can
+# address a survivor -- one real 90s round left `sleep 900` holding the
+# session lock. bwrap here adds ONLY the pid namespace: / is bound
+# read-write on purpose, because the write barrier is meant to stay Cursor's
+# own. Every vendor invocation goes through it -- create-chat and --version
+# included, because "short-lived, nothing to contain" is an assumption, and
+# an escaped descendant of either would hold the inherited session lock all
+# the same. Verified live 2026-08-27
+# (probes/2026-08-27-pid-namespace-adapters): authentication, session
+# creation, tool execution and output capture all intact inside the
+# namespace, and containment measured against an unwrapped control that DID
+# leave a survivor on the host.
+#
+# The same probe measured something the header above still claims is false:
+# at Cursor 2026.08.25-3e8eec8, invoked exactly as below, a tool-call write to
+# /tmp and to $HOME both SUCCEEDED -- wrapped and unwrapped alike, so it is
+# not something this jail did. Treat "Cursor confines its own writes" as
+# unverified at the current version; the missing write barrier is a bigger
+# hole than the one this wrap closes and is filed in the backlog. Widening
+# this bwrap into a write barrier is the obvious fix and is deliberately NOT
+# done here: it needs its own probe, because Cursor's own sandbox machinery
+# runs inside it.
+#
+# No bwrap is NOT fail-closed here, unlike agy and claude: for them bwrap is
+# the write barrier, for this adapter it is only the pid fence, and macOS
+# has no bwrap at all. Where the platform provides no mechanism the kernel's
+# descendant sweep is the bound -- docs/adapter-contract.md states exactly
+# that.
+#
+# The gate is a working jail, not `command -v bwrap`. Presence is not
+# function: on the host class lib/doctor.sh already documents -- Ubuntu 24.04
+# with kernel.apparmor_restrict_unprivileged_userns=1 -- bwrap is installed and
+# every jail it starts is denied. Gated on presence, all three invocations
+# below would fail there and the round would lose this reviewer entirely
+# ("create-chat produced no session id") on a machine where `agent` worked fine
+# before this wrap existed. So the flags are tried once, on `true`, and a jail
+# that will not start simply means no wrap: the reviewer still runs,
+# containment degrades to the kernel's sweep, and the doctor is what tells the
+# operator they lost the fence (pr_doctor_check_agent_pid_fence, a WARN --
+# there is no fail-closed rule to enforce here). One extra bwrap spawn per
+# adapter run, ~10ms, against silently losing a reviewer.
+#
+# The flag list is written ONCE and then trialled, rather than stated for the
+# trial and restated for the wrap: two copies three lines apart are two copies
+# that can disagree, and a trial that no longer matches what actually runs
+# proves nothing about it.
+wrap=(bwrap --bind / / --dev /dev --proc /proc
+      --die-with-parent --unshare-uts --unshare-ipc --unshare-pid)
+"${wrap[@]}" true > /dev/null 2>&1 || wrap=()
+
 session="$session_in"
 if [[ -z "$session" ]]; then
-  session="$(agent create-chat 2>/dev/null | tail -1 | tr -d '[:space:]')"
+  session="$("${wrap[@]}" agent create-chat 2>/dev/null | tail -1 | tr -d '[:space:]')"
   if [[ -z "$session" ]]; then
     echo "agent adapter: create-chat produced no id" >&2
     pr_reason "Cursor's create-chat produced no session id; nothing was run"
@@ -71,7 +126,7 @@ args=(-p --trust --sandbox enabled --resume "$session" --output-format text
 # splice the CLI's error text into the review markdown itself -- the artifact the
 # verdict parser and the `Switched to` scan below both read. Deleting the
 # redirect is the fix; duplicating fd 2 onto fd 1 is its opposite.
-agent "${args[@]}" > "$review_out"
+"${wrap[@]}" agent "${args[@]}" > "$review_out"
 rc=$?
 
 # Cursor can swap the model out from under the pin and say so only in prose in
@@ -100,7 +155,7 @@ printf '%s\n%s\n%s\n%s\n' \
   "$session" \
   "$model_effective" \
   "" \
-  "$(agent --version 2>/dev/null | head -1 | tr -d '[:space:]')" \
+  "$("${wrap[@]}" agent --version 2>/dev/null | head -1 | tr -d '[:space:]')" \
   > "$meta_out"
 
 if [[ -s "$review_out" ]]; then

@@ -9,6 +9,11 @@ source "$PR_ROOT/lib/init.sh"
 
 INIT="$PR_ROOT/bin/plan-review"
 
+# The jail probe's pass path waits ticks x 0.1s for a marker that must never
+# appear. Ten is the operator-facing default; two is what keeps the offline
+# suite inside CLAUDE.md's budget, and seven cases here reach the probe.
+export PR_BWRAP_PROBE_TICKS=2
+
 # Every entry-point case runs against a PATH that holds NOTHING but the
 # utilities init needs plus the stubs the case asks for. Prepending a stub
 # directory to the real PATH would leave whatever is installed on the machine
@@ -62,9 +67,11 @@ stub_claude() {
 [[ \"\$1 \$2\" == 'auth status' ]] && { echo '{\"loggedIn\":true,\"authMethod\":\"oauth\",\"subscriptionType\":\"max\"}'; exit 0; }
 exit 0"
 }
-# The jail probe runs bwrap itself rather than a proxy, so a stub that exits 0 is
-# what makes an agy or claude roster testable off a machine with a working one.
-stub_bwrap() { pr_test_mkstub "$1/bwrap" 'exit 0'; }
+# The jail probe runs bwrap itself rather than a proxy, so a stub is what makes
+# an agy or claude roster testable off a machine with a working one. It has to
+# be the CONTAINING stub: the probe measures containment now, and an `exit 0`
+# that never runs the payload is a failure by design (helpers.sh).
+stub_bwrap() { install_containing_bwrap_stub "$1"; }
 
 mkrepo() {
   local d="$1"
