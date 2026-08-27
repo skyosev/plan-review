@@ -104,6 +104,16 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
 - **R1: a reviewer forfeits its resume handle on a timeout *or* a failure**, and only
   its own. The parent branches on the `timed_out` field the child records, not on
   `status` — a timed-out reviewer with partial output is still `ok` but must not resume.
+  The round-level counterpart is **enforced, not advised**: an `aborted` round forfeits
+  every handle in it, so `libexec/plan-review-round.sh` refuses the next round without
+  `--fresh` (`pr_round_needs_fresh`, `lib/round.sh` — one predicate, because two
+  spellings of `aborted` is how the runner and the doctor would drift). It is a policy,
+  not an inference: `abort` on an `awaiting_integration` round discards handles that
+  were still good. That is the fourth accepted cost in the spec, priced deliberately
+  against the per-reviewer marker the design rejected, and pinned by
+  `tests/test-runner.sh`. `--fresh` then *clears* the session map, and that clear is a
+  store-scoped write like any other — checked, `exit 2` on failure, before the round
+  directory is created.
 - **The execution kernel sweeps the adapter's process group unconditionally, and
   then its remembered descendants best-effort** (`lib/adapter-exec.sh`).
   `timeout --kill-after` stops escalating once the direct child is reaped, and
@@ -160,14 +170,27 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   measured 2026-08-26, an unchecked prompt write let the adapter read the same
   `/dev/full` back as an endless NUL stream and file a review of nothing as `ok`, and an
   unchecked meta pre-seed left the child's own `mapfile` reading that stream past 3GB
-  RSS under no deadline. Store-scoped (`libexec/plan-review-round.sh`): a `round.json`,
+  RSS under no deadline. The child's read of `<meta_out>` is bounded the same way and for
+  the same measured reason: `[[ -f ]]` first, because a `<meta_out>` that is a symlink to
+  `/dev/zero` fed `mapfile` an endless stream and a FIFO with no writer blocked forever at
+  `open(2)`, and then `head -c 4096`, because `read -N` is builtin but drops NUL bytes
+  without counting them against its own limit. That `head` is one fork per reviewer per
+  round — the only new per-reviewer fork on this path, and the reason the bound is stated
+  in `docs/adapter-contract.md` rather than repeated in every adapter.
+  Store-scoped (`libexec/plan-review-round.sh`, `libexec/plan-review-abort.sh`): a `round.json`,
   session-map or synthesized-record write that fails is a hard `exit 2` with `aborting`
   on stderr — including the terminal `awaiting_integration` transition, because "Round
   complete" printed over a state that never persisted is the lie the guard exists to
   stop. The parent bridges the two with `pr_reviewer_result_ensure` (0 valid / 1
   synthesized / 2 store lost), so `round.json` lists every reviewer in the roster or the
-  round does not claim to have finished. The all-failed path warns instead of escalating:
-  it already exits non-zero and makes no success claim.
+  round does not claim to have finished. `abort` additionally refuses **before** it
+  writes when the round directory is unwritable, so the operator gets one sentence
+  instead of jq's tmpfile error; the check promises nothing beyond that, since a
+  writable directory does not guarantee the write succeeds — hence the `|| exit 2`
+  behind it. The all-failed path warns instead of escalating: it already exits non-zero
+  and makes no success claim. **`libexec/plan-review-complete.sh` is the one store-scoped
+  transition still unchecked** — it prints "Round complete" over a `pr_round_set_state`
+  whose status it never reads (backlogged, 2026-08-27).
 - **The reviewer runner** (`lib/reviewer-runner.sh`) owns the fan-out:
   `pr_reviewer_run_all` is the only public entry to the fan-out and validates
   the module's variable contract (fourteen caller variables, listed in the
