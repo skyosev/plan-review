@@ -96,6 +96,33 @@ if ! mkdir -p "$state" 2>/dev/null; then
   exit 1
 fi
 
+# The bind DESTINATION has to exist on the host as well. bwrap creates a missing
+# destination by mkdir'ing it, and under `--ro-bind / /` it cannot: on a host
+# with no ~/.gemini the jail refuses to start with
+#
+#     bwrap: Can't mkdir /home/<user>/.gemini: Read-only file system
+#
+# and an rc=1 that produced no output lands in the empty-response branch at the
+# bottom of this file, which then tells the operator to check tool permissions
+# -- the wrong cause, on every round, for as long as the directory is absent.
+# Reproduced against bubblewrap 0.9.0, 2026-08-27. Nothing upstream catches it:
+# pr_doctor_check_bwrap_jail and pr_doctor_preflight both bind a directory under
+# $TMPDIR that they `mkdir -p` first, so their mountpoint always exists and they
+# pass on exactly the host this fails on.
+#
+# Creating it is the whole fix: an empty ~/.gemini is what agy itself would
+# leave on a first run, and the jail overmounts it, so nothing of the
+# operator's is touched. Checked by hand like the state dir above -- there is
+# no set -e here -- and fatal, because the jail would refuse to start anyway.
+# ${HOME:-} rather than $HOME for the reason adapters/codex.sh:97 states at
+# length: set -u is on, and PR_CACHE_ROOT makes a round with no HOME reachable.
+if ! mkdir -p "${HOME:-}/.gemini" 2>/dev/null; then
+  echo "agy adapter: cannot create the bind destination ${HOME:-}/.gemini" >&2
+  echo "bwrap cannot mkdir a bind destination under --ro-bind / /, so the jail" >&2
+  echo "would refuse to start. Refusing to run agy without it." >&2
+  exit 1
+fi
+
 # The jail: everything read-only, the disposable repo copy read-write, a private
 # /tmp so a stray absolute write lands nowhere real, and the private state
 # directory above mounted where agy expects to find ~/.gemini, so conversations
@@ -113,7 +140,7 @@ jail=(
   --proc /proc
   --tmpfs /tmp
   --bind "$workdir" "$workdir"
-  --bind "$state" "$HOME/.gemini"
+  --bind "$state" "${HOME:-}/.gemini"
   --die-with-parent
   --unshare-uts
   --unshare-ipc
@@ -127,8 +154,8 @@ jail=(
 # bound; it authenticated on the nested antigravity-cli token alone. Re-run leg
 # 3 before adding or removing a name here.
 for f in antigravity-cli/antigravity-oauth-token; do
-  [[ -f "$HOME/.gemini/$f" ]] \
-    && jail+=(--ro-bind "$HOME/.gemini/$f" "$HOME/.gemini/$f")
+  [[ -f "${HOME:-}/.gemini/$f" ]] \
+    && jail+=(--ro-bind "${HOME:-}/.gemini/$f" "${HOME:-}/.gemini/$f")
 done
 
 # --sandbox is passed for defence in depth, not because it works: Task 0 measured
