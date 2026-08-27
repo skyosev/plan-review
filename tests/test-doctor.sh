@@ -1156,6 +1156,21 @@ test_smoke_fails_a_dead_reviewer_and_quotes_its_reason() {
   assert_contains "$out" "counts 0 0 1" "a failure"
 }
 
+# A failed smoke keeps its directory for diagnosis and nothing ever cleans it,
+# so a copied credential left in there is permanent -- one per failed smoke,
+# under a doctor-smoke.$$ key, invisible to `codex logout`. The token is the one
+# thing the diagnosis never needs, so it goes before the "kept" line names the
+# directory. The fixture sites it exactly where adapters/codex.sh does.
+test_a_failed_smoke_keeps_the_evidence_but_not_the_credentials() {
+  local d out; d="$(pr_test_tmpdir)"
+  out="$(smoke_run "codex=$FAKES/fake-fail-leaving-credentials.sh")"
+  assert_contains "$out" "kept for diagnosis" "the directory is still kept"
+  local home=("$d"/cache/doctor-smoke.*/codex/codex-home)
+  assert_file_missing "${home[0]}/auth.json" "the credential copy is gone"
+  assert_file_exists "${home[0]}/config.toml" \
+    "and only the credential -- the rest of the private home is evidence"
+}
+
 # The case the smoke exists for, and the round's measured lesson in one: an
 # auth probe can pass while the exec path hangs on an interactive prompt, the
 # hang must be cut at the smoke deadline rather than the round's, and

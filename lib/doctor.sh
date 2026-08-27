@@ -1162,6 +1162,27 @@ _pr_doctor_smoke_one() {
     pr_d_info "A trivial prompt should not need the round's deadline; a hang here"
     pr_d_info "usually means an interactive login prompt the auth check cannot reach."
   fi
+  # The kept directory holds whatever the adapter sited BESIDE the repo copy,
+  # and for codex that is a private CODEX_HOME containing a copy of the
+  # operator's ~/.codex/auth.json -- adapters/codex.sh copies it in because the
+  # reviewer needs it writable. Nothing ever cleans a kept smoke directory: the
+  # session key is doctor-smoke.$$, so the rmdir in pr_doctor_check_smoke fails
+  # on a non-empty directory and every failed smoke would strand another
+  # credential copy under the cache root. The smoke fails most often while an
+  # operator is debugging codex auth, i.e. repeatedly, and `codex logout` cannot
+  # see any of them. Mode 600 (cp preserves it), so this is sprawl rather than
+  # exposure -- but there is no `plan-review clean` to sweep it later.
+  #
+  # Diagnosis needs the log, the meta and the reason file; it never needs the
+  # token. Named by path rather than found by a `find`: this is the doctor's
+  # file, and a scan for "auth.json" would be a second place that has to learn
+  # every adapter's private-directory layout. An adapter that starts copying a
+  # credential somewhere else has to be added here too -- which is the same
+  # rule docs/adapter-contract.md now states for the copy case.
+  #
+  # Only on this path: the success path already removed the whole directory,
+  # and PR_KEEP_SANDBOX is an explicit "keep the evidence whatever happened".
+  rm -f "$dir/codex-home/auth.json" 2> /dev/null
   pr_d_info "kept for diagnosis: $dir"
   return 1
 }
