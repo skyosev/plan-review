@@ -3,6 +3,22 @@ set -uo pipefail
 PR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PR_ROOT/tests/helpers.sh"
 
+# Sourced here as well as inside doctor_run's fresh bash, because the jail-probe
+# cases below call _pr_doctor_bwrap_probe directly: it returns a status and
+# fills a nameref, and neither survives a `$BASH -c` subshell. Sourcing lib/ is
+# side-effect free by convention, so this costs nothing the other cases notice.
+source "$PR_ROOT/lib/paths.sh"
+source "$PR_ROOT/lib/doctor.sh"
+
+# The probe now WAITS for a marker that must never appear, so its pass path
+# costs ticks x 0.1s. Ten is the operator-facing default (generous against a
+# loaded host); two is what keeps the offline suite inside CLAUDE.md's budget.
+# Exported at file scope rather than per test, because the probe is reached
+# three ways here -- directly, through pr_doctor_check_bwrap_jail, and through
+# a real `plan-review doctor` whose roster happens to include agy or claude --
+# and only the first of those is obvious at the call site.
+export PR_BWRAP_PROBE_TICKS=2
+
 # Each case runs the checks in a fresh bash so the pass/warn/fail counters start
 # at zero, and appends a `counts <pass> <warn> <fail>` line for the assertions.
 #
@@ -99,11 +115,60 @@ test_broken_jail_is_distinguished_from_missing_bwrap() {
   assert_contains "$out" "counts 0 0 1" "a failure"
 }
 
+# The truthful pass stub -- the payload ran (spawned appears) and the detached
+# writer died with the namespace (survived never lands) -- lives in helpers.sh,
+# because test-init.sh needs the same shape.
 test_working_jail_passes() {
   local d; d="$(pr_test_tmpdir)"
-  pr_test_mkstub "$d/bin/bwrap" 'exit 0'
+  install_containing_bwrap_stub "$d/bin"
   local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_bwrap_jail')"
   assert_contains "$out" "counts 1 0 0" "a working jail is one pass"
+  assert_contains "$out" "contains a detached process" \
+    "and the message says what was proved, not merely which flags started"
+}
+
+# The probe must MEASURE containment, not flag acceptance: a bwrap that
+# starts the jail fine but lets a detached process outlive it (the exact
+# shape of --die-with-parent without --unshare-pid) has to fail. The stub
+# runs the payload with plain host bash -- uncontained by construction -- so
+# both markers appear and the probe must notice within its wait window.
+test_bwrap_probe_fails_when_a_detached_process_survives() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  cat > "$d/bin/bwrap" <<'STUB'
+#!/usr/bin/env bash
+args=("$@")
+for i in "${!args[@]}"; do
+  [[ "${args[$i]}" == bash ]] && exec "${args[@]:$i}"
+done
+exit 0
+STUB
+  chmod +x "$d/bin/bwrap"
+  local out rc=0
+  PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=5 \
+    _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  assert_eq "$rc" "1" "an escaping writer is a failed jail"
+  assert_contains "$out" "survived" "the failure names what happened"
+}
+
+# A bwrap that exits 0 without ever running the payload must FAIL, not pass:
+# silence is not containment. This is the case a one-marker probe gets wrong.
+test_bwrap_probe_fails_when_the_payload_never_ran() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/bwrap" 'exit 0'
+  local out rc=0
+  PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=2 \
+    _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  assert_eq "$rc" "1" "no spawned marker means the measurement never happened"
+  assert_contains "$out" "never started" "the failure names what happened"
+}
+
+test_bwrap_probe_passes_when_the_jail_contains() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  install_containing_bwrap_stub "$d/bin"
+  local out rc=0
+  PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=2 \
+    _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  assert_eq "$rc" "0" "spawned without survived is containment"
 }
 
 test_unwritable_cache_root_fails() {
@@ -906,7 +971,7 @@ test_a_codex_only_roster_does_not_check_the_bubblewrap_jail() {
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
   out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "no reviewer here needs the bubblewrap jail" "skipped, and said so"
-  assert_not_contains "$out" "bwrap jail works" "the probe did not run"
+  assert_not_contains "$out" "bwrap jail contains" "the probe did not run"
 }
 
 test_an_agy_roster_does_check_the_bubblewrap_jail() {

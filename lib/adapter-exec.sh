@@ -52,9 +52,11 @@
 # group on expiry, then SIGKILL after the grace -- but only while the direct
 # child is still alive. Measured 2026-08-19: an adapter that handles TERM and
 # exits is reaped at once, timeout returns 124, and a TERM-ignoring grandchild
-# survives indefinitely. `bwrap --die-with-parent` does not save agy and
-# claude either; without --unshare-pid it is PR_SET_PDEATHSIG on the immediate
-# command, not tree cleanup. So the group is swept below, by hand, BEFORE this
+# survives indefinitely. `bwrap --die-with-parent` alone did not save agy and
+# claude either -- without --unshare-pid it is PR_SET_PDEATHSIG on the
+# immediate command, not tree cleanup, measured both ways 2026-08-27 (probes
+# 2026-08-27-pid-namespace-adapters). Their adapters now pass --unshare-pid, so
+# the jail does its half; the group is still swept below, by hand, BEFORE this
 # function returns -- the caller reads artifacts only after the group is dead.
 #
 # The sweep is UNCONDITIONAL, not post-timeout: --kill-after never fires for
@@ -74,15 +76,27 @@
 #
 # What the group sweep does NOT do is bound a leaking reviewer. P6 (probes
 # 2026-08-26) established that it reaches the spawned command of no shipped
-# reviewer: agy and claude are already contained by their adapters' bwrap,
-# codex by its own --as-pid-1, and `agent` by nothing at all -- its tool layer
-# takes its own process group AND its own session, so a group kill on the
-# timeout pid cannot address it. One real 90s round left `sleep 900` running
-# after the round had returned, holding the inherited session-lock fd. So the
-# group kill is followed by a DESCENDANT sweep over the pids sampled during
-# the polled wait below. That sweep is best-effort by construction and is what
-# bounds the leak and frees the lock; what makes the review artifact final is
-# the caller's publication step (lib/reviewer-runner.sh), not either sweep.
+# reviewer: codex is contained by its own --as-pid-1, and `agent` was contained
+# by nothing at all -- its tool layer takes its own process group AND its own
+# session, so a group kill on the timeout pid cannot address it. One real 90s
+# round left `sleep 900` running after the round had returned, holding the
+# inherited session-lock fd.
+#
+# P6 also asserted that agy and claude "are covered by the adapter's bwrap".
+# That half was inference, not measurement -- P6 ran only codex and agent --
+# and it was false: --die-with-parent without --unshare-pid contains nothing
+# below the immediate command. Measured 2026-08-27 and fixed the same day; all
+# three bwrap-wrapped adapters now pass --unshare-pid, and `agent` gained a
+# pid-namespace-only bwrap of its own (probes
+# 2026-08-27-pid-namespace-adapters). On Linux, therefore, every shipped
+# reviewer is contained. None of that is true on macOS, which has no bwrap and
+# no pid namespaces, and none of it is guaranteed for a reviewer added later.
+#
+# So the group kill is followed by a DESCENDANT sweep over the pids sampled
+# during the polled wait below. That sweep is best-effort by construction and
+# is what bounds the leak and frees the lock wherever the jail does not; what
+# makes the review artifact final is the caller's publication step
+# (lib/reviewer-runner.sh), not either sweep.
 #
 # Do not reach for `setsid` here: plain `setsid cmd &` forks and the parent
 # exits immediately, so `wait` returns 0 in milliseconds and the adapter is

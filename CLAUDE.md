@@ -122,9 +122,17 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   the adapter only, not its descendants. But the group sweep alone reaches the
   spawned command of **no shipped reviewer**
   (P6, `docs/process/probes/2026-08-26-roster-sweep-reach/`):
-  `agy`/`claude` are contained by their adapters' bwrap, `codex` by its own
-  `--as-pid-1`, and `agent` by nothing — its tool layer takes its own process
-  group *and* session. So `wait` is polled: each tick walks a `ps -eo pid=,ppid=`
+  `codex` is contained by its own `--as-pid-1`, and `agent`'s tool layer takes
+  its own process group *and* session. P6's other claim — that `agy`/`claude`
+  were already contained by their adapters' bwrap — was inference, and false:
+  `--die-with-parent` without `--unshare-pid` is `PR_SET_PDEATHSIG` on the
+  immediate command, so a detached grandchild survives. Measured both ways
+  2026-08-27 and fixed the same day
+  (`docs/process/probes/2026-08-27-pid-namespace-adapters/`): `agy`, `claude`
+  and now `agent` all pass **`--unshare-pid`**, so on **Linux** every shipped
+  reviewer is contained by a jail. On **macOS** none of them is — no bwrap, no
+  pid namespaces — and the sweep below is the only bound there. So `wait` is
+  polled: each tick walks a `ps -eo pid=,ppid=`
   fixpoint from the adapter's pid (`_pr_ae_descendants`, bash builtins over a
   table so both GNU and Darwin shapes are fixture-tested offline) and remembers
   each descendant with its `ps -o lstart=` start time. After the group kill, a
@@ -201,11 +209,23 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   no scratch name of its own, so a rename inside the module cannot silently
   break the round. Every `round.json` and session-map mutation stays serial, in
   the parent.
-- **Confinement is per-adapter and not uniform**: codex and Cursor confine themselves;
-  `agy` and `claude` are wrapped in bubblewrap by their adapters and **fail closed** when
-  `bwrap` is missing. `claude` additionally rebuilds the environment from a whitelist
-  (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail) and runs
-  `--safe-mode`. Never add an unconfined fallback.
+- **Confinement is per-adapter and not uniform**: codex and Cursor confine their own
+  *writes*; `agy` and `claude` are wrapped in bubblewrap by their adapters and **fail
+  closed** when `bwrap` is missing. `claude` additionally rebuilds the environment from a
+  whitelist (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail)
+  and runs `--safe-mode`. Never add an unconfined fallback — for those two.
+  `adapters/agent.sh` is the exception and is deliberately **not** fail-closed: its bwrap
+  supplies the pid namespace and nothing else (`/` is bound read-write on purpose), so
+  where there is no bwrap it runs unwrapped and the kernel's sweep is the bound, exactly
+  as `docs/adapter-contract.md`'s containment clause says. Both jailed adapters also keep
+  a **private state directory** beside the repo copy — `<sandbox>/config` for claude,
+  `<sandbox>/gemini-state` for agy — bound over the path the CLI expects, with the one
+  auth file each needs bound in read-only *by path*. The operator's real `~/.claude` and
+  `~/.gemini` are never bind targets: both CLIs run hooks out of those directories in the
+  operator's own later sessions, which is what makes a writable bind a persistence
+  channel out of the jail. agy's file list came from a measurement, not a guess — the
+  obvious-looking `oauth_creds.json` is the wrong answer
+  (`docs/process/probes/2026-08-27-pid-namespace-adapters/`, leg 3).
 
 - **`PR_TIMEOUT_SECS` must be a positive integer**, enforced in
   `libexec/plan-review-round.sh` before preflight (which `PR_SKIP_PREFLIGHT=1` can

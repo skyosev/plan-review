@@ -118,11 +118,24 @@ Every adapter — real or fake — is invoked identically:
   `pr_sandbox_refresh` wipes `<sandbox>/repo` every round. `adapters/claude.sh`
   keeps its private `CLAUDE_CONFIG_DIR` at `<sandbox>/config` for that reason:
   the sessions that make carry-forward possible would otherwise be deleted by
-  the next round's copy. Isolating it also keeps the operator's own
-  `~/.claude/settings.json` — which defines hooks that run in *their*
-  interactive sessions — outside the reviewer's reach.
+  the next round's copy. `adapters/agy.sh` does the same at
+  `<sandbox>/gemini-state`, bound over `~/.gemini`. Isolating it also keeps the
+  operator's own `~/.claude/settings.json` — which defines hooks that run in
+  *their* interactive sessions — outside the reviewer's reach, and the same
+  argument applies to `~/.gemini`, whose workspace hooks agy honours. Auth
+  material comes in **read-only and by path**, one file at a time, measured
+  rather than guessed: never a read-write bind of the operator's real directory,
+  which would be a persistence channel out of the jail.
+- **Containment.** An adapter must contain its own process tree where the
+  platform provides a mechanism — on Linux, `bwrap --unshare-pid` (agy, claude,
+  agent) or the CLI's own equivalent (codex `--as-pid-1`). Where the platform
+  provides none (macOS has neither pid namespaces nor bwrap), the execution
+  kernel's best-effort descendant sweep is the bound, and the adapter is not
+  required to invent one.
 - **process group** — the runner invokes adapters under `timeout(1)`, which places
   each adapter in its own process group and signals the whole group. A descendant
   that leaves that group by taking one of its own is swept separately and
   best-effort, from a `ps` walk sampled while the adapter ran. Adapters do not need
-  to reap their own children.
+  to reap their own children. That sweep is the *fallback*, not the primary bound:
+  where the containment clause above applies, the namespace collapsing is what
+  actually disposes of the tree, and the sweep is what remains where it does not.

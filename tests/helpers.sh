@@ -99,6 +99,26 @@ pr_test_mkstub() {
   chmod +x "$path"
 }
 
+# install_containing_bwrap_stub <bindir>
+#
+# A bwrap stub that stands in for a jail which CONTAINS: it writes the probe's
+# `spawned` marker into the directory named after --bind and exits, which is
+# what a real jail looks like from the outside once it has run the payload and
+# then killed the detached writer between its two stamps. `_pr_doctor_bwrap_probe`
+# demands both signals, so a bare `exit 0` is now a probe FAILURE ("never
+# started") -- correctly, since it proves nothing ran. Two suites need the pass
+# path (test-doctor.sh directly, test-init.sh through its own stub_bwrap), so
+# the shape is written once here.
+install_containing_bwrap_stub() {
+  local bindir="$1"
+  pr_test_mkstub "$bindir/bwrap" 'prev=""
+for a in "$@"; do
+  [[ "$prev" == "--bind" ]] && { : > "$a/spawned"; break; }
+  prev="$a"
+done
+exit 0'
+}
+
 # pr_test_git_init_identity <dir> -- git init plus a fixed identity, nothing
 # else: content, plans, commits and remotes stay with each suite, because the
 # callers share no contract past this point. On repos that never commit the

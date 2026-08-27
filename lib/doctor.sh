@@ -246,19 +246,63 @@ pr_doctor_check_cli() {
 #
 # 200 means the probe directory could not be created, which is a different
 # failure from a jail that does not work. It is deliberately outside the range
-# bwrap reports (125/126/127 for its own errors) and outside anything the `true`
-# child can return, so the two cannot be confused.
+# bwrap reports (125/126/127 for its own errors) and outside anything the
+# payload can return, so the two cannot be confused.
 # The locals are underscore-prefixed because <output-var> names a variable in the
 # CALLER's scope: an ordinary `out` here would shadow the very variable the
 # nameref is supposed to reach.
 _pr_doctor_bwrap_probe() {
-  local _probe="${TMPDIR:-/tmp}/$1.$$" _said _rc
+  local _probe="${TMPDIR:-/tmp}/$1.$$" _said _rc _i
   mkdir -p "$_probe" 2>/dev/null || return 200
+  # Two signals, because "no marker" alone cannot tell containment from a
+  # payload that never ran (a no-op bwrap, a quoting error, a missing setsid
+  # all look like silence). The detached writer stamps `spawned` FIRST; the
+  # payload exits only once it sees that stamp, so the jail cannot tear the
+  # writer down before the stamp exists; the writer stamps `survived` 0.2s
+  # later. In a jail that contains -- these flags are the adapters' flags, so
+  # --unshare-pid is asserted by construction -- the namespace dies between
+  # the two stamps. In one that does not (--die-with-parent alone is
+  # PDEATHSIG on the immediate command, not tree cleanup), `survived` lands.
+  # Measured both ways on 2026-08-27 with exactly this flag set, which is
+  # what the probe now checks rather than assumes
+  # (docs/process/probes/2026-08-27-pid-namespace-adapters).
+  # Pass = bwrap exited 0 AND spawned exists AND survived never appears
+  # within the wait window. The payload's own wait on `spawned` is bounded
+  # (exit 1 -> bwrap reports non-zero) so a writer that never starts cannot
+  # hang the probe. The window is generous against a loaded host;
+  # PR_BWRAP_PROBE_TICKS exists so the offline suite shrinks it, not so
+  # operators tune it.
+  #
+  # The detached writer's own output goes to /dev/null on purpose: this is a
+  # command substitution, and a descendant that inherited the pipe would hold
+  # it open past bwrap's exit -- the same trap adapters/agy.sh documents.
   _said="$(bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
                  --bind "$_probe" "$_probe" --die-with-parent \
-                 --unshare-uts --unshare-ipc true 2>&1)"
+                 --unshare-uts --unshare-ipc --unshare-pid \
+                 bash -c "setsid bash -c ': > \"$_probe/spawned\"; sleep 0.2; : > \"$_probe/survived\"' > /dev/null 2>&1 &
+                          for (( i = 0; i < 100; i++ )); do
+                            [[ -e \"$_probe/spawned\" ]] && exit 0
+                            sleep 0.01
+                          done
+                          exit 1" 2>&1)"
   _rc=$?
-  rmdir "$_probe" 2>/dev/null
+  if (( _rc == 0 )) && [[ ! -e "$_probe/spawned" ]]; then
+    _said="the probe payload never started its detached writer"
+    _rc=1
+  fi
+  if (( _rc == 0 )); then
+    for (( _i = 0; _i < ${PR_BWRAP_PROBE_TICKS:-10}; _i++ )); do
+      if [[ -e "$_probe/survived" ]]; then
+        _said="a detached process survived the jail's exit and wrote its marker"
+        _rc=1
+        break
+      fi
+      sleep 0.1
+    done
+  fi
+  # rm -rf, not rmdir: the probe directory now holds markers, and on the
+  # failing paths it holds one written by a process the jail did not contain.
+  rm -rf "$_probe" 2>/dev/null
   if [[ -n "${2:-}" ]]; then local -n _sink="$2"; _sink="$_said"; fi
   return "$_rc"
 }
@@ -285,7 +329,7 @@ pr_doctor_check_bwrap_jail() {
   fi
 
   if (( rc == 0 )); then
-    pr_d_pass "bwrap jail works with the flags adapters/agy.sh and claude.sh use"
+    pr_d_pass "bwrap jail contains a detached process (the flags adapters/agy.sh and claude.sh run)"
     return 0
   fi
   pr_d_fail "bwrap is installed but the jail those reviewers run in does not work (exit $rc)"

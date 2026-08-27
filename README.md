@@ -149,6 +149,13 @@ The bubblewrap check runs the jail with `adapters/agy.sh`'s exact flags rather t
 `kernel.apparmor_restrict_unprivileged_userns=1`, which leaves `unshare` working while denying
 `bwrap`, so the shorter check passes on a machine where `agy` cannot run at all.
 
+It also **measures containment** rather than flag acceptance. The jail runs a payload that
+detaches a writer; the writer stamps a `spawned` marker, the payload exits once it sees it,
+and the writer would stamp a `survived` marker a fraction of a second later. A pass is
+`spawned` present and `survived` absent — the jail ran the payload *and* disposed of the
+detached process. Both signals are needed: "no marker" on its own cannot tell containment
+from a payload that never ran.
+
 The offline half of these checks also runs automatically before every round, for the reviewers in
 that round's roster, so a missing `bwrap` or an unset pin costs a second rather than a forfeited
 reviewer session. `PR_SKIP_PREFLIGHT=1` turns it off.
@@ -547,12 +554,26 @@ An accidental-dirtiness barrier, not a security boundary. Every reviewer is
 write-confined, but not by the same thing:
 
 - **codex** and **Cursor** confine themselves, via their own OS sandboxes. Writes land
-  inside the disposable copy; writes outside it are denied.
+  inside the disposable copy; writes outside it are denied. Cursor's half of that is
+  currently in doubt: re-measured 2026-08-27 against `2026.08.25-3e8eec8`, a tool-call
+  write to `/tmp` and to `$HOME` both succeeded, wrapped and unwrapped alike. Treat
+  Cursor as unconfined for writes at that version until a probe says otherwise.
 - **agy** does not. Its `--sandbox` flag exists, reports itself as enabled, and was
   measured allowing a write to `/tmp` anyway. It is confined by **bubblewrap**, which
   this project applies in `adapters/agy.sh` — so that one barrier is ours to maintain
   and ours to get wrong. The adapter refuses to run if `bwrap` is unavailable rather
   than falling back to running unconfined.
+
+  Its conversations live in a private state directory beside the repo copy —
+  `<sandbox>/gemini-state`, bound over `~/.gemini` — for the same reasons claude's
+  config directory does, and the operator's real `~/.gemini` is **never written**. agy
+  honours workspace hooks under `.agents/`, so a read-write bind of the real directory
+  would let a hostile workspace plant something that runs later in the operator's own
+  sessions. Exactly one file comes in, read-only and by path:
+  `~/.gemini/antigravity-cli/antigravity-oauth-token`, which is the minimum agy needs to
+  authenticate — measured on 2026-08-27 by binding candidates one at a time from an
+  empty private directory. What is lost is agy history from *other* sessions, which
+  nothing here relied on: resume is per-session and the session map carries the handles.
 - **claude** has no sandbox flag to ask for at all, so `adapters/claude.sh` uses the same
   bubblewrap jail and fails closed the same way. Two additions specific to it. It runs with
   `--safe-mode`, because without it the *target repo's* `.claude/settings.json` hooks
@@ -569,6 +590,18 @@ write-confined, but not by the same thing:
 `agy` additionally runs with `--dangerously-skip-permissions`, because headless tool
 calls are auto-denied otherwise and a reviewer that cannot run commands cannot check
 the plan's claims. The jail is what makes that acceptable.
+
+**Process containment is a separate axis from writes.** A reviewer that spawns a
+background process can leave it running after the round has returned, still holding the
+round's session lock. On Linux every reviewer is now contained by a pid namespace:
+`agy`, `claude` and `agent` pass `bwrap --unshare-pid`, and codex uses its own
+`--as-pid-1`. `--die-with-parent` alone was not enough — measured 2026-08-27, a detached
+`setsid sleep` survived the jail's exit without `--unshare-pid` and was gone with it. For
+`agent` the bubblewrap is *only* a pid fence: `/` is bound read-write, the write barrier
+stays Cursor's own, and where there is no `bwrap` — macOS — the adapter runs unwrapped
+rather than refusing, because refusing would remove the reviewer for a barrier it never
+supplied. On macOS there are no pid namespaces at all, and the runner's best-effort
+descendant sweep is the only bound.
 
 Reads are unconfined for every reviewer. Codex has open network access; Cursor's is
 default-deny with a host allowlist; agy's is open. Point this only at repos you already

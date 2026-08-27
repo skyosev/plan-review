@@ -120,9 +120,10 @@ Three things to watch that the runner cannot check for you:
   different family in that case. After a round, two reviewers whose recorded models are
   the exact same string produce a warning in `round.json`; report it.
 - **Cost, when `claude` is a reviewer.** Claude Code hands a reviewer its full tool
-  surface, including subagents. The jail confines writes and the environment scrub
-  closes the messaging channel, but neither bounds spend — `PR_TIMEOUT_SECS` (default
-  900) is the only thing that does.
+  surface, including subagents. The jail confines writes, the environment scrub closes
+  the messaging channel, and `--unshare-pid` means a background process the reviewer
+  spawns dies with the round — but none of them bounds spend. `PR_TIMEOUT_SECS`
+  (default 900) is the only thing that does.
 
 ## Running a round
 
@@ -281,7 +282,18 @@ meant.
 - `agy` or `claude` fails with a `bwrap` error: that is the adapter refusing to run a
   reviewer whose CLI does not confine its own writes. This is correct behaviour, not a
   bug. Report it and continue with the other reviewers; do not work around it by editing
-  the adapter.
+  the adapter. `agent` never fails this way — its bubblewrap supplies only a pid
+  namespace, not a write barrier, so with no `bwrap` it runs unwrapped by design.
+- The doctor's jail check now says "bwrap jail **contains** a detached process". It
+  measures containment, not whether the flags were accepted, so a failure there means a
+  reviewer could leave a process running after the round returns — not merely that a
+  flag was rejected. Report the doctor's own diagnosis verbatim.
+- **`agy` no longer sees the user's real `~/.gemini`.** It runs against a private state
+  directory beside the disposable repo copy, with one auth file bound in read-only. If a
+  user asks why agy cannot see a conversation from their own interactive session, that is
+  why, and it is deliberate: a writable bind of their state directory would be a
+  persistence channel out of the jail. Round-to-round resume is unaffected — the session
+  map carries the handles.
 - A reviewer's recorded model reads `<something> (requested: <pin>)`: the CLI swapped the
   model out mid-run and the adapter caught it. The pin did not answer. Say so when
   reporting verdicts — that round is not comparable to one run on the pinned model.
