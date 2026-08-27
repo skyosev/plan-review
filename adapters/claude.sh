@@ -74,6 +74,12 @@ jail+=(
   --die-with-parent
   --unshare-uts
   --unshare-ipc
+  # --unshare-pid is what makes --die-with-parent tree cleanup rather than
+  # PDEATHSIG on the immediate command (measured 2026-08-27,
+  # probes/2026-08-27-pid-namespace-adapters). Without it a grandchild
+  # survives the jail and only the kernel's best-effort descendant sweep
+  # stands between it and files the round has already read.
+  --unshare-pid
 )
 
 # The environment is rebuilt from nothing, not inherited. A Claude Code session

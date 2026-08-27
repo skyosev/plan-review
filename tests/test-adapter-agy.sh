@@ -125,6 +125,67 @@ test_jail_binds_the_workdir_writable_and_the_root_readonly() {
   assert_contains "$argv" "--die-with-parent" "jail dies with the timeout"
 }
 
+# The jail must take a pid namespace (bwrap --die-with-parent alone is
+# PR_SET_PDEATHSIG on the immediate command, not tree cleanup — measured
+# 2026-08-27, probes/2026-08-27-pid-namespace-adapters) and must NOT hand the
+# reviewer the operator's real ~/.gemini read-write: that directory feeds the
+# operator's own later sessions, so a writable bind is a persistence channel
+# out of the jail. The state that persists across ROUNDS is the private
+# sibling directory, exactly like claude's config dir.
+test_jail_unshares_pid_and_binds_a_private_state_dir() {
+  local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  mkdir -p "$d/sandbox/repo" "$d/home/.gemini"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  local argv; argv="$(< "$d/bin/bwrap-argv.txt")"
+  assert_contains "$argv" "--unshare-pid" "pid namespace requested"
+  assert_contains "$argv" "$d/sandbox/gemini-state" \
+    "private state dir, sibling to the repo copy, bound over ~/.gemini"
+  # The rw bind of the operator's real state must be gone: no --bind whose
+  # SOURCE is the real ~/.gemini. (--ro-bind of individual auth files inside
+  # it is allowed, which is why this greps the pair, not the path.)
+  assert_eq "$(grep -Fx -A1 -- '--bind' "$d/bin/bwrap-argv.txt" \
+               | grep -cFx "$d/home/.gemini")" "0" \
+    "the operator's real ~/.gemini is never bound read-write"
+  # helpers' assert_file_exists is [[ -f ]] and would always fail on a dir
+  [[ -d "$d/sandbox/gemini-state" ]] || pr_fail "the adapter created the dir"
+}
+
+# The one file agy actually needs to authenticate, measured in leg 3 of
+# probes/2026-08-27-pid-namespace-adapters: it is nested, and it is NOT the
+# obvious-looking oauth_creds.json, which was tried first and failed. Bound
+# read-only and by path, so nothing the reviewer writes can reach it.
+test_the_measured_auth_file_is_ro_bound_and_nothing_else_is() {
+  local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  mkdir -p "$d/sandbox/repo" "$d/home/.gemini/antigravity-cli"
+  : > "$d/home/.gemini/antigravity-cli/antigravity-oauth-token"
+  : > "$d/home/.gemini/oauth_creds.json"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  local argv; argv="$(< "$d/bin/bwrap-argv.txt")"
+  assert_contains "$argv" "--ro-bind" "auth material comes in read-only"
+  assert_contains "$argv" "$d/home/.gemini/antigravity-cli/antigravity-oauth-token" \
+    "the file the probe measured"
+  assert_not_contains "$argv" "oauth_creds.json" \
+    "the candidate that failed the probe is not bound just because it exists"
+}
+
+# Reviewer-scoped write integrity: a state dir that cannot be created fails
+# THIS reviewer before the CLI is spawned, claude.sh's shape.
+test_uncreatable_state_dir_fails_before_spawning() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  mkdir -p "$d/sandbox/repo"; chmod 555 "$d/sandbox"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  rc=$?
+  chmod 755 "$d/sandbox"
+  assert_exit_code "$rc" 1 "refuses when the private state dir is uncreatable"
+  assert_file_missing "$d/bin/agy-argv.txt" "the CLI was never invoked"
+}
+
 test_prompt_is_passed_as_argv_because_agy_cannot_read_stdin() {
   local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
   echo "the actual prompt text" | PATH="$d/bin:$PATH" \
