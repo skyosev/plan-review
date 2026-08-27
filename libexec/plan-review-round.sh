@@ -183,11 +183,48 @@ if [[ "$highest_round" -gt 0 ]]; then
     esac
     exit 2
   fi
+
+  # An aborted predecessor forces --fresh, whatever aborted it. That is a
+  # policy choice and not an inference from R1: `aborted` does not mean "store
+  # loss", it means "this round did not finish, resume nothing from it".
+  #
+  # `aborted` is reachable three ways and R1 covers only two of them. A
+  # store-loss exit forfeits the handle of every reviewer its serial pass
+  # reached, and the all-reviewers-failed round -- the routine trigger, "a CLI
+  # was not logged in, fix it and re-run" -- completes its serial pass and
+  # pr_session_del's the whole roster, so --fresh there drops zero handles and
+  # its only cost to the retry is the diff, prior critique and rationale the
+  # prompt would otherwise have carried. But an awaiting_integration round
+  # abandoned with `plan-review abort` forfeits nothing: those reviewers
+  # finished cleanly and pr_session_set stored handles that are still good.
+  # The gate discards them anyway. That is a fourth accepted cost beside the
+  # three the spec prices (docs/process/brainstorm/2026-08-27-backlog-clearing-2.md),
+  # and it is priced the same way: telling the benign case apart would need the
+  # round to record that its serial pass completed -- the marker design that
+  # spec considered and rejected -- and R1's direction is that when in doubt,
+  # forfeit. The one-sentence rule is what keeps the runner and the doctor
+  # saying the same thing.
+  #
+  # The rule is pr_round_needs_fresh in lib/round.sh, shared with the doctor's
+  # report. A read-only check, on a state the guard above just read.
+  if pr_round_needs_fresh "$prev_state" && [[ "$fresh" -ne 1 ]]; then
+    echo "round $highest_round is aborted: its resume handles are forfeit." >&2
+    echo "Run again with --fresh to start a new baseline." >&2
+    exit 2
+  fi
 fi
 
 # Only after the guard: a refused --fresh must not have already destroyed the
-# handles it was going to reset.
-[[ "$fresh" -eq 1 ]] && pr_session_clear "$session_map"
+# handles it was going to reset. Checked like every other store-scoped write
+# (reproduced unchecked, 2026-08-27: a read-only session-map.json printed
+# Permission denied, the round exited 0 with fresh:true, and the reviewer
+# resumed from the handle --fresh promised to drop). Before the round
+# directory is created: a --fresh that could not clear the map must start
+# nothing that would resume from it.
+if [[ "$fresh" -eq 1 ]] && ! pr_session_clear "$session_map"; then
+  echo "cannot clear the session map at $session_map; aborting" >&2
+  exit 2
+fi
 
 round_dir="$(pr_round_dir "$artifact_dir" "$round")"
 mkdir -p "$round_dir"
@@ -317,6 +354,10 @@ for reviewer in $reviewer_keys; do
   # `aborting` exit must therefore be `--fresh`; README.md ("When a round does
   # not finish") and skills/plan-review/SKILL.md say so to the operator, who
   # is the only one in a position to act on it.
+  #
+  # Since 2026-08-27 the runner enforces it too: the next-round gate refuses
+  # an aborted predecessor without --fresh, so the prose is no longer the only
+  # thing standing between an operator and a poisoned resume.
   #
   # The message names the likeliest cause, not a diagnosis. pr_session_set and
   # pr_session_del both read the map through jq, so they fail on a map an

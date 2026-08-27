@@ -405,7 +405,10 @@ measured with Cursor, which announces it only as prose in its own output. The pi
 not answer, so that round is not comparable to one that ran on it.
 
 A reviewer that **fails or times out forfeits its own resume handle**, and only its
-own — the next round starts that one reviewer clean while everyone else resumes. That
+own — the next round starts that one reviewer clean while everyone else resumes. When
+*every* reviewer fails, though, the round itself is marked `aborted`, and the runner then
+refuses the next round without `--fresh` (exit 2, naming the flag): the handles are all
+forfeited already, so the flag costs the retry only its prompt history. That
 holds even when a timed-out reviewer produced usable partial output and is recorded
 `ok`: the review is kept, but the vendor-side session state behind the handle was
 written by a process the runner killed mid-run, so resuming it is not safe. `--fresh`
@@ -413,7 +416,10 @@ is never the fix for a single reviewer; it discards every handle.
 
 `--fresh` starts a new baseline. It drops the resume handles *and* omits the diff,
 your previous critique and the rationale from the prompt, so the reviewer sees only
-the plan as it stands. Round numbering carries on; nothing is deleted.
+the plan as it stands. Round numbering carries on; nothing is deleted. Dropping the
+handles is a store-scoped write like any other: a `--fresh` that cannot clear the
+session map aborts with exit 2 before any reviewer starts, rather than running a
+round marked `fresh` whose reviewers resume from the handles it failed to drop.
 
 ## What it writes
 
@@ -485,14 +491,18 @@ cannot be written, because the disk is full or the directory is not writable —
 abort: the runner prints what it could not write, ending in `aborting`, and exits 2. It
 does not print "Round complete" over an artifact it failed to record, and the state left
 in `round.json` is the last one that actually persisted — usually `reviewing`, and it
-stays that way on disk: `abort` rewrites `round.json` through the same directory that
-just refused a write, so it too fails, loudly and without explanation, until the store is
-writable again. Fix the disk or the permissions first; then the round aborts and reads
-exactly as any other unfinished one. **Run the next round `--fresh`**: the
-serial pass stopped part-way, so every reviewer it had not reached yet still holds the
-resume handle from the round before — including handles this round would have forfeited.
-The runner does not clear the map on its way out, because clearing it needs the same
-store that just refused a write.
+stays that way on disk: `abort` writes through the same directory that just refused a
+write, so **when that directory is unwritable** it refuses too — one sentence naming the
+store — rather than dying half-way through a write. That preflight tests permissions and
+nothing else; a full disk leaves the directory writable, so there `abort` still fails on
+the write itself, with the same raw `.round.json.<pid>.tmp` error the round printed. Fix
+the disk or the permissions first; then the round aborts and reads exactly as any other
+unfinished one. **The next round is then `--fresh`, and the runner enforces
+it**: a round whose predecessor is `aborted` is refused with exit 2 and a message naming
+the flag. The reason is that the serial pass stopped part-way, so every reviewer it had
+not reached yet still holds the resume handle from the round before — including handles
+this round would have forfeited. The runner does not clear the map on its way out,
+because clearing it needs the same store that just refused a write.
 
 **agy runs under a deadline of its own**, derived by the adapter as 90% of
 `PR_TIMEOUT_SECS` and passed as `--print-timeout`. Left unset, agy would apply its own

@@ -304,8 +304,23 @@ _pr_reviewer_run_one() {
   # an adapter that died before writing its version leaves fewer than four
   # lines, and the missing ones are empty, exactly as the per-line reads left
   # them.
+  # Guarded and bounded, both measured (2026-08-27). -f in place of -r: the
+  # file test follows symlinks, so a <meta_out> swapped for a device or a FIFO
+  # by the adapter -- or by a descendant the sweep missed -- is skipped instead
+  # of read. Unguarded, a /dev/zero symlink grew this child past 3GB RSS under
+  # no deadline, and a writer-less FIFO blocks forever at open(2), which no
+  # byte bound reaches. head -c rather than a builtin bound because the builtin
+  # is a trap: `read -r -N` drops NUL bytes without counting them toward N and
+  # hangs on an endless NUL stream. 4096 covers the contract's four short lines
+  # many times over; oversize gibberish lands where undersize gibberish already
+  # does -- only meta[0..3] are ever read. Two residuals, accepted: the
+  # microsecond window between test and open (the same best-effort class as
+  # the sweep that missed the survivor), and a regular file on a stalled
+  # filesystem, an exposure every other read the round makes already shares.
+  # The process substitution closes no descriptors -- the session lock rides
+  # through head exactly as it rides through the adapter.
   local meta=()
-  [[ -r "$meta_out" ]] && mapfile -t meta < "$meta_out"
+  [[ -f "$meta_out" ]] && mapfile -t meta < <(head -c 4096 "$meta_out")
   if [[ -e "$review_scratch" ]]; then
     if ! cp "$review_scratch" "$review_out.publish" 2>> "$log" \
        || ! mv "$review_out.publish" "$review_out" 2>> "$log"; then

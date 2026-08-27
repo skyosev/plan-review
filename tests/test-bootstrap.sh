@@ -449,6 +449,10 @@ test_the_removal_line_appears_only_when_a_skill_was_installed() {
 # the one case that runs on a CONSTRUCTED PATH instead of a stub prefix. The list
 # is what bin/plan-review, libexec/plan-review-install.sh and git need; the doctor
 # is non-fatal, so whatever it cannot find it simply reports.
+# Deliberately not derived from PR_DOCTOR_UTILS (lib/doctor.sh) and not hoisted
+# into tests/helpers.sh: the installer's needs are not the doctor's, and these
+# cases run where helpers.sh is unavailable by construction -- the same
+# stated-twice device the standalone adapters use for PR_MAX_ARG_BYTES.
 test_a_missing_npx_warns_and_the_install_still_succeeds() {
   local d out rc b p; d="$(mk_case)"
   mkdir -p "$d/minpath"

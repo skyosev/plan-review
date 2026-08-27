@@ -24,9 +24,7 @@ state_of() { jq -r '.state' < "$1/round.json"; }
 make_target() {
   local root="$1"
   mkdir -p "$root/docs"
-  git -C "$root" init -q
-  git -C "$root" config user.email t@example.com
-  git -C "$root" config user.name Test
+  pr_test_git_init_identity "$root"
   printf '# Plan\n\nDo the thing.\n' > "$root/docs/plan.md"
   git -C "$root" add -A
   git -C "$root" commit -qm init
@@ -103,6 +101,43 @@ test_a_session_with_no_lock_file_aborts_without_complaint() {
   assert_file_missing "$d/session/.lock" "no lock file to begin with"
   abort "$rd" > /dev/null; rc=$?
   assert_exit_code "$rc" 0 "aborted"
+}
+
+# On a store-loss round the runner's own message points the operator at
+# `abort` -- which cannot work: pr_round_set_state writes through a temp file
+# in the directory that just refused the write. Reproduced on the unguarded
+# command: `lib/round.sh: line 195: ....tmp: Permission denied`, exit 2, state
+# still reviewing. The preflight exists ONLY because abort cannot possibly
+# succeed here and so has something better to say; the raw write errors on the
+# ROUND path are the diagnostic and stay (see the comment in the command).
+test_refuses_an_unwritable_round_directory_with_one_sentence() {
+  (( EUID != 0 )) || { pr_test_skip "root writes anywhere; the case cannot exist"; return 0; }
+  local d rd out rc; d="$(pr_test_tmpdir)"; rd="$d/session/round-1"
+  make_round "$rd" reviewing
+  chmod a-w "$rd"
+  out="$(abort "$rd")"; rc=$?
+  chmod u+w "$rd"
+  assert_exit_code "$rc" 2 "store loss is exit 2, matching the round's own aborts"
+  assert_eq "$out" "the artifact store refuses writes: $rd; retry after restoring store writes" \
+    "exactly the one sentence -- no raw jq temp-file error before or after it"
+  assert_eq "$(state_of "$rd")" "reviewing" "state unchanged"
+}
+
+# Locked AND unwritable reports the lock: "a review is still running" is the
+# truth that matters first, and the preflight sits after pr_lock_hold so a
+# genuinely running round in an unwritable directory is never misdiagnosed as
+# storage trouble.
+test_a_locked_session_outranks_an_unwritable_round_directory() {
+  (( EUID != 0 )) || { pr_test_skip "root writes anywhere; the case cannot exist"; return 0; }
+  local d rd out rc; d="$(pr_test_tmpdir)"; rd="$d/session/round-1"
+  make_round "$rd" reviewing
+  chmod a-w "$rd"
+  pr_test_hold_lock "$d/session/.lock" "$d/release"
+  out="$(abort "$rd")"; rc=$?
+  pr_test_release_lock "$d/release"
+  chmod u+w "$rd"
+  assert_exit_code "$rc" 1 "the lock refusal, not the storage one"
+  assert_contains "$out" "locked" "and it says so"
 }
 
 # --- the lock ---------------------------------------------------------------

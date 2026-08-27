@@ -69,9 +69,7 @@ stub_bwrap() { pr_test_mkstub "$1/bwrap" 'exit 0'; }
 mkrepo() {
   local d="$1"
   mkdir -p "$d"
-  git -C "$d" init -q
-  git -C "$d" config user.email t@example.com
-  git -C "$d" config user.name Test
+  pr_test_git_init_identity "$d"
 }
 
 # run <path-dir> <repo> [args...] -- stdout+stderr, then a trailing `rc=<n>`.
@@ -408,7 +406,7 @@ test_no_verify_runs_no_doctor() {
 # any other case -- which is itself the measurement.
 test_a_generated_config_leaves_the_doctor_green() {
   local d p out u real; d="$(pr_test_tmpdir)"; p="$(mkpath "$d/bin")"; mkrepo "$d/repo"
-  for u in $PR_DOCTOR_UTILS cut grep awk head; do
+  for u in $PR_DOCTOR_UTILS cut grep awk; do
     real="$(command -v "$u")" && ln -sf "$real" "$p/$u"
   done
   stub_codex "$p" "$d/log"; stub_agy "$p" "$d/log"; stub_claude "$p" "$d/log"; stub_bwrap "$p"

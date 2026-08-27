@@ -104,6 +104,19 @@ pr_round_can_start() {
   [[ "$1" == complete || "$1" == aborted ]]
 }
 
+# pr_round_needs_fresh <state-of-previous-round>
+# The companion rule: an aborted round can be built on, but only as a new
+# baseline. A policy, not an inference -- R1 has forfeited the handles on the
+# store-loss and all-failed paths, but a cleanly finished round abandoned with
+# `plan-review abort` still holds good ones and this rule forfeits them too.
+# The reasoning for taking the stricter rule is at the gate that enforces it
+# (libexec/plan-review-round.sh). It lives here beside pr_round_can_start for
+# the reason stated above: the runner enforces it and the doctor explains it,
+# and two spellings of "aborted" is how the two would drift.
+pr_round_needs_fresh() {
+  [[ "$1" == aborted ]]
+}
+
 # pr_git_grounding <repo-root> <repo-relative-plan-path>
 # Emits a JSON object. worktree_content_hash covers the tracked diff AND
 # untracked files, because head sha + dirty flag cannot distinguish two

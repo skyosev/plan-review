@@ -9,9 +9,7 @@ source "$PR_ROOT/lib/sandbox.sh"
 make_target_repo() {
   local root="$1"
   mkdir -p "$root/src" "$root/node_modules" "$root/.plan-review/somekey"
-  git -C "$root" init -q
-  git -C "$root" config user.email t@example.com
-  git -C "$root" config user.name Test
+  pr_test_git_init_identity "$root"
   git -C "$root" remote add origin https://example.com/real.git
   echo "node_modules/" > "$root/.gitignore"
   echo "committed" > "$root/src/a.txt"

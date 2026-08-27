@@ -216,7 +216,11 @@ meant.
 
 - One or two reviewers failed: integrate the rest, tell the user which failed and why.
 - All failed: the runner exits 1 and preserves the round directory. Report the status
-  file contents; do not retry blindly.
+  file contents; do not retry blindly. The round is left in state `aborted`, so once the
+  cause is fixed the retry **must** carry `--fresh` — the runner refuses a round whose
+  predecessor is `aborted` with exit 2 and a message naming the flag. Nothing was lost by
+  that: every reviewer failed, so every handle was already forfeited; `--fresh`
+  additionally leaves the diff and the earlier critique out of the prompt.
 - The runner refuses with `PR_ORCHESTRATOR is unset`: you did not name your own CLI. Fix
   the variable; do not work around it with `PR_ADAPTER_MAP`.
 - The runner says a review of this plan **is already running**: another round holds the
@@ -232,9 +236,13 @@ meant.
 
   It deletes nothing; the round stays readable. If `abort` refuses because the session is
   locked, reviewers spawned by the dead runner are still writing — report that and wait
-  rather than forcing anything. If instead it fails with a raw write error naming a
-  `.tmp` file, the artifact store is unwritable and this is the store-loss case two
-  bullets down — `abort` cannot succeed until that is fixed, so do not loop on it.
+  rather than forcing anything. If instead it refuses with exit 2 and the sentence `the
+  artifact store refuses writes: <dir>`, the round **directory** is unwritable and this is
+  the store-loss case two bullets down — `abort` cannot succeed until that is fixed, so do
+  not loop on it. That preflight tests permissions only, so it does not cover a full disk:
+  there the directory is writable and `abort` dies mid-write instead, naming a
+  `.round.json.<pid>.tmp` file. Match on the `.tmp` filename and treat it as the same
+  store-loss case.
 - The runner exits 2 with a message ending in `aborting` that names something it could
   not write (`round.json`, a result record, the session map): the artifact store itself
   is gone — a full disk or an unwritable `.plan-review/` — not a reviewer problem. The
@@ -242,14 +250,21 @@ meant.
   verdicts out of them and do not retry until the user has fixed the disk or the
   permissions. Report the message verbatim. The round directory stays, but it stays in
   state `reviewing`: `abort` writes `round.json` through the same directory that just
-  refused a write, so running it now fails too, with exit 2 and a raw write error naming
-  a `.round.json.<pid>.tmp` file — `Permission denied` when the directory is unwritable,
-  `No space left on device` when the disk is full. Match on the `.tmp` filename, not on
-  either message. Do not run it until the store is writable again — which is also
-  the only point at which it is worth running. When
-  the user is ready to run again, the next round **must** be `--fresh`: the serial pass
-  stopped part-way, so reviewers it never reached still hold last round's resume handles,
-  including ones this round would have thrown away.
+  refused a write, so **when the directory is unwritable** it refuses rather than trying:
+  exit 2 and the one sentence `the artifact store refuses writes: <dir>; retry after
+  restoring store writes`. That preflight is a permission test and nothing more — on a
+  full disk the directory is writable, so `abort` runs into the write and dies with the
+  raw error itself. Raw write errors therefore come from either command: a
+  `.round.json.<pid>.tmp` file, `Permission denied` when the directory is unwritable,
+  `No space left on device` when the disk is full; match those on the `.tmp` filename,
+  not on either message. Do
+  not run `abort` until the store is writable again — which is also the only point at
+  which it is worth running. When the user is ready to run again, run the next round with
+  `--fresh`: the runner refuses a round whose predecessor is `aborted` without it, exiting
+  2 with a message naming the flag. The reason is unchanged — the serial pass stopped
+  part-way, so reviewers it never reached still hold last round's resume handles,
+  including ones this round would have thrown away — but a forgotten flag is now a
+  refusal to relay, not a silent unsafe resume.
 - A reviewer's `detail` reads `reviewer result record missing` or `record invalid`: that
   reviewer's job died without leaving a readable record, and the runner synthesized a
   failed entry so `round.json` still lists it. Treat it as a failed reviewer — there is

@@ -481,9 +481,7 @@ done < '$PR_ROOT/docs/verified-versions.txt'")"
 mkrepo() {
   local repo="$1"
   mkdir -p "$repo"
-  git -C "$repo" init -q 2>/dev/null
-  git -C "$repo" config user.email t@example.com
-  git -C "$repo" config user.name Test
+  pr_test_git_init_identity "$repo"
   printf '# plan\n' > "$repo/plan.md"
 }
 
@@ -600,6 +598,20 @@ test_completed_round_clears_the_way() {
   seed_round "$d/repo" plan.md complete > /dev/null
   local out; out="$(rounds_run "$d/repo" plan.md)"
   assert_contains "$out" "round 1 is complete; round 2 can start" "a pass"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
+# The runner refuses a round over an aborted predecessor without --fresh
+# (pr_round_needs_fresh, lib/round.sh); a doctor that said plain "can start"
+# would send the operator straight into that refusal. Still a pass, not a
+# blocker: the way is clear, and the flag is the way.
+test_an_aborted_round_is_startable_with_fresh_only() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  seed_round "$d/repo" plan.md aborted > /dev/null
+  local out; out="$(rounds_run "$d/repo" plan.md)"
+  assert_contains "$out" "round 1 is aborted; round 2 starts with --fresh only" \
+    "the doctor and the runner tell one story"
   assert_contains "$out" "counts 1 0 0" "a pass"
 }
 
@@ -878,7 +890,7 @@ DOCTOR="$PR_ROOT/bin/plan-review"
 mkrepo_with_config() {  # mkrepo_with_config <dir> <config-json>
   local d="$1"
   mkdir -p "$d"
-  git -C "$d" init -q
+  pr_test_git_init_identity "$d"
   printf '%s\n' "$2" > "$d/config.json"
   mkdir -p "$d/.plan-review"
   mv "$d/config.json" "$d/.plan-review/config.json"

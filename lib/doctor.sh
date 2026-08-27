@@ -168,7 +168,7 @@ pr_doctor_check_bash() {
 # tier stays a `command -v` over a stub PATH by design.
 # This list does NOT reach a round: pr_doctor_preflight never calls
 # pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
-PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps"
+PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head"
 
 pr_doctor_check_utils() {
   local u missing=()
@@ -861,7 +861,15 @@ pr_doctor_check_rounds() {
   state="$(pr_round_state "$prev_dir")"
 
   if pr_round_can_start "$state"; then
-    pr_d_pass "round $highest is $state; round $((highest + 1)) can start"
+    # Not the whole truth for aborted: the runner refuses that round without
+    # --fresh (pr_round_needs_fresh -- the shared rule, lib/round.sh). A pass
+    # either way: the way is clear, the flag is the way.
+    if pr_round_needs_fresh "$state"; then
+      pr_d_pass "round $highest is $state; round $((highest + 1)) starts with --fresh only"
+      pr_d_info "its resume handles are forfeit; the runner refuses a round without --fresh"
+    else
+      pr_d_pass "round $highest is $state; round $((highest + 1)) can start"
+    fi
     return 0
   fi
   case "$state" in

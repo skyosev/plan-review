@@ -10,9 +10,7 @@ PR="$PR_ROOT/bin/plan-review"
 mkrepo() {  # a repository with one commit, path on stdout
   local d="$1"
   mkdir -p "$d"
-  git -C "$d" init -q
-  git -C "$d" config user.email t@example.com
-  git -C "$d" config user.name Test
+  pr_test_git_init_identity "$d"
   printf 'x\n' > "$d/f"
   git -C "$d" add -A
   git -C "$d" commit -qm init
