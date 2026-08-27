@@ -154,20 +154,58 @@ exec $real_ps \"\$@\""
   kill -KILL "$child" 2>/dev/null   # test hygiene: reap what the kernel correctly spared
 }
 
-# The clamp, behaviourally: an inherited huge-but-valid cap must not stretch
-# the bound -- GNU timeout would accept `timeout 999999 ...` verbatim. Costs
-# one ~5s clamped tick; weighed against CLAUDE.md's budget paragraph.
+# The clamp, over the inputs that each break it a DIFFERENT way -- which is
+# also why they need two different assertions. Measured 2026-08-27, GNU
+# coreutils 9.4:
+#
+#   999999  accepted verbatim, so an inherited value stretches every bound to
+#           days;
+#   0       documented as DISABLING the timeout, and `timeout 0 sleep 3` does
+#           take the full 3.003s -- the cap would be gone, not shortened,
+#           which is precisely the hole this task closes;
+#   abc     `timeout abc echo hi` exits 125 without running the command at
+#           all.
+#
+# The first two are HANGS when unclamped, so elapsed time is the assertion.
+# `abc` is not: unclamped it makes every ps exit 125 instantly, the table
+# comes back empty on every tick, descendant tracking is silently off, and the
+# round gets FASTER. A duration bound cannot fail on it -- so `abc` is checked
+# where its damage actually shows, against the escaper the poller must still
+# remember and the sweep must still reach.
+#
+# ~5s per hang value, and ~1s for the escaper: the largest single item this
+# task adds to the suite, priced in CLAUDE.md's budget paragraph. It has to be
+# spent, because for a clamp there is nothing observable but the consequence.
 test_an_oversized_cap_is_clamped() {
-  local d rc=99 timed_out=99; d="$(pr_test_tmpdir)"; mkdir -p "$d/w" "$d/bin" "$d/tmp"
+  local d rc=99 timed_out=99 bad t0; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/w" "$d/bin" "$d/tmp"
   pr_test_mkstub "$d/bin/ps" 'sleep 60'
-  local t0=$SECONDS
-  PATH="$d/bin:$PATH" PR_PS_CAP_SECS=999999 \
-    pr_adapter_exec "$FAKES/fake-echo-prompt.sh" "$d/w" "" \
-    "$d/review.md" "$d/meta" "$d/reason" "$d/log" 5 "$d/tmp" rc timed_out \
+  for bad in 999999 0; do
+    t0=$SECONDS
+    PATH="$d/bin:$PATH" PR_PS_CAP_SECS="$bad" \
+      pr_adapter_exec "$FAKES/fake-echo-prompt.sh" "$d/w" "" \
+      "$d/review.md" "$d/meta" "$d/reason" "$d/log" 5 "$d/tmp" rc timed_out \
+      <<< "prompt"
+    assert_exit_code "$rc" 0 "the adapter's own run is unaffected (cap=$bad)"
+    (( SECONDS - t0 < 30 )) \
+      || pr_fail "kernel took $((SECONDS - t0))s; PR_PS_CAP_SECS=$bad was not clamped"
+  done
+}
+
+# The other half of the clamp: a non-numeric cap must not silently switch the
+# descendant sweep off. Real ps, real escaper -- if `abc` reached timeout(1),
+# every ps in the poll loop would exit 125, the escaper would never be
+# remembered, and it would outlive the round.
+test_a_nonnumeric_cap_does_not_silently_disable_the_sweep() {
+  pr_test_requires setsid || return 0   # util-linux command; absent on macOS
+  local d rc=-1 timed_out=-1; d="$(pr_test_tmpdir)"
+  PR_PS_CAP_SECS=abc \
+    pr_adapter_exec "$FAKES/fake-escaper.sh" "$d" "" \
+    "$d/review.md" "$d/meta" "$d/reason" "$d/log" 30 "$d/tmp" rc timed_out \
     <<< "prompt"
-  assert_exit_code "$rc" 0 "the adapter's own run is unaffected"
-  (( SECONDS - t0 < 30 )) \
-    || pr_fail "kernel took $((SECONDS - t0))s; an oversized cap was not clamped"
+  assert_eq "$rc" 0 "the escaper adapter itself exits cleanly"
+  assert_pid_gone "$(< "$d/escaper.pid")" \
+    "a non-numeric PR_PS_CAP_SECS turned descendant tracking off"
 }
 
 # The one parseable ps table shape the sweep fixes: two whitespace-separated

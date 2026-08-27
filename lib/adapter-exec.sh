@@ -19,9 +19,11 @@
 #     runner  pid=2189488 pgid=2189488
 #     timeout pid=2189492 pgid=2189492
 #
-# busybox's timeout does not do this: it stays in the caller's group, so
-# `kill -- -$pid` addresses the runner's own group instead of the adapter's,
-# and the group sweep is SILENTLY inert -- in the same environment where
+# busybox's timeout does not do this: with no setpgid, its pid is not the
+# pgid of any existing group, so `kill -- -$pid` addresses a process group
+# that does not exist -- ESRCH, nothing killed. Not a self-kill: the runner's
+# own group has a different number and is never the target. The group sweep
+# is simply SILENTLY inert -- in the same environment where
 # busybox `ps` already rejects `-eo` and degrades just as silently.
 # `pr_doctor_check_gnu_timeout` (lib/doctor.sh) exists to catch exactly that,
 # and FAILS rather than warning, because nothing else would ever surface it.
@@ -218,7 +220,22 @@ pr_adapter_exec() {
     # descendants" would be wrong. One extra fork per tick; measured against
     # the suite budget in CLAUDE.md. PR_PS_CAP_SECS exists so the offline
     # suite can shrink the hang test, not as an operator knob.
-    _pr_ae_table="$(timeout "$_pr_ae_cap" ps -eo pid=,ppid= 2> /dev/null)" \
+    #
+    # --kill-after, because `timeout N` does not RETURN at N -- it signals and
+    # then WAITS for its child, the same escalation the adapter's own timeout
+    # above needs and for the same reason. Measured 2026-08-27, GNU coreutils
+    # 9.4: `timeout 1 bash -c 'trap "" TERM; sleep 5'` took 5.003s, and the
+    # identical command with `--kill-after=1` took 2.002s.
+    #
+    # What that does NOT buy: a ps wedged in UNINTERRUPTIBLE sleep -- the very
+    # /proc-read stall named as the credible trigger three sentences up --
+    # takes neither TERM nor KILL, so timeout blocks in waitpid, this command
+    # substitution never closes, and the round wedges exactly as it would
+    # have. Neither this cap nor the sweep deadline below bounds that case,
+    # and nothing here should be read as claiming they do. What the cap does
+    # bound is every stall a signal can end, which is every stall anyone has
+    # actually seen.
+    _pr_ae_table="$(timeout --kill-after=1 "$_pr_ae_cap" ps -eo pid=,ppid= 2> /dev/null)" \
       || _pr_ae_table=""
     if [[ -n "$_pr_ae_table" ]]; then
       _pr_ae_descendants "$_pr_ae_pid" "$_pr_ae_table"
@@ -240,7 +257,7 @@ pr_adapter_exec() {
         # Capped for the same reason as the table read above; the existing
         # `[[ -n ]]` guard already treats a failed read as skip-this-pid --
         # unknown, never empty.
-        _pr_ae_id="$(timeout "$_pr_ae_cap" ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
+        _pr_ae_id="$(timeout --kill-after=1 "$_pr_ae_cap" ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
         [[ -n "$_pr_ae_id" ]] && _pr_ae_seen[$_pr_ae_p]="$_pr_ae_id"
       done
     fi
@@ -278,10 +295,18 @@ pr_adapter_exec() {
   # A deadline over the sweep, stamped before it starts and checked before
   # each read: the per-call cap bounds each read, not their sum, and N
   # survivors x 5s is unbounded in principle even though the kill -0 guard
-  # cuts N to a handful (434 remembered pids -> single digits, measured
-  # 2026-08-27). The true bound is this deadline PLUS one per-call cap of
-  # slack -- a read that starts just under the wire still runs to its own
-  # cap. Stopping early skips the identity check and the kill for the
+  # cuts N to a handful. "A handful" is IMPLIED BY, not counted in, the
+  # measurement two paragraphs above: 434 pids remembered and a guarded sweep
+  # of 0.0067s at ~6ms per ps leaves room for single digits of survivors. The
+  # 428 in that paragraph is the remembered count with the guard, not the
+  # survivor count; nobody has counted survivors directly.
+  #
+  # The true bound is this deadline PLUS one per-call cap of slack -- a read
+  # that starts just under the wire still runs to its own cap -- and that
+  # holds only for reads a signal can end. The deadline is checked BEFORE
+  # each read, so a single uninterruptible read never returns to be
+  # deadlined: see the poll loop's comment above, where the same hole is
+  # stated at length. Stopping early skips the identity check and the kill for the
   # remaining pids -- degrading to group-only cleanup, the same documented
   # degradation as a failed read. 30s is deliberate slack: at the measured
   # survivor counts the sweep ends in well under one cap's worth of time, so
@@ -296,7 +321,7 @@ pr_adapter_exec() {
   for _pr_ae_p in "${!_pr_ae_seen[@]}"; do
     (( SECONDS >= _pr_ae_sweep_deadline )) && break
     kill -0 "$_pr_ae_p" 2> /dev/null || continue
-    _pr_ae_id="$(timeout "$_pr_ae_cap" ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
+    _pr_ae_id="$(timeout --kill-after=1 "$_pr_ae_cap" ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
     [[ -n "$_pr_ae_id" && "$_pr_ae_id" == "${_pr_ae_seen[$_pr_ae_p]}" ]] || continue
     kill -KILL "$_pr_ae_p" 2> /dev/null
   done

@@ -484,9 +484,15 @@ forever. The runner now kills the reviewer's whole process group — on every ro
 only on a timeout, since a cleanly exiting adapter can leak a child too — and then, on a
 best-effort basis, any descendant that escaped the group by taking one of its own. Those
 are sampled while the reviewer runs, one `ps` per second, and killed afterwards only if
-their start time still matches, so a recycled pid is not signalled by mistake. A
-descendant that detaches after the last sample still escapes; when one does, it keeps the
-session's lock, and the next command on that session waits rather than writing over it.
+their start time still matches, so a recycled pid is not signalled by mistake. Every one
+of those `ps` calls is itself capped, and the sweep as a whole gets 30 seconds, because a
+`ps` that never returned would otherwise wedge the round forever with the session lock
+held. So there are three ways a descendant survives: it detaches after the last sample, a
+capped `ps` dies before it can confirm the descendant's identity, or the sweep's own
+deadline trips first. All three degrade to the same place — the process group is still
+killed, and the survivor is left alone rather than killed blind. When one does survive it
+keeps the session's lock, and the next command on that session waits rather than writing
+over it.
 The cost of the sweep is that a descendant mid-write loses whatever it had buffered.
 
 What makes the review file final is not the sweep but **publication**: the adapter writes

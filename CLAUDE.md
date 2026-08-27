@@ -35,25 +35,37 @@ a `git worktree` per revision:
 | --- | --- | --- | --- |
 | `ea2b59e` (pre-`reviewer-isolation-hardening`) | 467 | 62.159s | 62.214s |
 | + tasks 1–2 of that branch | 485 | 85.243s | 85.359s |
-| + task 3 (`ps` caps, sweep deadline, GNU-`timeout` check) | 490 | 93.993s | 94.060s |
+| + task 3, as first written | 490 | 93.993s | 94.060s |
+| **+ task 3 review fixes — the current cost** | **491** | **84.624s** | **84.460s** |
 
-So ~62s was still exactly right for `main`, and the whole +31.8s is this branch's, not
-host drift — worth knowing, because "the host got slower" was the first explanation
-offered and it was wrong. Where it went, by per-file timing of both trees: **+20.5s in
-`tests/test-bootstrap.sh`** (6.156s → 26.707s), a file this branch never edited. It drives
-`plan-review doctor` as a subprocess ~20 times, and task 1 gave `_pr_doctor_bwrap_probe` a
-real containment window that the pass path always waits out — ~1s per doctor run at the
-default `PR_BWRAP_PROBE_TICKS=10`. `tests/test-doctor.sh` accounts for another +2.2s;
-`tests/test-runner.sh` (29.5s, the single largest file) did not move at all.
+So ~62s was still right for `main`: the whole delta is this branch's, not host drift —
+worth stating, because "the host got slower" was the first explanation offered and it was
+wrong. Per-file timing of both trees found where it went, and one line of it was a **bug**:
+`tests/test-bootstrap.sh` had gone 6.156s → 26.707s, a file this branch never edited. It
+drives `plan-review doctor` as a subprocess ~20 times, and task 1 gave
+`_pr_doctor_bwrap_probe` a containment window the pass path always waits out — ~1.04s per
+doctor run at the operator default `PR_BWRAP_PROBE_TICKS=10`. `tests/test-doctor.sh` and
+`tests/test-init.sh` already export `PR_BWRAP_PROBE_TICKS=2` at file scope for exactly
+this; `test-bootstrap.sh` reaches the probe through a *subprocess*, which inherits the
+environment identically, and that indirection is why it was missed. Adding the export took
+it to 10.674s. **Any new suite that shells out to `plan-review doctor`, `init` or a round
+needs that export**, and the indirect ones are the easy misses.
+`tests/test-runner.sh` (29.5s, still the single largest file) never moved.
 
-Task 3's own +8.7s is **entirely** its three hang tests in `tests/test-adapter-exec.sh`
-(3.028s → 11.560s): each deliberately stalls a stubbed `ps` and measures that the cap cuts
-it short, at `PR_PS_CAP_SECS=1`, 1 and the clamped 5. The per-tick `timeout` fork those
-caps add to every `pr_adapter_exec` — one more fork beside the `ps` it wraps, on the poll
-loop and on each identity read — is below the noise floor here: the remaining ~0.2s of the
-delta covers it and everything else. Budget against the ~5.5s poll and the ~1s-per-doctor
-probe, not the whole delta; weigh the next per-adapter poll, and the next always-waited
-probe window, before adding either.
+What task 3 costs, net of that fix, is +6.6s over tasks 1–2 at +6 tests, and **all of it is
+four clamp/hang tests in `tests/test-adapter-exec.sh`** (3.028s → 18.004s). Each stalls a
+stubbed `ps` on purpose and asserts the cap cuts it short: `PR_PS_CAP_SECS=1` for the two
+hang cases, and ~5s each for the clamped `999999` and `0`. That is the price of a clamp —
+there is nothing observable about one but the consequence, and the `0` case in particular
+buys real coverage, since GNU `timeout` reads `0` as *disabling* the timeout. The fifth,
+`abc`, is checked against the escaper instead of the clock for ~1s, because an unclamped
+`abc` makes the suite *faster* while silently switching descendant tracking off.
+
+The production cost of task 3 — one extra `timeout` fork per poll tick and per identity
+read, beside the `ps` it wraps — stays below this host's noise floor; run-to-run spread on
+an identical tree is under 0.2s. Budget against the ~5.5s poll and the ~1s-per-doctor
+probe, not against test wall-clock that a missing knob export can explain; weigh the next
+per-adapter poll, and the next always-waited probe window, before adding either.
 
 There is no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
 `test_*` function in the sourcing file. Anything that would break "offline and seconds"
@@ -179,16 +191,24 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   it exits — the accepted availability cost. Nothing in the poller closes a
   descriptor. `ps` is therefore a core utility (`PR_DOCTOR_UTILS`), though that
   is a presence check and busybox's `ps` rejects `-eo`, which degrades silently.
-  **Every one of those three `ps` calls is wrapped in `timeout`**, and the
-  post-`wait` sweep additionally carries a 30s deadline stamped before it
-  starts: `timeout(1)` bounds the *adapter*, never the loop watching it, so an
-  uncapped `ps` that never returned would wedge the round forever with the
-  session lock held. The cap is `PR_PS_CAP_SECS`, read once and clamped to
-  `1..5` — it exists so the offline suite can shrink its hang tests, not as an
+  **Every one of those three `ps` calls is wrapped in
+  `timeout --kill-after=1`**, and the post-`wait` sweep additionally carries a
+  30s deadline stamped before it starts: `timeout(1)` bounds the *adapter*,
+  never the loop watching it, so an uncapped `ps` that never returned would
+  wedge the round forever with the session lock held. The cap is
+  `PR_PS_CAP_SECS`, read once and clamped to `1..5` — it exists so the offline suite can shrink its hang tests, not as an
   operator knob, and it is clamped because the environment is still input and
-  GNU `timeout` accepts a syntactically valid `999999` verbatim. The sweep's
-  true bound is the deadline **plus one cap of slack**, since a read that
-  starts just under the wire still runs to its own cap. That a `ps` ever stalls
+  GNU `timeout` accepts a syntactically valid `999999` verbatim (and reads `0`
+  as *disabling* the timeout, which is why the clamp rejects it too). The
+  sweep's true bound is the deadline **plus one cap of slack**, since a read
+  that starts just under the wire still runs to its own cap. `--kill-after` is
+  load-bearing in that sentence: `timeout N` does not *return* at N, it signals
+  and then waits for its child, so without the escalation a TERM-ignoring `ps`
+  is still unbounded (measured 2026-08-27: 5.003s against 2.002s). What
+  **nothing** here bounds is a `ps` in uninterruptible sleep — it takes neither
+  signal, `timeout` blocks in `waitpid`, and the deadline is checked *before*
+  each read so it is never reached. That is the one case the caps do not cover,
+  and it is also the one nobody has reproduced. That a `ps` ever stalls at all
   is *unmeasured* — a `/proc` read against a task in uninterruptible sleep is
   the credible mechanism, not reproduced — and the comments say so; the
   unbounded wait itself was certain. Both degradations, a capped read and a

@@ -78,20 +78,27 @@ test_present_core_utilities_pass_as_one_check() {
 # already requires GNU coreutils; this checks the requirement -- and FAILS,
 # not warns, because a silently inert sweep is the kind of degrade nothing
 # else would ever surface.
+#
+# Through doctor_run, like every other check case here, and asserting the
+# `counts` line rather than the return status: rc=1 alone cannot tell a FAIL
+# from a `pr_d_warn` that happens to return 1, and fail-vs-warn is the whole
+# claim above. It also keeps the counters in a fresh bash -- calling the check
+# in this file's own shell would print a red [FAIL] block in the middle of a
+# green run and leave PR_DOCTOR_FAIL raised for every case after it.
 test_doctor_fails_a_non_gnu_timeout() {
   local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
   pr_test_mkstub "$d/bin/timeout" 'echo "BusyBox v1.36.1 multi-call binary"'
-  local rc=0
-  PATH="$d/bin:$PATH" pr_doctor_check_gnu_timeout || rc=$?
-  assert_eq "$rc" "1" "non-GNU timeout is a failure, not a warning"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_gnu_timeout')"
+  assert_contains "$out" "not GNU coreutils" "names what is wrong"
+  assert_contains "$out" "BusyBox" "and echoes back what it found"
+  assert_contains "$out" "counts 0 0 1" "non-GNU timeout is a FAILURE, not a warning"
 }
 
 test_doctor_passes_gnu_timeout() {
   local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
   pr_test_mkstub "$d/bin/timeout" 'echo "timeout (GNU coreutils) 9.4"'
-  local rc=0
-  PATH="$d/bin:$PATH" pr_doctor_check_gnu_timeout || rc=$?
-  assert_eq "$rc" "0" "GNU coreutils timeout passes"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_gnu_timeout')"
+  assert_contains "$out" "counts 1 0 0" "GNU coreutils timeout passes, cleanly"
 }
 
 test_absent_reviewer_cli_points_at_the_roster_escape_hatch() {
