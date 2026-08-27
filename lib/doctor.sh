@@ -865,7 +865,7 @@ pr_doctor_check_rounds() {
     # --fresh (pr_round_needs_fresh -- the shared rule, lib/round.sh). A pass
     # either way: the way is clear, the flag is the way.
     if pr_round_needs_fresh "$state"; then
-      pr_d_pass "round $highest is aborted; round $((highest + 1)) starts with --fresh only"
+      pr_d_pass "round $highest is $state; round $((highest + 1)) starts with --fresh only"
       pr_d_info "its resume handles are forfeit; the runner refuses a round without --fresh"
     else
       pr_d_pass "round $highest is $state; round $((highest + 1)) can start"

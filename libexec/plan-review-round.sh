@@ -184,12 +184,29 @@ if [[ "$highest_round" -gt 0 ]]; then
     exit 2
   fi
 
-  # An aborted predecessor forces --fresh, whatever aborted it -- including
-  # the routine all-reviewers-failed round: aborted does not mean "store
-  # loss", it means "this round did not finish, resume nothing from it" (R1
-  # already forfeited the handles). The rule is pr_round_needs_fresh in
-  # lib/round.sh, shared with the doctor's report. A read-only check, on a
-  # state the guard above just read.
+  # An aborted predecessor forces --fresh, whatever aborted it. That is a
+  # policy choice and not an inference from R1: `aborted` does not mean "store
+  # loss", it means "this round did not finish, resume nothing from it".
+  #
+  # `aborted` is reachable three ways and R1 covers only two of them. A
+  # store-loss exit forfeits the handle of every reviewer its serial pass
+  # reached, and the all-reviewers-failed round -- the routine trigger, "a CLI
+  # was not logged in, fix it and re-run" -- completes its serial pass and
+  # pr_session_del's the whole roster, so --fresh there drops zero handles and
+  # its only cost to the retry is the diff, prior critique and rationale the
+  # prompt would otherwise have carried. But an awaiting_integration round
+  # abandoned with `plan-review abort` forfeits nothing: those reviewers
+  # finished cleanly and pr_session_set stored handles that are still good.
+  # The gate discards them anyway. That is a fourth accepted cost beside the
+  # three the spec prices (docs/process/brainstorm/2026-08-27-backlog-clearing-2.md),
+  # and it is priced the same way: telling the benign case apart would need the
+  # round to record that its serial pass completed -- the marker design that
+  # spec considered and rejected -- and R1's direction is that when in doubt,
+  # forfeit. The one-sentence rule is what keeps the runner and the doctor
+  # saying the same thing.
+  #
+  # The rule is pr_round_needs_fresh in lib/round.sh, shared with the doctor's
+  # report. A read-only check, on a state the guard above just read.
   if pr_round_needs_fresh "$prev_state" && [[ "$fresh" -ne 1 ]]; then
     echo "round $highest_round is aborted: its resume handles are forfeit." >&2
     echo "Run again with --fresh to start a new baseline." >&2

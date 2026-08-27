@@ -247,6 +247,39 @@ test_fresh_starts_over_an_aborted_predecessor() {
   assert_eq "$(jq -r '.fresh' < "$art/round-2/round.json")" "true" "and is a baseline"
 }
 
+# The fourth accepted cost of the one-sentence rule, pinned on purpose.
+# `aborted` is reachable three ways; on this one R1 has forfeited nothing. The
+# round finished cleanly, pr_session_set stored a good handle for every
+# reviewer, and the operator then abandoned it with `abort` -- and the gate
+# forfeits those handles anyway, plus the diff/critique/rationale --fresh also
+# omits. That is deliberate: telling this path apart would need the round to
+# record that its serial pass completed, the marker design the spec rejected
+# (docs/process/brainstorm/2026-08-27-backlog-clearing-2.md). So a future
+# reader who finds this strict should change the policy on purpose, not
+# "fix" the predicate and delete this test.
+test_an_abandoned_round_also_forces_fresh_though_its_handles_are_good() {
+  local d art out rc=0 fresh_rc=0; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  run_round "$d/target" "$d/cache" "codex=$FAKES/fake-ok.sh" > /dev/null 2>&1
+  art="$(ls -d "$d/target/.plan-review/"*/)"
+  assert_eq "$(jq -r '.state' < "$art/round-1/round.json")" "awaiting_integration" \
+    "precondition: the round finished cleanly"
+  assert_contains "$(cat "$art/session-map.json")" "fake-session-" \
+    "precondition: the clean reviewer's handle was stored and is good"
+  bash "$RUNNER" abort --round "$art/round-1" > /dev/null 2>&1
+  assert_eq "$(jq -r '.state' < "$art/round-1/round.json")" "aborted" \
+    "precondition: abandoned, not failed"
+  out="$(run_round "$d/target" "$d/cache" "codex=$FAKES/fake-ok.sh" 2>&1)"; rc=$?
+  assert_exit_code "$rc" 2 "refused although nothing had forfeited the handles"
+  assert_contains "$out" "--fresh" "the message names the remedy"
+  assert_file_missing "$art/round-2" "no round was started"
+  PR_CACHE_ROOT="$d/cache" PR_ADAPTER_MAP="codex=$FAKES/fake-ok.sh" \
+  PR_ORCHESTRATOR=none \
+    bash "$RUNNER" round --repo "$d/target" --plan docs/plan.md --fresh \
+    > /dev/null 2>&1 || fresh_rc=$?
+  assert_exit_code "$fresh_rc" 0 "--fresh is the way through"
+  assert_eq "$(jq -r '.fresh' < "$art/round-2/round.json")" "true" "and is a baseline"
+}
+
 # The other half of the gate: --fresh that cannot clear the map must not
 # start reviewers that would resume from it. Reproduced on the unchecked
 # clear (2026-08-27): a read-only session-map.json printed Permission denied,
