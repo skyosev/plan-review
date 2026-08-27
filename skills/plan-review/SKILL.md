@@ -232,9 +232,10 @@ meant.
 
   It deletes nothing; the round stays readable. If `abort` refuses because the session is
   locked, reviewers spawned by the dead runner are still writing — report that and wait
-  rather than forcing anything. If instead it fails with a raw write error naming a
-  `.tmp` file, the artifact store is unwritable and this is the store-loss case two
-  bullets down — `abort` cannot succeed until that is fixed, so do not loop on it.
+  rather than forcing anything. If instead it refuses with exit 2 and the sentence `the artifact
+  store refuses writes: <dir>`, the artifact store is unwritable and this is the
+  store-loss case two bullets down — `abort` cannot succeed until that is fixed, so do
+  not loop on it.
 - The runner exits 2 with a message ending in `aborting` that names something it could
   not write (`round.json`, a result record, the session map): the artifact store itself
   is gone — a full disk or an unwritable `.plan-review/` — not a reviewer problem. The
@@ -242,11 +243,13 @@ meant.
   verdicts out of them and do not retry until the user has fixed the disk or the
   permissions. Report the message verbatim. The round directory stays, but it stays in
   state `reviewing`: `abort` writes `round.json` through the same directory that just
-  refused a write, so running it now fails too, with exit 2 and a raw write error naming
-  a `.round.json.<pid>.tmp` file — `Permission denied` when the directory is unwritable,
-  `No space left on device` when the disk is full. Match on the `.tmp` filename, not on
-  either message. Do not run it until the store is writable again — which is also
-  the only point at which it is worth running. When
+  refused a write, so it refuses rather than trying: exit 2 and the one sentence `the
+  artifact store refuses writes: <dir>; retry after restoring store writes`. The raw
+  write errors are the *runner's* own store-loss diagnostic — a `.round.json.<pid>.tmp`
+  file, `Permission denied` when the directory is unwritable, `No space left on device`
+  when the disk is full; match those on the `.tmp` filename, not on either message. Do
+  not run `abort` until the store is writable again — which is also the only point at
+  which it is worth running. When
   the user is ready to run again, the next round **must** be `--fresh`: the serial pass
   stopped part-way, so reviewers it never reached still hold last round's resume handles,
   including ones this round would have thrown away.

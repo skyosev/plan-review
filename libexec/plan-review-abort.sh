@@ -44,5 +44,18 @@ case "$state" in
   *) echo "round is '$state', not a round that can be aborted" >&2; exit 1 ;;
 esac
 
+# Writability preflight -- deliberately AFTER the lock and the re-read: a
+# locked round must be reported as locked ("a review is still running" is the
+# truth that matters first), never as storage trouble. The asymmetry with the
+# round path is also deliberate: there the raw write errors ARE the
+# diagnostic and stay; this check exists only because abort cannot possibly
+# succeed on an unwritable store and so has something better to say than
+# jq's temp-file error. It promises nothing -- a writable directory does not
+# guarantee the temp-write/rename below succeeds.
+if [[ ! -w "$round_dir" ]]; then
+  echo "the artifact store refuses writes: $round_dir; retry after restoring store writes" >&2
+  exit 2
+fi
+
 pr_round_set_state "$round_dir" aborted || exit 2
 echo "Round aborted: $round_dir"

@@ -485,9 +485,9 @@ cannot be written, because the disk is full or the directory is not writable —
 abort: the runner prints what it could not write, ending in `aborting`, and exits 2. It
 does not print "Round complete" over an artifact it failed to record, and the state left
 in `round.json` is the last one that actually persisted — usually `reviewing`, and it
-stays that way on disk: `abort` rewrites `round.json` through the same directory that
-just refused a write, so it too fails, loudly and without explanation, until the store is
-writable again. Fix the disk or the permissions first; then the round aborts and reads
+stays that way on disk: `abort` writes through the same directory that
+just refused a write, so it refuses too — one sentence naming the store — until the store
+is writable again. Fix the disk or the permissions first; then the round aborts and reads
 exactly as any other unfinished one. **Run the next round `--fresh`**: the
 serial pass stopped part-way, so every reviewer it had not reached yet still holds the
 resume handle from the round before — including handles this round would have forfeited.
