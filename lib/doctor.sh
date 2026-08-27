@@ -203,7 +203,19 @@ pr_doctor_check_utils() {
 # parses with builtins only, so the stub-PATH doctor tests stay green.
 pr_doctor_check_gnu_timeout() {
   local v
-  v="$(timeout --version 2>/dev/null)"
+  # Through pr_doctor_run like every other version read in this file, not a bare
+  # command substitution: a substitution is held open by any descendant that
+  # inherited stdout, and the two-file capture is what bounds that. The risk from
+  # `timeout --version` itself is small; being the one probe here that does not
+  # follow the file's own rule is the actual cost. Watchdogging timeout WITH
+  # timeout is circular but harmless -- the outer copy only has to wait, and
+  # where the inner one is not GNU the outer is the same binary and the FAIL
+  # below is what the operator gets either way.
+  # 2>&1, unlike pr_doctor_version_of: busybox timeout answers --version with a
+  # usage block on STDERR, which is the diagnostic the `got:` line should show.
+  # Safe here because the match is the fixed string "GNU coreutils", which no
+  # deprecation notice on stderr turns into a false pass.
+  v="$(pr_doctor_run 10 timeout --version 2>&1)"
   if [[ "$v" == *"GNU coreutils"* ]]; then
     pr_d_pass "timeout is GNU coreutils (the kernel's group sweep depends on its process-group behaviour)"
     return 0
@@ -345,14 +357,25 @@ _pr_doctor_bwrap_probe() {
   fi
   _ticks="${PR_BWRAP_PROBE_TICKS:-10}"
   [[ "$_ticks" =~ ^[1-9][0-9]*$ ]] || _ticks=10
+  # SLEEP FIRST, then check. Same wall time, one more useful check inside it:
+  # the writer stamps `survived` 0.2s after `spawned`, so a check at t=0 can
+  # never see anything and the last sleep of a check-first loop was thrown away.
+  # Measured 2026-08-27 on this host, against this payload with --unshare-pid
+  # REMOVED so the marker really does land, ten runs each: check-first at three
+  # ticks caught it at the third and last check every time -- zero spare checks,
+  # not the "delay plus half again" the preflight comment used to claim -- and
+  # sleep-first at three ticks caught it at the second, leaving one whole tick
+  # of slack. Sixty-four spinners on thirty-two cores did not move either
+  # number. The failure direction is what makes this worth the swap: a marker
+  # that lands after the last check reads as a PASS.
   if (( _rc == 0 )); then
     for (( _i = 0; _i < _ticks; _i++ )); do
+      sleep 0.1
       if [[ -e "$_probe/survived" ]]; then
         _said="a detached process survived the jail's exit and wrote its marker"
         _rc=1
         break
       fi
-      sleep 0.1
     done
   fi
   # rm -rf, not rmdir: the probe directory now holds markers, and on the
@@ -1273,9 +1296,17 @@ pr_doctor_preflight() {
   # the default ten ticks, measured on this host 2026-08-27. A second on every
   # round with agy or claude in the roster is not worth paying for a margin that
   # exists to absorb a loaded interactive `doctor`, so preflight shrinks the
-  # window to three ticks -- 0.33s measured the same way. Three is not arbitrary:
-  # the writer stamps `survived` 0.2s after `spawned`, and bwrap has already
-  # exited by the time this loop starts, so 0.3s is that delay plus half again.
+  # window to three ticks -- 0.33s measured the same way. Three is not arbitrary,
+  # but the margin is thinner than it sounds: the writer stamps `survived` 0.2s
+  # after `spawned`, bwrap has already exited by the time this loop starts, and
+  # the loop checks at 0.1s, 0.2s and 0.3s. So the marker is seen on the SECOND
+  # of three checks -- one whole tick of slack, and no more. Measured, ten runs
+  # each, with --unshare-pid removed from the probe payload so the marker really
+  # lands: caught at the second check every time, unchanged under 64 spinners on
+  # 32 cores. Before that measurement this loop checked BEFORE its first sleep
+  # and the marker landed on the last check with nothing to spare; the ordering
+  # in _pr_doctor_bwrap_probe is what buys the tick, at no extra wall time.
+  # Widen this rather than trim it: the failure direction is a false PASS.
   # `local` rather than an assignment prefixed to the call, because the probe
   # reads the variable and bash's rules for whether such a prefix persists past a
   # FUNCTION call are the ones tests/test-doctor.sh already refuses to rely on.

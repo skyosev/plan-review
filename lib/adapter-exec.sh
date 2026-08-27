@@ -29,6 +29,18 @@
 # and FAILS rather than warning, because nothing else would ever surface it.
 # Callers own the fallback for outright ABSENCE: the smoke tier skips without
 # it, the round has always assumed it.
+#
+# The MIXED host -- GNU `ps`, non-GNU `timeout` -- is worth naming, because the
+# `ps` caps below all use `--kill-after` and a busybox timeout rejects the long
+# option, so every capped read there returns empty and descendant tracking is
+# entirely off. That is NOT a regression the caps introduced: the adapter spawn
+# a few lines down has passed `timeout --kill-after=` since this kernel landed,
+# so on such a host no adapter is spawned at all and there is no tree left to
+# track. Measured 2026-08-27, BusyBox v1.36.1: `timeout --kill-after=1 1 true`
+# answers `timeout: unrecognized option '--kill-after=1'`, rc=1. A busybox
+# `timeout` is a host where the round produces nothing whatever, before and
+# after the caps alike -- which is why the doctor FAILS on it rather than
+# degrading, and why nothing here carries a non-GNU fallback.
 
 # pr_adapter_exec <adapter> <workdir> <session> <review> <meta> <reason> <log> \
 #                 <deadline-secs> <tmpdir> <rc-var> <timed-out-var>

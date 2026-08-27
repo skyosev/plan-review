@@ -224,7 +224,12 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   process group (measured 2026-08-27, transcript in `lib/adapter-exec.sh`'s
   header), and busybox's does not, leaving the sweep silently inert in the same
   environment its `ps` already breaks. `pr_doctor_check_gnu_timeout` therefore
-  **fails** rather than warns.
+  **fails** rather than warns. The mixed host — GNU `ps`, busybox `timeout` — is
+  not the extra hazard it looks like: the `--kill-after` the `ps` caps use is
+  rejected there (measured 2026-08-27, BusyBox 1.36.1), but so is the identical
+  flag on the *adapter* spawn, which has carried it since the kernel landed. A
+  busybox `timeout` is a host that runs no reviewer at all, which is why nothing
+  carries a non-GNU fallback.
   macOS descendant cleanup is unverified live (first row of the macOS cycle).
   The round (`lib/reviewer-runner.sh`) and `doctor --smoke` both spawn
   through the kernel — the smoke's call guarded by `declare -F` so the stub-PATH
