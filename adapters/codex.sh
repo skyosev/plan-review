@@ -94,8 +94,12 @@ if ! mkdir -p "$codex_home" 2>/dev/null; then
   echo "codex adapter: cannot create the private CODEX_HOME at $codex_home" >&2
   exit 1
 fi
-if [[ -f "$HOME/.codex/auth.json" && ! -f "$codex_home/auth.json" ]]; then
-  if ! cp "$HOME/.codex/auth.json" "$codex_home/auth.json" 2>/dev/null; then
+# ${HOME:-} rather than $HOME: there is no set -e here but there IS set -u, and
+# PR_CACHE_ROOT lets the runner work in an environment with no HOME at all. Bare
+# $HOME would take the reviewer out with a bash-internal "unbound variable" on a
+# path that otherwise runs fine -- no auth to copy is a state this handles.
+if [[ -f "${HOME:-}/.codex/auth.json" && ! -f "$codex_home/auth.json" ]]; then
+  if ! cp "${HOME:-}/.codex/auth.json" "$codex_home/auth.json" 2>/dev/null; then
     echo "codex adapter: cannot copy auth.json into $codex_home" >&2
     exit 1
   fi
@@ -122,9 +126,13 @@ config_args=(
   # is: a valid repo hook did not EXECUTE either way. Two live control runs with
   # no flag -- one registering SessionStart, one registering five events against
   # a prompt that really did make a tool call -- fired nothing. Execution is
-  # gated on a per-source `hooks.state."<source>".trusted_hash` record that only
-  # codex's interactive TUI review writes, and which a non-interactive `codex
-  # exec` against an untrusted repo cannot reach. So this flag closes a read the
+  # gated, on the binary's own evidence rather than on a measurement of the
+  # gate, by a per-source `hooks.state."<source>".trusted_hash` record (the key
+  # is real -- --strict-config types it as a string) that appears to be written
+  # only by codex's interactive TUI review (`tui/src/startup_hooks_review.rs`),
+  # which a non-interactive `codex exec` cannot reach. Trusting a hook and
+  # re-running was NOT attempted, so the once-trusted path is unproven in both
+  # directions. So this flag closes a read the
   # reviewer demonstrably performs, ahead of an execution path currently held
   # shut by a gate that is codex's to change, not ours to rely on.
   -c features.hooks=false
@@ -175,16 +183,26 @@ if ! grep -qF "sandbox: $PR_EXPECTED_SANDBOX" "$err"; then
   # with the private CODEX_HOME above it no longer can, and a message still
   # naming a file the reviewer does not read would be worse than none. What the
   # reviewer does read is the config.toml codex writes into the private home
-  # itself, so that is what is named. The symptom ("unexpected sandbox") names
-  # no file, so the likeliest cause is spelled out beside it. Said twice on
-  # purpose -- once here for whoever reads the log, once in the reason below,
-  # which is what the round's summary shows; adapters source nothing, so there
-  # is no shared constant to hold it.
+  # itself, so that is what is named. The second cause is new and is a one-round
+  # transition: a session handle stored before the private home existed names a
+  # rollout in the operator's ~/.codex/sessions, and resuming it here fails with
+  # `no rollout found for thread id <id>` (measured 2026-08-27, codex 0.150.1,
+  # rc=1, no banner -- which is why it arrives at this branch rather than a
+  # nicer one). R1 drops that handle, so the next round starts clean by itself.
+  #
+  # Said twice on purpose -- once here for whoever reads the log, once in the
+  # reason below, which is what the round's summary shows; adapters source
+  # nothing, so there is no shared constant to hold it. The two are NOT the same
+  # text: lib/reviewer-runner.sh truncates the reason at 200 characters, so the
+  # absolute path stays here, in the log, where nothing clips it, and the reason
+  # says which file to look for instead of spelling out where it is.
   echo "codex adapter: if codex printed a config error above, the likeliest cause is a" >&2
   echo "  field this codex version rejects in $codex_home/config.toml (--strict-config)." >&2
   echo "  Deleting that file is safe: codex rewrites it, and the operator's ~/.codex is" >&2
   echo "  not read by this reviewer." >&2
-  pr_reason "codex ran under an unexpected sandbox; the review was discarded (if codex refused to start, check $codex_home/config.toml for a field it rejects)"
+  echo "  If it instead says 'no rollout found for thread id', the stored session predates" >&2
+  echo "  this private home; the handle is dropped and the next round starts clean." >&2
+  pr_reason "codex ran under an unexpected sandbox; the review was discarded (if codex refused to start, see the log: likeliest a bad field in the private CODEX_HOME's config.toml, or a stale session handle)"
   rm -f "$review_out"
   exit 1
 fi

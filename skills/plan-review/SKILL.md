@@ -306,6 +306,13 @@ meant.
   a config error, the file to look in is `<sandbox>/codex-home/config.toml`, which codex
   writes itself; the adapter's own message names it. Their `~/.codex` is not the cause
   any more, and telling them to edit it would waste their time.
+- **A plan that was mid-loop when the private home landed loses one codex round.** Its
+  stored handle names a rollout in the user's `~/.codex/sessions/`, which the private home
+  does not have, so the resume fails before the banner and codex is recorded as failed for
+  that round. Say what it is rather than debugging it: the handle is dropped by that
+  failure and the next round starts codex cold, so running again is the whole fix.
+  `--fresh` skips the wasted round if the user would rather not spend it. This happens
+  once per plan, never again.
 - **Repo-supplied codex hooks are off for reviews** (`-c features.hooks=false`). A
   repository can ship a `.codex/hooks.json` and codex was measured reading the one in the
   workspace under review. Handlers from an untrusted source were measured *not* executing

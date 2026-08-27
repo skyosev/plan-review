@@ -577,6 +577,14 @@ write-confined, but not by the same thing:
   operator re-authenticates. The remedy is deleting `<sandbox>/codex-home/auth.json`; the
   next round copies a fresh one in.
 
+  **One round is lost for a plan that was already mid-loop when this landed.** A stored
+  codex session handle names a rollout in the operator's `~/.codex/sessions/`, which the
+  private home does not have, so the first resume after the change fails before the
+  banner — measured at codex 0.150.1 as `no rollout found for thread id <id>`, rc=1 — and
+  the round records that reviewer as failed. Nothing is corrupted and no action is
+  required: the failure drops the handle, and the next round starts codex cold. `--fresh`
+  skips the wasted round if you would rather not spend it.
+
   Repo-supplied codex hooks are disabled for reviews, via `-c features.hooks=false`.
   A repository can ship a `.codex/hooks.json`, and codex was measured reading the one in
   the workspace under review; with the flag it is not read at all. Handlers from an

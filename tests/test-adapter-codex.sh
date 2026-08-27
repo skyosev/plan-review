@@ -165,7 +165,7 @@ test_review_file_holds_only_the_review() {
 }
 
 test_unexpected_sandbox_header_aborts_with_no_review() {
-  local d rc; d="$(pr_test_tmpdir)"
+  local d rc line; d="$(pr_test_tmpdir)"
   install_stub "$d/bin" "sandbox: danger-full-access"
   mkdir -p "$d/work"
   echo "prompt" | PATH="$d/bin:$PATH" \
@@ -183,8 +183,21 @@ test_unexpected_sandbox_header_aborts_with_no_review() {
     "the log names the file the operator has to look in"
   assert_not_contains "$(cat "$d/out.txt")" "~/.codex/config.toml" \
     "and not the one the private home took out of scope"
-  assert_contains "$(cat "$d/reason.txt")" "codex-home/config.toml" \
-    "and so does the reason carried back to the round"
+  # The reason is NOT the same text as the log. lib/reviewer-runner.sh does
+  # `detail="${reason:0:200}"`, and the sandbox path it would have interpolated
+  # (~/.cache/plan-review/<hash>-<slug>/<reviewer>/codex-home) pushed the old
+  # wording to 210-240 characters for a realistic key -- so round.json's detail,
+  # the one line the round summary shows, lost its tail and for a long plan slug
+  # was cut inside the path. The reason names the file without spelling out
+  # where it is; the log, which nothing truncates, keeps the absolute path.
+  assert_contains "$(cat "$d/reason.txt")" "CODEX_HOME's config.toml" \
+    "the reason names the file too, without the path that overflowed the cap"
+  assert_not_contains "$(cat "$d/reason.txt")" "$d" \
+    "no sandbox path in the reason: its length must not depend on the cache key"
+  # And it must fit the cap outright, not merely today.
+  IFS= read -r line < "$d/reason.txt"
+  [[ ${#line} -le 200 ]] \
+    || pr_fail "reason is ${#line} chars; lib/reviewer-runner.sh truncates at 200"
 }
 
 # A missing banner is not a pass. --json suppresses it, and so would any future
@@ -227,6 +240,24 @@ test_codex_runs_under_a_private_home_with_hooks_off() {
     "auth material copied in, not pointed at"
   assert_eq "$(< "$d/home/.codex/auth.json")" '{"tokens": "operator"}' \
     "the operator's real auth file is untouched"
+}
+
+# set -u is on and PR_CACHE_ROOT lets the runner work with no HOME at all. A
+# bare $HOME in the auth-copy test would then take the reviewer out with a
+# bash-internal "unbound variable" on a path that otherwise runs fine.
+test_no_home_still_runs_with_the_private_home() {
+  local d rc; d="$(pr_test_tmpdir)"
+  install_stub "$d/bin" "sandbox: workspace-write [workdir]"
+  mkdir -p "$d/sandbox/repo"
+  echo "prompt" | env -u HOME PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/codex.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > "$d/out.txt" 2>&1
+  rc=$?
+  assert_exit_code "$rc" 0 "no HOME is not a reason to lose the reviewer"
+  assert_not_contains "$(cat "$d/out.txt")" "unbound variable" "and not this way"
+  assert_contains "$(< "$d/bin/env.txt")" "CODEX_HOME=$d/sandbox/codex-home" \
+    "the private home is still set"
+  assert_file_missing "$d/sandbox/codex-home/auth.json" "nothing to copy, nothing copied"
 }
 
 # Reviewer-scoped write integrity: an uncreatable home fails THIS reviewer

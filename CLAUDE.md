@@ -245,9 +245,12 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   workdir's trust level, which is why the Q8 diagnostics now name *that* file and no
   longer name `~/.codex`. codex also passes `-c features.hooks=false`: the repository
   under review can ship a `.codex/hooks.json` and codex was measured reading it, while
-  handlers from an untrusted source were measured **not** executing at 0.150.1 — an
-  interactive trust gate a headless `exec` cannot reach. The flag's comment states
-  exactly that split and claims no sentinel it never saw fire
+  handlers from an untrusted source were measured **not** executing at 0.150.1. *Why*
+  they did not is inference, not measurement — on the binary's own evidence a per-source
+  `trusted_hash` written by an interactive TUI review is the gate, and a headless `exec`
+  cannot reach it; trusting a hook and re-running was never attempted, so the
+  once-trusted path is unproven in both directions. The flag's comment carries that same
+  hedge and claims no sentinel it never saw fire
   (`docs/process/probes/2026-08-27-codex-private-home/`).
 
 - **`PR_TIMEOUT_SECS` must be a positive integer**, enforced in
