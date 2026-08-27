@@ -447,14 +447,17 @@ round marked `fresh` whose reviewers resume from the handles it failed to drop.
                      clean one; kept when anything went wrong, to be read
       repo/.pr-tmp/  that reviewer's private TMPDIR
       config/        claude only: its private CLAUDE_CONFIG_DIR, and durable
+      gemini-state/  agy only: its private state directory, bound over ~/.gemini
+      codex-home/    codex only: its private CODEX_HOME, holding the session
+                     rollouts and one copy of auth.json
 
 `repo/` is rebuilt from scratch every round rather than synced, so keeping it between
 rounds buys nothing but post-hoc debugging — which is exactly when it is kept. A copy
 is discarded only when that reviewer finished cleanly, on time and with exit 0;
 a timeout, a failure or a non-zero exit keeps its tree. `PR_KEEP_SANDBOX=1` keeps
-every copy whatever happened. `config/` is never touched: it is a *sibling* of the
-copy precisely so it outlives the wipe, and it is where Claude Code's resume state
-lives.
+every copy whatever happened. The three private directories are never touched: each
+is a *sibling* of the copy precisely so it outlives the wipe, and each is where that
+reviewer's resume state lives.
 
 `TMPDIR` sits *inside* `repo/` on purpose. Codex drops `$TMPDIR` from its writable
 roots, so a sibling directory would not be writable at all.
@@ -558,6 +561,28 @@ write-confined, but not by the same thing:
   currently in doubt: re-measured 2026-08-27 against `2026.08.25-3e8eec8`, a tool-call
   write to `/tmp` and to `$HOME` both succeeded, wrapped and unwrapped alike. Treat
   Cursor as unconfined for writes at that version until a probe says otherwise.
+
+  codex additionally runs under a private `CODEX_HOME` beside the repo copy —
+  `<sandbox>/codex-home` — so the operator's user-level `~/.codex` is never read and never
+  written, beyond one copy of `auth.json` into the private home on the first round. That
+  is not a sandbox change; it removes ambient configuration that had already taken a
+  reviewer out. Measured, and still reproducible: one obsolete top-level field in the
+  operator's `config.toml` failed codex's `--strict-config` and the reviewer never
+  started. The private home also holds the session rollouts, which is why it sits beside
+  the repo copy rather than inside it — the copy is wiped every round. What `CODEX_HOME`
+  does **not** move: codex's managed/MDM, enterprise-requirements, session-flag, plugin
+  and *project* configuration layers all stay in scope.
+
+  The copied `auth.json` is a second credential at rest, and it goes stale when the
+  operator re-authenticates. The remedy is deleting `<sandbox>/codex-home/auth.json`; the
+  next round copies a fresh one in.
+
+  Repo-supplied codex hooks are disabled for reviews, via `-c features.hooks=false`.
+  A repository can ship a `.codex/hooks.json`, and codex was measured reading the one in
+  the workspace under review; with the flag it is not read at all. Handlers from an
+  untrusted source did not actually execute at codex-cli 0.150.1 — codex gates them
+  behind an interactive trust review a headless `codex exec` cannot reach — so this
+  closes a read ahead of an execution path, rather than an exploit anyone has landed.
 - **agy** does not. Its `--sandbox` flag exists, reports itself as enabled, and was
   measured allowing a write to `/tmp` anyway. It is confined by **bubblewrap**, which
   this project applies in `adapters/agy.sh` — so that one barrier is ours to maintain

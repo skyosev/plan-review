@@ -9,6 +9,10 @@
 #   - --strict-config                     a misspelled key fails loudly
 #   - model_reasoning_effort              codex's own effort axis, set only when
 #                                         PR_CODEX_EFFORT is present
+#   - features.hooks=false                the repo under review can hand codex a
+#                                         hook config; see the flag's comment
+# The reviewer also runs under a private CODEX_HOME sited beside the repo copy,
+# which is what keeps the operator's ~/.codex out of the round; see below.
 # The sandbox must be reasserted on resume: `codex exec resume` does not inherit
 # the original session's sandbox and falls back to the trust level in config.toml.
 
@@ -48,6 +52,56 @@ PR_CODEX_MODEL="${PR_CODEX_MODEL:-}"
 # in round.json as the requested value and quietly skew round-to-round comparison.
 PR_CODEX_EFFORT="${PR_CODEX_EFFORT:-}"
 
+# A private CODEX_HOME, SIBLING to the repo copy rather than inside it:
+# pr_sandbox_refresh wipes <sandbox>/repo every round, and the session
+# rollouts that make `codex exec resume` work round to round live in here --
+# measured at <private>/sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl, and a second
+# invocation with the same CODEX_HOME really did resume the first session rather
+# than start cold wearing its id (probes/2026-08-27-codex-private-home, leg 2).
+# Same siting as adapters/claude.sh's CLAUDE_CONFIG_DIR, restated here because
+# adapters source nothing.
+#
+# This removes the operator's USER-LEVEL ~/.codex from the round -- that is the
+# whole guarantee. Measured (P6 side-finding, 2026-08-26, and still reproducible
+# unprompted on the probe host at codex-cli 0.150.1): one obsolete top-level
+# field in the operator's config.toml failed --strict-config and the reviewer
+# never started, no banner, no review. It is NOT a sandbox change -- the -c
+# overrides below already outrank any config file and still do.
+#
+# codex also reads managed/MDM, enterprise-requirements, session-flag, plugin
+# and PROJECT configuration layers; CODEX_HOME does not touch those, they stay
+# in scope, and a managed layer that conflicts is accepted, not detected --
+# there is nothing here to detect it with. None were present on the probe host,
+# so nothing was observed leaking through: that is an absence of evidence, not
+# evidence of absence. The project layer is the one confirmed live, and the
+# `features.hooks=false` below is what shuts its executable half.
+#
+# This adapter seeds NO config.toml into the private home. codex writes one
+# itself on first run, recording the workdir's trust_level -- which is why the
+# diagnostics further down name that file and no longer name ~/.codex.
+#
+# auth.json is COPIED, not bound or symlinked: the reviewer needs a writable
+# copy and must never write the operator's real one. Measured: a private home
+# holding nothing but a copy of auth.json authenticates, so a writable directory
+# is sufficient on a host using the file credential store (the keyring mode
+# `cli_auth_credentials_store` selects is untested). The copy was NOT rewritten
+# during either probe run -- the token was inside its refresh window -- so
+# copy-once is cheap insurance rather than a demonstrated need: codex maintains
+# a `last_refresh` field, and if a refresh ever does land in the private copy,
+# copy-once is what keeps round N+1 from clobbering it.
+codex_home="$(dirname "$workdir")/codex-home"
+if ! mkdir -p "$codex_home" 2>/dev/null; then
+  echo "codex adapter: cannot create the private CODEX_HOME at $codex_home" >&2
+  exit 1
+fi
+if [[ -f "$HOME/.codex/auth.json" && ! -f "$codex_home/auth.json" ]]; then
+  if ! cp "$HOME/.codex/auth.json" "$codex_home/auth.json" 2>/dev/null; then
+    echo "codex adapter: cannot copy auth.json into $codex_home" >&2
+    exit 1
+  fi
+fi
+export CODEX_HOME="$codex_home"
+
 config_args=(
   --strict-config
   -c sandbox_mode=workspace-write
@@ -55,6 +109,25 @@ config_args=(
   -c sandbox_workspace_write.exclude_tmpdir_env_var=true
   -c sandbox_workspace_write.network_access=true
   -c approval_policy=never
+  # Hooks are a stable feature, ON by default (measured: codex-cli 0.150.1,
+  # `codex features list` -> `hooks stable true`), and the discovery layers
+  # include the REPOSITORY under review: <repo>/.codex/hooks.json is read.
+  # Measured both ways with a malformed file (probes/2026-08-27-codex-private-home,
+  # leg 4c): without this flag codex warns `failed to parse hooks config
+  # <repo>/.codex/hooks.json`, with it the file is not read at all, and
+  # `codex doctor --json` drops `hooks` from its enabled feature flags.
+  # features.hooks is a recognised key, so --strict-config does not object.
+  #
+  # What was NOT measured, stated so no one later mistakes this for more than it
+  # is: a valid repo hook did not EXECUTE either way. Two live control runs with
+  # no flag -- one registering SessionStart, one registering five events against
+  # a prompt that really did make a tool call -- fired nothing. Execution is
+  # gated on a per-source `hooks.state."<source>".trusted_hash` record that only
+  # codex's interactive TUI review writes, and which a non-interactive `codex
+  # exec` against an untrusted repo cannot reach. So this flag closes a read the
+  # reviewer demonstrably performs, ahead of an execution path currently held
+  # shut by a gate that is codex's to change, not ours to rely on.
+  -c features.hooks=false
 )
 [[ -n "$PR_CODEX_MODEL" ]] && config_args+=(--model "$PR_CODEX_MODEL")
 [[ -n "$PR_CODEX_EFFORT" ]] \
@@ -96,16 +169,22 @@ if ! grep -qF "sandbox: $PR_EXPECTED_SANDBOX" "$err"; then
   echo "Got:" >&2
   grep -i '^sandbox:' "$err" >&2 || echo "(no sandbox line at all)" >&2
   # The banner is also absent when codex never started, and the commonest
-  # reason for that is the operator's own config: codex runs --strict-config
-  # here, so one field this codex version rejects takes the reviewer out with a
-  # config error and no banner. The symptom ("unexpected sandbox") names no
-  # file, so the likeliest cause is spelled out beside it. Said twice on
+  # reason for that is a config field this codex version rejects: codex runs
+  # --strict-config here, so one bad field takes the reviewer out with a config
+  # error and no banner. That USED to mean the operator's ~/.codex/config.toml;
+  # with the private CODEX_HOME above it no longer can, and a message still
+  # naming a file the reviewer does not read would be worse than none. What the
+  # reviewer does read is the config.toml codex writes into the private home
+  # itself, so that is what is named. The symptom ("unexpected sandbox") names
+  # no file, so the likeliest cause is spelled out beside it. Said twice on
   # purpose -- once here for whoever reads the log, once in the reason below,
   # which is what the round's summary shows; adapters source nothing, so there
   # is no shared constant to hold it.
   echo "codex adapter: if codex printed a config error above, the likeliest cause is a" >&2
-  echo "  ~/.codex/config.toml field this codex version rejects (--strict-config)." >&2
-  pr_reason "codex ran under an unexpected sandbox; the review was discarded (if codex refused to start, check ~/.codex/config.toml for a field it rejects)"
+  echo "  field this codex version rejects in $codex_home/config.toml (--strict-config)." >&2
+  echo "  Deleting that file is safe: codex rewrites it, and the operator's ~/.codex is" >&2
+  echo "  not read by this reviewer." >&2
+  pr_reason "codex ran under an unexpected sandbox; the review was discarded (if codex refused to start, check $codex_home/config.toml for a field it rejects)"
   rm -f "$review_out"
   exit 1
 fi

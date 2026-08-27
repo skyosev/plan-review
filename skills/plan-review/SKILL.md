@@ -296,6 +296,22 @@ meant.
   why, and it is deliberate: a writable bind of their state directory would be a
   persistence channel out of the jail. Round-to-round resume is unaffected — the session
   map carries the handles.
+- **`codex` no longer reads the user's `~/.codex` either.** It runs under a private
+  `CODEX_HOME` beside the disposable repo copy, holding a copy of `auth.json` and nothing
+  else the operator put there. This closes a real failure: an obsolete field in the
+  user's own `config.toml` failed codex's `--strict-config` and the reviewer never
+  started. Two things to say when it comes up. First, the copied `auth.json` goes stale
+  when the user re-authenticates — the fix is deleting `<sandbox>/codex-home/auth.json`,
+  and the next round copies a fresh one in. Second, if codex still refuses to start with
+  a config error, the file to look in is `<sandbox>/codex-home/config.toml`, which codex
+  writes itself; the adapter's own message names it. Their `~/.codex` is not the cause
+  any more, and telling them to edit it would waste their time.
+- **Repo-supplied codex hooks are off for reviews** (`-c features.hooks=false`). A
+  repository can ship a `.codex/hooks.json` and codex was measured reading the one in the
+  workspace under review. Handlers from an untrusted source were measured *not* executing
+  at codex-cli 0.150.1 — codex gates them behind an interactive trust review a headless
+  run cannot reach — so do not describe this to a user as a closed exploit. It closes a
+  read, ahead of an execution path that is codex's to open.
 - A reviewer's recorded model reads `<something> (requested: <pin>)`: the CLI swapped the
   model out mid-run and the adapter caught it. The pin did not answer. Say so when
   reporting verdicts — that round is not comparable to one run on the pinned model.

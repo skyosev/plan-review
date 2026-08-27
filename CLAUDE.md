@@ -231,6 +231,25 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `oauth_creds.json` is the wrong answer
   (`docs/process/probes/2026-08-27-pid-namespace-adapters/`, leg 3).
 
+  **codex has the third private directory, and it is not a bind at all**:
+  `$(dirname "$workdir")/codex-home`, exported as `CODEX_HOME`, sited beside the repo
+  copy for the same reason claude's is — the rollouts `codex exec resume` needs must
+  survive `pr_sandbox_refresh`'s per-round wipe of `<sandbox>/repo`. codex confines its
+  own writes, so this is an *ambient-state* change, not a sandbox one: the `-c` overrides
+  already outranked every config file and still do. It moves codex's **user** layer only;
+  managed/MDM, enterprise-requirements, session-flag, plugin and **project** layers stay
+  in scope, and nothing here detects a conflicting managed layer. `auth.json` is **copied
+  in** rather than bound, because the reviewer needs it writable and must never write the
+  operator's — a second credential at rest, and the stated remedy for staleness is
+  deleting it. The adapter seeds no `config.toml`; codex writes one itself recording the
+  workdir's trust level, which is why the Q8 diagnostics now name *that* file and no
+  longer name `~/.codex`. codex also passes `-c features.hooks=false`: the repository
+  under review can ship a `.codex/hooks.json` and codex was measured reading it, while
+  handlers from an untrusted source were measured **not** executing at 0.150.1 — an
+  interactive trust gate a headless `exec` cannot reach. The flag's comment states
+  exactly that split and claims no sentinel it never saw fire
+  (`docs/process/probes/2026-08-27-codex-private-home/`).
+
 - **`PR_TIMEOUT_SECS` must be a positive integer**, enforced in
   `libexec/plan-review-round.sh` before preflight (which `PR_SKIP_PREFLIGHT=1` can
   skip) and again in `adapters/agy.sh`, which derives its own deadline from it with
