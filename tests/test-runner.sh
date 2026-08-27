@@ -735,12 +735,8 @@ test_a_read_only_round_dir_aborts_hard() {
 test_a_failed_terminal_state_write_aborts_hard() {
   local d out rc=0; d="$(pr_test_tmpdir)"; make_target "$d/target"
   mkdir -p "$d/bin"
-  cat > "$d/bin/jq" <<SHIM
-#!/usr/bin/env bash
-for a in "\$@"; do [[ "\$a" == *awaiting_integration* ]] && exit 1; done
-exec "$(command -v jq)" "\$@"
-SHIM
-  chmod +x "$d/bin/jq"
+  pr_test_mkstub "$d/bin/jq" 'for a in "$@"; do [[ "$a" == *awaiting_integration* ]] && exit 1; done
+exec '"$(command -v jq)"' "$@"'
   out="$(PATH="$d/bin:$PATH" run_round "$d/target" "$d/cache" \
     "codex=$FAKES/fake-ok.sh" 2>&1)" || rc=$?
   assert_exit_code "$rc" 2 "a terminal state the store refused is a hard abort"

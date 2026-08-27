@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Parses the machine-readable sentinels a reviewer must append to its review.
 
-# This set plus UNPARSEABLE is stated a second time, in
-# _pr_reviewer_result_valid (lib/reviewer-runner.sh), which refuses a result
-# record whose verdict is outside it. Deliberate duplication, cross-referenced
-# the way the adapters' shared constants are: a fifth verdict has to be added
-# in both places or the runner will reject records it just wrote.
-PR_VERDICT_RE='^[[:space:]]*<!--[[:space:]]*VERDICT:[[:space:]]*(NO_MATERIAL_OBJECTIONS|MINOR|BLOCKING)[[:space:]]*-->[[:space:]]*$'
+# The verdict domain, stated once. _pr_reviewer_result_valid
+# (lib/reviewer-runner.sh) refuses a result record whose verdict is outside this
+# set plus UNPARSEABLE, and reads it from here -- both files are sourced into
+# the same process by libexec/plan-review-round.sh, so the adapters' standalone
+# duplication rule does not apply and a fifth verdict is added in one place.
+PR_VERDICTS="NO_MATERIAL_OBJECTIONS MINOR BLOCKING"
+PR_VERDICT_RE="^[[:space:]]*<!--[[:space:]]*VERDICT:[[:space:]]*(${PR_VERDICTS// /|})[[:space:]]*-->[[:space:]]*\$"
 
 # pr_parse_verdict <review-file>
 # Echoes NO_MATERIAL_OBJECTIONS | MINOR | BLOCKING | UNPARSEABLE.

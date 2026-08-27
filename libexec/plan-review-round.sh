@@ -268,8 +268,8 @@ for reviewer in $reviewer_keys; do
   # gets a synthesized failed entry -- handle forfeited below like any failure,
   # round.json complete. rc 2 means the store itself refused the synthesized
   # write: abort hard rather than promise a coherent artifact we cannot write.
-  pr_reviewer_result_ensure "$reviewer"
-  if [[ $? -eq 2 ]]; then
+  pr_reviewer_result_ensure "$reviewer"; ensure_rc=$?
+  if (( ensure_rc == 2 )); then
     echo "cannot write a result record under $round_dir; aborting" >&2
     exit 2
   fi
@@ -325,12 +325,10 @@ for reviewer in $reviewer_keys; do
   # write but not parse. Recoverable by hand and the safe direction either
   # way, so it is stated here rather than branched on.
   if [[ "$timed_out_flag" != true && "$status" == ok ]]; then
-    pr_session_set "$session_map" "$reviewer" "$session" \
-      || { echo "cannot write the session map at $session_map; aborting" >&2; exit 2; }
+    pr_session_set "$session_map" "$reviewer" "$session"
   else
-    pr_session_del "$session_map" "$reviewer" \
-      || { echo "cannot write the session map at $session_map; aborting" >&2; exit 2; }
-  fi
+    pr_session_del "$session_map" "$reviewer"
+  fi || { echo "cannot write the session map at $session_map; aborting" >&2; exit 2; }
   # Counted separately from the handle rule above: a timed-out-but-usable review
   # still counts toward the round, as it always has.
   [[ "$status" == ok ]] && ok_count=$((ok_count + 1))

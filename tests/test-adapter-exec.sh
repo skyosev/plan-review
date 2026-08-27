@@ -112,12 +112,12 @@ test_sweep_reaches_a_setsid_escaper() {
 # The live macOS check is still owed to the macOS cycle (BACKLOG).
 test_descendant_walk_parses_a_gnu_shaped_table() {
   local table=$'    100      1\n    200    100\n    201    200\n    300      1'
-  assert_eq "$(_pr_ae_descendants 100 "$table")" " 100 200 201 " "fixpoint over GNU shape"
+  _pr_ae_descendants 100 "$table"; assert_eq "$_pr_ae_desc" " 100 200 201 " "fixpoint over GNU shape"
 }
 
 test_descendant_walk_ignores_column_width() {
   local table=$'  100     1\n  200   100\n  201   200\n  300     1'
-  assert_eq "$(_pr_ae_descendants 100 "$table")" " 100 200 201 " "fixpoint, narrower padding"
+  _pr_ae_descendants 100 "$table"; assert_eq "$_pr_ae_desc" " 100 200 201 " "fixpoint, narrower padding"
 }
 
 pr_run_tests

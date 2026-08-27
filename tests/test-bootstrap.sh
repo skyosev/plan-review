@@ -477,8 +477,7 @@ test_a_missing_npx_warns_and_the_install_still_succeeds() {
 # the time"; docker is then a skip, not a failure.
 test_bash32_host_refusal_is_the_one_install_sh_promises() {
   if [ "${PR_TEST_BASH32:-0}" != 1 ]; then
-    PR_TESTS_SKIPPED=$((PR_TESTS_SKIPPED + 1))
-    printf '  SKIP %s: set PR_TEST_BASH32=1\n' "$PR_CURRENT_TEST"
+    pr_test_skip "set PR_TEST_BASH32=1"
     return 0
   fi
   pr_test_requires docker || return 0
@@ -488,8 +487,7 @@ test_bash32_host_refusal_is_the_one_install_sh_promises() {
   # rather than as this machine not being able to run it. `docker info` is the
   # cheapest question that distinguishes the two.
   if ! docker info > /dev/null 2>&1; then
-    PR_TESTS_SKIPPED=$((PR_TESTS_SKIPPED + 1))
-    printf '  SKIP %s: docker is on PATH but its daemon is not reachable\n' "$PR_CURRENT_TEST"
+    pr_test_skip "docker is on PATH but its daemon is not reachable"
     return 0
   fi
   # A stub git, because main checks for git BEFORE preflight_host and the

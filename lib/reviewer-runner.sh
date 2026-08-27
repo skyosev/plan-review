@@ -10,7 +10,7 @@
 # calls -- pr_sandbox_dir/repo/tmp (lib/paths.sh), pr_sandbox_refresh
 # (lib/sandbox.sh), pr_status_event (lib/status.sh), pr_build_prompt and
 # pr_prompt_bytes (lib/prompt.sh), pr_session_get (lib/session.sh),
-# pr_parse_verdict and pr_parse_files_inspected (lib/verdict.sh),
+# pr_parse_verdict, pr_parse_files_inspected and PR_VERDICTS (lib/verdict.sh),
 # pr_adapter_exec (lib/adapter-exec.sh) -- and the variable contract below.
 #
 # THE VARIABLE CONTRACT. Beyond its arguments, this module reads a fixed set
@@ -69,7 +69,8 @@ pr_reviewer_result_path() { printf '%s/.result-%s' "$round_dir" "$1"; }
 # review_out and there is nothing extra to retire. If one ever does again, the
 # contract (docs/adapter-contract.md) points here.
 pr_reviewer_scratch_rm() {
-  rm -f "$round_dir/.result-$1" "$round_dir/.meta-$1" "$round_dir/.reason-$1" \
+  rm -f "$(pr_reviewer_result_path "$1")" "$round_dir/.meta-$1" \
+        "$round_dir/.reason-$1" \
         "$round_dir/.prompt-$1.txt" "$round_dir/.review-$1.scratch" \
         "$round_dir/review-$1.md.publish"
 }
@@ -104,7 +105,7 @@ pr_reviewer_result_read() {
       < "$(pr_reviewer_result_path "$1")")
 }
 
-# _pr_reviewer_result_valid <reviewer> -> 0, or 1 with "missing"/"invalid" on stdout.
+# _pr_reviewer_result_valid <reviewer> -> 0 valid, 1 missing, 2 invalid.
 # jq -es over the nine fields AND their closed domains -- exactly one JSON
 # object, status from {ok, failed}, verdict from pr_parse_verdict's output set
 # or empty (a failed reviewer's) -- not existence or types alone: a truncated,
@@ -114,18 +115,17 @@ pr_reviewer_result_read() {
 # tomorrow's legitimate vendor value.
 _pr_reviewer_result_valid() {
   local rec; rec="$(pr_reviewer_result_path "$1")"
-  [[ -f "$rec" ]] || { printf 'missing'; return 1; }
-  jq -es 'length == 1 and (.[0] |
+  [[ -f "$rec" ]] || return 1
+  jq -es --arg verdicts "$PR_VERDICTS UNPARSEABLE" \
+         'length == 1 and (.[0] |
           type == "object"
           and ([.status, .detail, .verdict, .session, .model, .effort, .cli]
                | all(type == "string"))
           and ([.discard, .timed_out] | all(type == "boolean"))
           and (.status | IN("ok", "failed"))
-          and (.verdict | IN("", "NO_MATERIAL_OBJECTIONS", "MINOR", "BLOCKING",
-                             "UNPARSEABLE")))' \
+          and (.verdict | IN("", ($verdicts | split(" ")[]))))' \
     < "$rec" > /dev/null 2>&1 && return 0
-  printf 'invalid'
-  return 1
+  return 2
 }
 
 # pr_reviewer_result_ensure <reviewer>
@@ -136,11 +136,23 @@ _pr_reviewer_result_valid() {
 # failure and the caller must abort rather than promise a coherent artifact.
 pr_reviewer_result_ensure() {
   local why
-  why="$(_pr_reviewer_result_valid "$1")" && return 0
+  _pr_reviewer_result_valid "$1"
+  case $? in 0) return 0 ;; 1) why=missing ;; *) why=invalid ;; esac
   _pr_reviewer_result_write "$1" failed "reviewer result record $why" \
     "" "" "" "" "" || return 2
   pr_status_event "$status_file" "$1" failed "reviewer result record $why"
   return 1
+}
+
+# _pr_reviewer_fail <reviewer> <detail> [session model effort cli discard timed_out]
+# The child's failure exit, written once: the status event and the result record
+# always carry the same detail, and a reviewer that failed before or instead of
+# publishing has no verdict to record. The optional tail is the publication
+# case, which is the only failure holding facts worth keeping.
+_pr_reviewer_fail() {
+  pr_status_event "$status_file" "$1" failed "$2"
+  _pr_reviewer_result_write "$1" failed "$2" "" \
+    "${3-}" "${4-}" "${5-}" "${6-}" "${7-}" "${8-}"
 }
 
 # What an exit code is allowed to be reported as.
@@ -209,8 +221,7 @@ _pr_reviewer_run_one() {
   if ! pr_build_prompt "$artifact_dir" "$round" "$reviewer" "$fresh_flag" \
        "$criteria_initial" "$criteria_rereview" > "$prompt_file" 2>> "$log" \
      || [[ ! -s "$prompt_file" ]]; then
-    pr_status_event "$status_file" "$reviewer" failed "prompt write failed"
-    _pr_reviewer_result_write "$reviewer" failed "prompt write failed" "" "" "" "" ""
+    _pr_reviewer_fail "$reviewer" "prompt write failed"
     return 0
   fi
 
@@ -223,15 +234,13 @@ _pr_reviewer_run_one() {
     prompt_bytes="$(pr_prompt_bytes "$prompt_file")"
     if (( prompt_bytes >= PR_MAX_ARG_BYTES )); then
       local cap_detail="prompt is $prompt_bytes bytes, over agy's $PR_MAX_ARG_BYTES argv cap"
-      pr_status_event "$status_file" "$reviewer" failed "$cap_detail"
-      _pr_reviewer_result_write "$reviewer" failed "$cap_detail" "" "" "" "" ""
+      _pr_reviewer_fail "$reviewer" "$cap_detail"
       return 0
     fi
   fi
 
   if ! pr_sandbox_refresh "$repo" "$sandbox" >> "$log" 2>&1; then
-    pr_status_event "$status_file" "$reviewer" failed "sandbox refresh failed"
-    _pr_reviewer_result_write "$reviewer" failed "sandbox refresh failed" "" "" "" "" ""
+    _pr_reviewer_fail "$reviewer" "sandbox refresh failed"
     return 0
   fi
 
@@ -246,8 +255,7 @@ _pr_reviewer_run_one() {
   # and never returned. Nothing bounds that read: the kernel's deadline covers
   # the adapter, not this child's own artifact reads.
   if ! printf '\n\n\n' > "$meta_out" 2>> "$log"; then
-    pr_status_event "$status_file" "$reviewer" failed "meta pre-seed failed"
-    _pr_reviewer_result_write "$reviewer" failed "meta pre-seed failed" "" "" "" "" ""
+    _pr_reviewer_fail "$reviewer" "meta pre-seed failed"
     return 0
   fi
 
@@ -301,7 +309,6 @@ _pr_reviewer_run_one() {
   if [[ -e "$review_scratch" ]]; then
     if ! cp "$review_scratch" "$review_out.publish" 2>> "$log" \
        || ! mv "$review_out.publish" "$review_out" 2>> "$log"; then
-      pr_status_event "$status_file" "$reviewer" failed "review publication failed"
       # Every fact the child holds, not just the ruling: `verdict` is empty
       # because nothing was published to parse one from, and `discard` is
       # false because a reviewer whose review could not be written is exactly
@@ -309,8 +316,8 @@ _pr_reviewer_run_one() {
       # lines are carried, so round.json does not claim a timed-out reviewer
       # finished on time and the duplicate-model warning can still see this
       # reviewer's model.
-      _pr_reviewer_result_write "$reviewer" failed "review publication failed" \
-        "" "${meta[0]-}" "${meta[1]-}" "${meta[2]-}" "${meta[3]-}" false \
+      _pr_reviewer_fail "$reviewer" "review publication failed" \
+        "${meta[0]-}" "${meta[1]-}" "${meta[2]-}" "${meta[3]-}" false \
         "$timed_out_json"
       return 0
     fi

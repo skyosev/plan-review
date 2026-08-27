@@ -14,11 +14,12 @@ INIT="$PR_ROOT/bin/plan-review"
 # directory to the real PATH would leave whatever is installed on the machine
 # running the suite visible behind it, and "codex is not installed" would then
 # be a property of the developer's laptop rather than of the test.
-# `ps` is here for the doctor's core-utilities check, which init runs at the
-# end: it became a core utility on 2026-08-26 when the execution kernel's
-# descendant sweep started depending on it (lib/adapter-exec.sh). The doctor
-# derives its own list from $PR_DOCTOR_UTILS; this one is the second, silently
-# disagreeing copy the BACKLOG's "no shared fixture vocabulary" entry names.
+# Deliberately NARROWER than $PR_DOCTOR_UTILS: most cases want the doctor's
+# core-utilities check to fail, so this is the minimum init itself needs, not a
+# copy of the doctor's list. `ps` is on it because the execution kernel's
+# descendant sweep made it a core utility (2026-08-26, lib/adapter-exec.sh). The
+# one case that wants a green doctor widens the PATH with $PR_DOCTOR_UTILS
+# itself rather than restating it.
 PR_INIT_TEST_UTILS="bash env dirname git jq mkdir mv readlink rm tail timeout cat sed ps"
 
 mkpath() {
@@ -407,7 +408,7 @@ test_no_verify_runs_no_doctor() {
 # any other case -- which is itself the measurement.
 test_a_generated_config_leaves_the_doctor_green() {
   local d p out u real; d="$(pr_test_tmpdir)"; p="$(mkpath "$d/bin")"; mkrepo "$d/repo"
-  for u in rsync sha256sum readlink diff wc cut grep awk head flock; do
+  for u in $PR_DOCTOR_UTILS cut grep awk head; do
     real="$(command -v "$u")" && ln -sf "$real" "$p/$u"
   done
   stub_codex "$p" "$d/log"; stub_agy "$p" "$d/log"; stub_claude "$p" "$d/log"; stub_bwrap "$p"

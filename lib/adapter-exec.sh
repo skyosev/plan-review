@@ -90,7 +90,10 @@
 # setsid parent, no longer in the child's group, so a group kill misses the
 # child anyway. timeout(1) does both jobs correctly with no watchdog.
 
-# _pr_ae_descendants <root-pid> <pid-ppid-table> -> space-padded pid list
+# _pr_ae_descendants <root-pid> <pid-ppid-table> -> _pr_ae_desc, space-padded
+#
+# Assigns rather than echoes: this runs on every poll tick of every adapter, and
+# a command substitution to move one string back is a fork per tick.
 #
 # A ppid fixpoint over ONE ps snapshot, bash builtins over an argument table so
 # the parse is testable offline against GNU- and Darwin-shaped fixtures --
@@ -100,6 +103,7 @@
 # missed, structurally, with no pattern matching to confuse.
 _pr_ae_descendants() {
   local p pp set_pids=" $1 " added=1
+  _pr_ae_desc=''
   while (( added )); do
     added=0
     while read -r p pp; do
@@ -108,7 +112,7 @@ _pr_ae_descendants() {
       case "$set_pids" in *" $pp "*) set_pids="$set_pids$p " added=1 ;; esac
     done <<< "$2"
   done
-  printf '%s' "$set_pids"
+  _pr_ae_desc="$set_pids"
 }
 
 pr_adapter_exec() {
@@ -143,14 +147,14 @@ pr_adapter_exec() {
   # the offline suite pays two ticks, while a real reviewer costs one ps per
   # second. Measured 2026-08-26 on this host (137 processes): 9ms for a whole
   # tick body -- ~6ms `ps -eo`, ~4ms for the fixpoint, ~6ms per `ps -o lstart=`
-  # on each newly-seen pid -- plus a subshell fork and the sleep's own fork.
+  # on each newly-seen pid -- plus the sleep's own fork.
   # The fixpoint makes depth+1 full passes over the whole table, so it scales
   # with processes x tree depth: on a 1000-process host with a deep reviewer
   # tree expect 100-250ms of walk per tick. Still inside the 1s tick, but it is
   # not the "~50ms" a first estimate suggested.
   # Nothing here closes a descriptor: the lock fd still rides through.
   local -A _pr_ae_seen=()
-  local _pr_ae_tick=0.05 _pr_ae_table _pr_ae_p _pr_ae_id
+  local _pr_ae_tick=0.05 _pr_ae_table _pr_ae_p _pr_ae_id _pr_ae_desc
   # `kill -0` succeeds on a ZOMBIE, so what ends this loop is bash reaping its
   # own async job in its SIGCHLD handling and only then making the pid
   # unsignallable; `wait` below still returns the status bash stashed. Verified
@@ -169,7 +173,8 @@ pr_adapter_exec() {
   while kill -0 "$_pr_ae_pid" 2> /dev/null; do
     _pr_ae_table="$(ps -eo pid=,ppid= 2> /dev/null)" || _pr_ae_table=""
     if [[ -n "$_pr_ae_table" ]]; then
-      for _pr_ae_p in $(_pr_ae_descendants "$_pr_ae_pid" "$_pr_ae_table"); do
+      _pr_ae_descendants "$_pr_ae_pid" "$_pr_ae_table"
+      for _pr_ae_p in $_pr_ae_desc; do
         [[ "$_pr_ae_p" == "$_pr_ae_pid" ]] && continue
         [[ -n "${_pr_ae_seen[$_pr_ae_p]+x}" ]] && continue
         # A SECOND ps, so identity is NOT sampled atomically with membership:

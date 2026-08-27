@@ -24,14 +24,21 @@ pr_test_tmpdir() {
 # `pr_test_requires setsid || return 0` is the calling shape. SKIP is a
 # counted, printed outcome, not a silent pass: a box without the dependency
 # must say "1 skipped", not "N run, 0 failed" over an unexercised surface.
+# pr_test_skip <reason> -- the SKIP line and the counter, in one place. A box
+# without a dependency must say "1 skipped", not "N run, 0 failed" over an
+# unexercised surface, and tests/test-harness.sh pins that summary shape.
+pr_test_skip() {
+  PR_TESTS_SKIPPED=$((PR_TESTS_SKIPPED + 1))
+  printf '  SKIP %s: %s\n' "$PR_CURRENT_TEST" "$1"
+}
+
 pr_test_requires() {
   if [[ "$1" == /* ]]; then
     [[ -e "$1" ]] && return 0
   else
     command -v "$1" > /dev/null 2>&1 && return 0
   fi
-  PR_TESTS_SKIPPED=$((PR_TESTS_SKIPPED + 1))
-  printf '  SKIP %s: needs %s\n' "$PR_CURRENT_TEST" "$1"
+  pr_test_skip "needs $1"
   return 1
 }
 
