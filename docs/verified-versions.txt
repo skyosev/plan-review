@@ -44,9 +44,12 @@ agent 2026.08.11-e8db854
 # escape was measured on".
 #
 # Also measured 2026-08-17 at this version: `agy --help` documents
-# --print-timeout with a default of 5m0s. adapters/agy.sh does not pass the flag,
-# so agy stops itself well inside PR_TIMEOUT_SECS. `plan-review doctor`
-# reports the default; what the deadline actually bounds is not yet measured.
+# --print-timeout with a default of 5m0s. adapters/agy.sh passes the flag as
+# $((PR_TIMEOUT_SECS * 900))ms -- 90% of the runner's deadline, in milliseconds
+# so the inner deadline stays strictly below the outer one even at
+# PR_TIMEOUT_SECS=1 -- and the doctor asserts the flag still exists in agy's
+# help (lib/doctor.sh). Without it agy would apply its own 5m0s default inside
+# the runner's deadline.
 agy 1.1.13
 
 # Verified 2026-08-17 by spike S2, whose probes are recorded in the process

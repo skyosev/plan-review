@@ -43,9 +43,7 @@ complete_round() {
 make_target() {
   local root="$1"
   mkdir -p "$root/docs"
-  git -C "$root" init -q
-  git -C "$root" config user.email t@example.com
-  git -C "$root" config user.name Test
+  pr_test_git_init_identity "$root"
   printf '# Plan\n\nDo the thing.\n' > "$root/docs/plan.md"
   git -C "$root" add -A
   git -C "$root" commit -qm init

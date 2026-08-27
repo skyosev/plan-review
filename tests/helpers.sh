@@ -99,6 +99,18 @@ pr_test_mkstub() {
   chmod +x "$path"
 }
 
+# pr_test_git_init_identity <dir> -- git init plus a fixed identity, nothing
+# else: content, plans, commits and remotes stay with each suite, because the
+# callers share no contract past this point. On repos that never commit the
+# identity is inert. tests/test-bootstrap.sh keeps its own inline equivalents:
+# its cases run under constructed PATHs and (optionally) bash 3.2, where this
+# file is unavailable.
+pr_test_git_init_identity() {
+  git -C "$1" init -q
+  git -C "$1" config user.email t@example.com
+  git -C "$1" config user.name Test
+}
+
 # assert_pid_gone <pid> <msg>
 # Several tests across the runner, kernel and doctor suites assert that a
 # process-group sweep disposed of a grandchild, so the shape is written once. The grace second is not decoration:

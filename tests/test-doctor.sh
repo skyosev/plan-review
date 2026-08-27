@@ -481,9 +481,7 @@ done < '$PR_ROOT/docs/verified-versions.txt'")"
 mkrepo() {
   local repo="$1"
   mkdir -p "$repo"
-  git -C "$repo" init -q 2>/dev/null
-  git -C "$repo" config user.email t@example.com
-  git -C "$repo" config user.name Test
+  pr_test_git_init_identity "$repo"
   printf '# plan\n' > "$repo/plan.md"
 }
 
@@ -878,7 +876,7 @@ DOCTOR="$PR_ROOT/bin/plan-review"
 mkrepo_with_config() {  # mkrepo_with_config <dir> <config-json>
   local d="$1"
   mkdir -p "$d"
-  git -C "$d" init -q
+  pr_test_git_init_identity "$d"
   printf '%s\n' "$2" > "$d/config.json"
   mkdir -p "$d/.plan-review"
   mv "$d/config.json" "$d/.plan-review/config.json"

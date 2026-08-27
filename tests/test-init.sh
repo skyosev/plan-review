@@ -69,9 +69,7 @@ stub_bwrap() { pr_test_mkstub "$1/bwrap" 'exit 0'; }
 mkrepo() {
   local d="$1"
   mkdir -p "$d"
-  git -C "$d" init -q
-  git -C "$d" config user.email t@example.com
-  git -C "$d" config user.name Test
+  pr_test_git_init_identity "$d"
 }
 
 # run <path-dir> <repo> [args...] -- stdout+stderr, then a trailing `rc=<n>`.
