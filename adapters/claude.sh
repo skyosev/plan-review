@@ -116,7 +116,24 @@ args=(
 stream="${TMPDIR:-/tmp}/pr-claude-stream.$$"
 trap 'rm -f "$stream"' EXIT
 
-"${jail[@]}" "${env_clean[@]}" "${args[@]}" > "$stream" 2>>"${review_out}.log"
+# stderr is NOT redirected: it is inherited, so it lands on this adapter's own
+# stderr, which the execution kernel points at <round>/log-claude.txt
+# (lib/adapter-exec.sh runs every adapter as `>> "$log" 2>&1`). This is the only
+# durable record of WHY a claude round failed -- bwrap refusing to start, an
+# authentication failure -- and until now it went to `"${review_out}.log"`, which
+# on the round path is <round>/.review-claude.scratch.log, a dotfile nothing
+# names. The tripwire below tells the operator the envelope moved; this is what
+# tells them what actually happened. Same shape as codex.sh's `cat "$err" >&2`,
+# which is why log-codex.txt has always been the useful one.
+#
+# What must stay separated is stderr from STDOUT, not stderr from this script's
+# stderr: stdout is the stream-json that jq parses below. `> "$stream" 2>&1`
+# would interleave non-JSON error text into it, jq stops at the first parse
+# error, the init line then reads as absent, and every such run would exit 1
+# claiming "the envelope has changed" -- misdiagnosing the very failure this
+# stderr exists to explain. Verified 2026-08-27. Deleting the redirect is the
+# fix; duplicating fd 2 onto fd 1 is its opposite.
+"${jail[@]}" "${env_clean[@]}" "${args[@]}" > "$stream"
 rc=$?
 
 # The init line is this adapter's version tripwire, the way the banner is

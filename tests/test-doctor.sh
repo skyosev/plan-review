@@ -738,6 +738,21 @@ test_an_absent_claude_is_a_failure_like_any_other_reviewer() {
   assert_contains "$out" "claude not on PATH" "names the CLI"
   assert_contains "$out" "self-updates with \`claude update\`" "and how to get it"
   assert_contains "$out" "counts 0 0 1" "a failure, not context"
+  # The commonest claude failure is not a missing install, it is an install the
+  # non-interactive shell cannot see. The hint is on the FAIL line itself, so it
+  # survives a reader who stops at the first red line.
+  assert_contains "$out" "~/.local/bin/claude" "and where the native installer put it"
+  assert_contains "$out" "~/.claude/local/claude" "with the legacy location as a clause"
+}
+
+# Only claude. Every other CLI has one obvious install and no PATH folklore, so
+# the hint would be noise on three lines out of four.
+test_the_path_hint_is_claude_only() {
+  local d; d="$(pr_test_tmpdir)"
+  mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_cli codex')"
+  assert_contains "$out" "codex not on PATH" "the plain failure still reads plainly"
+  assert_not_contains "$out" ".local/bin" "and carries no claude-specific hint"
 }
 
 test_claude_auth_fails_when_the_cli_is_absent() {

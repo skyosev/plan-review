@@ -23,7 +23,17 @@ Every adapter — real or fake — is invoked identically:
   can exceed.
 - **stdout / stderr** — diagnostics only, captured to a log. The review must never
   arrive on stdout.
-- **`<review_out>`** — the Markdown review, written by the adapter.
+- **`<review_out>`** — the Markdown review, written by the adapter. Write the review
+  to exactly the path you are given and to no other: the round hands adapters a
+  scratch path and publishes a copy of it under its own name once the adapter has
+  gone, so a survivor still writing cannot change the artifact the round recorded.
+  Diagnostics do not belong on a derived path at all: write them to **stderr**,
+  which the round captures to `log-<reviewer>.txt`. No shipped adapter derives a
+  path from `<review_out>` — `claude` and `agent` each wrote a `<review_out>.log`
+  until 2026-08-27, which on the round path became a hidden dotfile beside the
+  scratch review that nothing named and nothing cleaned up. If you derive one
+  anyway, it is yours to clean up: the round sweeps only the scratch names it
+  composes itself (`pr_reviewer_scratch_rm`, `lib/reviewer-runner.sh`).
 - **`<meta_out>`** — exactly four lines, any of which may be empty:
 
       line 1   session handle to resume next round ('' if the CLI reports none)
@@ -69,6 +79,15 @@ Every adapter — real or fake — is invoked identically:
   *inside* `<workdir>`. Adapters must not override it. It has to be inside the
   workdir because codex removes `$TMPDIR` from its writable roots
   (`exclude_tmpdir_env_var`), so a path outside would not be writable.
+- **`PR_TIMEOUT_SECS`** — the deadline `timeout(1)` is enforcing on *this* call, a
+  positive whole number of seconds. An adapter that derives an inner deadline
+  (`adapters/agy.sh` passes 90% of it as `--print-timeout`) reads it from here, so
+  the inner deadline is guaranteed to sit strictly inside the outer one. Both this
+  and `TMPDIR` are exported by the execution kernel (`lib/adapter-exec.sh`) from
+  the values it was handed as positionals — one fact, one channel, with no way for
+  a caller to set a second, disagreeing copy. An adapter run by hand must therefore
+  set it itself, and refuse a non-positive-integer value the way `adapters/agy.sh`
+  does.
 - **stdin is the contract even when the CLI cannot honour it.** `agy` reads no
   prompt from stdin — its `-p/--print` is a string flag whose value *is* the
   prompt — so `adapters/agy.sh` consumes stdin and re-passes it as an argv entry.
@@ -99,5 +118,7 @@ Every adapter — real or fake — is invoked identically:
   `~/.claude/settings.json` — which defines hooks that run in *their*
   interactive sessions — outside the reviewer's reach.
 - **process group** — the runner invokes adapters under `timeout(1)`, which places
-  each adapter in its own process group and signals the whole group. Adapters do
-  not need to reap their own children.
+  each adapter in its own process group and signals the whole group. A descendant
+  that leaves that group by taking one of its own is swept separately and
+  best-effort, from a `ps` walk sampled while the adapter ran. Adapters do not need
+  to reap their own children.

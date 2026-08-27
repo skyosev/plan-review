@@ -145,8 +145,12 @@ mkdir -p "$artifact_dir"
 # about the work, written once; the lock is a fact about right now, and it is
 # held by every process the runner spawned, so it stays held while an orphan is
 # still writing into the round.
-# Busy and broken both exit 2 here, matching every other pre-start refusal in
-# this file; they stay distinguishable by what pr_lock_hold printed.
+# Busy and broken both exit 2 here, matching the other pre-start refusals in
+# this file; they stay distinguishable by what pr_lock_hold printed. 2 is this
+# file's only failure status and so does not identify the failure -- the
+# store-loss aborts further down mean the opposite thing (a round exists, is
+# half-written, and the next must be --fresh) and exit 2 as well. Nothing
+# branches on the status; docs and humans disambiguate by message text.
 pr_lock_hold "$artifact_dir" "a review of $plan_rel is already running." || exit 2
 
 # Round numbering is monotonic and never reused, including after --fresh.
@@ -260,9 +264,23 @@ pr_reviewer_run_all "$adapter_map" || exit 2
 # parent, after all reviewers have finished. Nothing below races.
 ok_count=0
 for reviewer in $reviewer_keys; do
+  # Unit A's parent half: a reviewer whose record is missing or unparseable
+  # gets a synthesized failed entry -- handle forfeited below like any failure,
+  # round.json complete. rc 2 means the store itself refused the synthesized
+  # write: abort hard rather than promise a coherent artifact we cannot write.
+  pr_reviewer_result_ensure "$reviewer"; ensure_rc=$?
+  if (( ensure_rc == 2 )); then
+    echo "cannot write a result record under $round_dir; aborting" >&2
+    exit 2
+  fi
   # round.json is written straight from the child's record, so no field list is
   # restated here. Only the values the parent actually branches on are read.
-  pr_round_record_reviewer "$round_dir" "$reviewer" "$round_dir/.result-$reviewer"
+  # Fails on an unparseable round.json too, not only on a refused write -- see
+  # the session-map comment below, which states the same caveat at length.
+  pr_round_record_reviewer "$round_dir" "$reviewer" "$(pr_reviewer_result_path "$reviewer")" || {
+    echo "cannot write round.json under $round_dir; aborting" >&2
+    exit 2
+  }
   pr_reviewer_result_read "$reviewer" status session discard timed_out_flag
   if [[ "$discard" == true ]]; then
     # Housekeeping, never a verdict on the round: a round that produced three
@@ -282,16 +300,39 @@ for reviewer in $reviewer_keys; do
   # recorded ok -- output is what we judge on -- but its vendor-side session
   # state was written by a process the sweep killed mid-run, which is precisely
   # what R1 exists to prevent. Hence timed_out is tested, not just status.
+  #
+  # Both halves abort rather than split the contract in two: a `set` that
+  # failed just loses a resume, but a `del` that failed leaves a forfeited
+  # handle in place for the next round to resume -- the exact poisoned resume
+  # R1 exists to prevent.
+  #
+  # What no exit here does is clear the map on the way out, and that is a
+  # known, documented hole rather than an oversight: an `exit 2` from any
+  # in-loop guard leaves reviewers this loop had not reached yet holding their
+  # round N-1 handles, because the R1 rule above never ran for them. (The
+  # pre-existing `pr_reviewer_run_all || exit 2` above skips the loop
+  # entirely, so it is the same hole, wider.) `pr_session_clear` here would
+  # fail for exactly the reason the guard fired -- the store is gone -- so it
+  # would trade a known hole for an unreliable guard. The next round after an
+  # `aborting` exit must therefore be `--fresh`; README.md ("When a round does
+  # not finish") and skills/plan-review/SKILL.md say so to the operator, who
+  # is the only one in a position to act on it.
+  #
+  # The message names the likeliest cause, not a diagnosis. pr_session_set and
+  # pr_session_del both read the map through jq, so they fail on a map an
+  # earlier crash left UNPARSEABLE just as they do on a refused write: a round
+  # three reviewers finished can abort saying "cannot write" of a file it can
+  # write but not parse. Recoverable by hand and the safe direction either
+  # way, so it is stated here rather than branched on.
   if [[ "$timed_out_flag" != true && "$status" == ok ]]; then
     pr_session_set "$session_map" "$reviewer" "$session"
   else
     pr_session_del "$session_map" "$reviewer"
-  fi
+  fi || { echo "cannot write the session map at $session_map; aborting" >&2; exit 2; }
   # Counted separately from the handle rule above: a timed-out-but-usable review
   # still counts toward the round, as it always has.
   [[ "$status" == ok ]] && ok_count=$((ok_count + 1))
-  rm -f "$round_dir/.result-$reviewer" "$round_dir/.meta-$reviewer" \
-        "$round_dir/.reason-$reviewer" "$round_dir/.prompt-$reviewer.txt"
+  pr_reviewer_scratch_rm "$reviewer"
 done
 
 # One warning, after the round, and only one the artifact can prove: two
@@ -305,12 +346,22 @@ while IFS= read -r dup; do
 done < <(pr_round_duplicate_model_warnings "$round_dir")
 
 if [[ "$ok_count" -eq 0 ]]; then
-  pr_round_set_state "$round_dir" aborted
+  # Reported, not escalated: this path already exits non-zero with its own
+  # message, and a state write that failed cannot make the news worse. The
+  # success path below is the one where an unrecorded state would be a lie.
+  pr_round_set_state "$round_dir" aborted \
+    || echo "warning: could not record the aborted state in $round_dir/round.json" >&2
   echo "All reviewers failed. Round $round preserved at $round_dir" >&2
   pr_status_render "$status_file" >&2
   exit 1
 fi
 
-pr_round_set_state "$round_dir" awaiting_integration
+# The success claim is gated on the write that backs it: printing "complete"
+# over a round.json that still says `reviewing` would tell the Integrator to
+# read an artifact the store never accepted.
+pr_round_set_state "$round_dir" awaiting_integration || {
+  echo "cannot record awaiting_integration in $round_dir/round.json; aborting" >&2
+  exit 2
+}
 echo "Round $round complete: $round_dir"
 pr_status_render "$status_file"

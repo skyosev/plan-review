@@ -25,6 +25,19 @@ test_round_one_prompt_contains_plan_and_verdict_instruction() {
   assert_contains "$out" "VERDICT:" "verdict sentinel required"
   assert_contains "$out" "FILES-INSPECTED:" "file list required"
   assert_contains "$out" "NO_MATERIAL_OBJECTIONS" "valid values listed"
+  assert_contains "$out" "not addressed to you" "the reviewer is told it is not the Integrator"
+  # Named commands, not a category. This repository's own plans are reviewed
+  # through this prompt and they make claims about commands that orchestrate, so
+  # "run a command to check a claim" was too broad: `doctor --smoke` spawns every
+  # adapter and spends real tokens. The permitted and forbidden sides are both
+  # enumerated, and both spellings are pinned here so neither can quietly widen.
+  # `plan-review --help`, not `doctor --show-config`: the latter was in the
+  # permitted list until it was found not to run (exits 2 without --repo, and
+  # lib/sandbox.sh keeps .plan-review/ out of the reviewer's tree anyway). The
+  # permitted side must name a command that actually works.
+  assert_contains "$out" "plan-review --help" "read-only investigation is named as allowed"
+  assert_contains "$out" "doctor --smoke" "and the one costly doctor flag is named as forbidden"
+  assert_contains "$out" "spends real tokens" "with the reason its name does not give away"
 }
 
 test_round_one_prompt_has_no_prior_round_sections() {

@@ -9,6 +9,11 @@ Runs a plan past independent reviewer CLIs, then integrates their feedback criti
 You are the **Integrator**: you decide what is true and what gets accepted. The
 reviewers are inputs, not authorities.
 
+**If you are a reviewer, stop here.** This skill is installed globally into the same
+harnesses the reviewers run in, so it is visible from inside a review. A reviewer's
+instructions arrive on stdin and say so; if that is what you were given, ignore this
+file and write the review. It is addressed only to the Integrator.
+
 **Announce at start:** "Using the plan-review skill. Starting round N."
 
 ## Before the first round
@@ -227,7 +232,29 @@ meant.
 
   It deletes nothing; the round stays readable. If `abort` refuses because the session is
   locked, reviewers spawned by the dead runner are still writing — report that and wait
-  rather than forcing anything.
+  rather than forcing anything. If instead it fails with a raw write error naming a
+  `.tmp` file, the artifact store is unwritable and this is the store-loss case two
+  bullets down — `abort` cannot succeed until that is fixed, so do not loop on it.
+- The runner exits 2 with a message ending in `aborting` that names something it could
+  not write (`round.json`, a result record, the session map): the artifact store itself
+  is gone — a full disk or an unwritable `.plan-review/` — not a reviewer problem. The
+  round stopped mid-way and its artifacts are incomplete by definition, so do not read
+  verdicts out of them and do not retry until the user has fixed the disk or the
+  permissions. Report the message verbatim. The round directory stays, but it stays in
+  state `reviewing`: `abort` writes `round.json` through the same directory that just
+  refused a write, so running it now fails too, with exit 2 and a raw write error naming
+  a `.round.json.<pid>.tmp` file — `Permission denied` when the directory is unwritable,
+  `No space left on device` when the disk is full. Match on the `.tmp` filename, not on
+  either message. Do not run it until the store is writable again — which is also
+  the only point at which it is worth running. When
+  the user is ready to run again, the next round **must** be `--fresh`: the serial pass
+  stopped part-way, so reviewers it never reached still hold last round's resume handles,
+  including ones this round would have thrown away.
+- A reviewer's `detail` reads `reviewer result record missing` or `record invalid`: that
+  reviewer's job died without leaving a readable record, and the runner synthesized a
+  failed entry so `round.json` still lists it. Treat it as a failed reviewer — there is
+  no review to integrate — and mention it, because it means something killed the job
+  rather than the reviewer declining.
 - The runner exits 2 naming a key in `config.json`: the project config is invalid and no
   round was started. Show the user the message — it names the offending key — and fix the
   config or ask them to. Do not route around it with `PR_SKIP_CONFIG=1`.

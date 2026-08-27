@@ -156,9 +156,19 @@ pr_doctor_check_bash() {
 # `flock` is the session lock (lib/lock.sh). Not coreutils: util-linux on Linux,
 # and on macOS the separate discoteq `flock` formula, which is a different
 # program with the same name -- see the macOS note in docs/process/BACKLOG.md.
+# `ps` is the execution kernel's descendant sweep (lib/adapter-exec.sh): the
+# poller reads `ps -eo pid=,ppid=` every tick and `ps -o lstart= -p` per new
+# descendant. Load-bearing on the round path since 2026-08-26 -- without it the
+# kernel degrades to the group-only sweep, which P6 measured reaching the
+# spawned command of no shipped reviewer, so a round leaks the survivor AND
+# keeps the session lock. This is a PRESENCE check and presence is not
+# sufficiency: busybox `ps` exists and rejects `-eo`, which produces the same
+# silent degrade with the doctor still reporting the set present. Sufficiency
+# belongs to Tier E (`doctor --smoke`), which runs an adapter for real; this
+# tier stays a `command -v` over a stub PATH by design.
 # This list does NOT reach a round: pr_doctor_preflight never calls
 # pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
-PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock"
+PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps"
 
 pr_doctor_check_utils() {
   local u missing=()
@@ -170,7 +180,7 @@ pr_doctor_check_utils() {
     return 0
   fi
   pr_d_fail "missing core utilities: ${missing[*]}"
-  pr_d_info "Debian/Ubuntu: sudo apt install jq rsync git coreutils diffutils util-linux"
+  pr_d_info "Debian/Ubuntu: sudo apt install jq rsync git coreutils diffutils util-linux procps"
   pr_d_info "macOS: brew install jq rsync coreutils flock, then put the GNU names first:"
   pr_d_info "  PATH=\"\$(brew --prefix)/opt/coreutils/libexec/gnubin:\$PATH\""
   pr_d_info "without that PATH line coreutils installs as greadlink and gtimeout, and this"
@@ -200,7 +210,22 @@ pr_doctor_check_cli() {
     pr_d_pass "$cli on PATH ($(command -v "$cli"))"
     return 0
   fi
-  pr_d_fail "$cli not on PATH"
+  # claude alone gets a location hint, because claude alone is routinely
+  # INSTALLED and still absent here. Measured on this machine, 2026-08-26: the
+  # native installer puts the binary at ~/.local/bin/claude, a symlink into
+  # ~/.local/share/claude/versions/<version> -- and that directory is on an
+  # interactive PATH via a shell rc file, which a non-interactive shell never
+  # reads. ~/.claude/local/claude, what the old npm `migrate-installer` left
+  # behind (alias-only, so invisible to any non-interactive shell), does NOT
+  # exist on this machine -- so that half is documented rather than observed,
+  # which is why the hint says "documented at" and README.md says the same. It is
+  # worth one clause, not the headline.
+  # A string branch rather than a lookup table: this file is builtins-only, and
+  # one exception does not earn a table.
+  local hint=""
+  [[ "$cli" == claude ]] && \
+    hint=" (usually ~/.local/bin/claude with that directory missing from PATH; legacy installs are documented at ~/.claude/local/claude)"
+  pr_d_fail "$cli not on PATH$hint"
   pr_d_info "$(pr_doctor_cli_note "$cli"), or drop that reviewer from the roster"
   pr_d_info "by setting PR_ADAPTER_MAP to the pairs you do want."
   return 1
@@ -937,20 +962,31 @@ _pr_doctor_smoke_one() {
     return 1
   fi
 
-  # PR_TIMEOUT_SECS is the SMOKE deadline for this call: adapters/agy.sh
-  # derives its inner --print-timeout from it, and the round's 900s default
-  # would put the inner deadline far outside the outer one. TMPDIR per the
-  # adapter contract: a private directory inside the workdir. Both travel as
-  # the kernel's trailing env words. PR_KILL_GRACE_SECS the kernel reads
-  # itself, with the same default this file used to pass.
+  # PR_TIMEOUT_SECS no longer travels as an env word: the kernel exports the
+  # deadline it is handed, and that is exactly $secs -- the SMOKE deadline, not
+  # the round's 900s default, which would put agy's derived inner
+  # --print-timeout far outside the outer one. TMPDIR is the ninth positional,
+  # per the adapter contract a private directory inside the workdir. One value
+  # each, one channel each, so the two cannot drift apart here.
+  # PR_KILL_GRACE_SECS the kernel reads itself, with the same default this file
+  # used to pass.
   local rc=0 timed_out=0
   pr_adapter_exec "$adapter" "$workdir" "" "$review" "$meta" "$reason" \
-    "$log" "$secs" rc timed_out \
-    PR_TIMEOUT_SECS="$secs" TMPDIR="$tmp" \
+    "$log" "$secs" "$tmp" rc timed_out \
     <<< "$PR_DOCTOR_SMOKE_PROMPT"
 
   # Judge on output, not the exit code alone -- the round's rule: Cursor exits
   # 2 on a denied tool call while still producing a correct review (D7).
+  #
+  # $review is read in place: the smoke deliberately does NOT publish it the
+  # way lib/reviewer-runner.sh does. Publication exists so the round's record
+  # and its artifact describe the same bytes; the smoke keeps no record and
+  # judges only alive/dead, and the file is a diagnostic that is deleted three
+  # lines below on success. A survivor appending to it after the sweep could
+  # at worst turn a dead reviewer into a live-looking one -- which is the
+  # reviewer being alive, in the only sense this tier claims to measure. So
+  # CLAUDE.md's and README.md's "publication is what makes the review artifact
+  # final" is a statement about the ROUND, not about this.
   if [[ -s "$review" ]]; then
     pr_d_pass "smoke: $reviewer answered end to end"
     # A smoke session has no next round to carry state into, so the whole

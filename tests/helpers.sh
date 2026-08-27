@@ -4,6 +4,7 @@
 
 PR_TESTS_RUN=0
 PR_TESTS_FAILED=0
+PR_TESTS_SKIPPED=0
 PR_CURRENT_TEST=""
 PR_TEST_TMPROOT=""
 
@@ -15,6 +16,30 @@ pr_test_tmpdir() {
   local d="$PR_TEST_TMPROOT/$PR_CURRENT_TEST"
   mkdir -p "$d"
   printf '%s' "$d"
+}
+
+# pr_test_requires <cmd-or-/path> -- skip the current test unless the command
+# is on PATH (or, for an argument starting with /, the path exists -- the
+# write-integrity tests gate on /dev/full, a device, not a command).
+# `pr_test_requires setsid || return 0` is the calling shape. SKIP is a
+# counted, printed outcome, not a silent pass: a box without the dependency
+# must say "1 skipped", not "N run, 0 failed" over an unexercised surface.
+# pr_test_skip <reason> -- the SKIP line and the counter, in one place. A box
+# without a dependency must say "1 skipped", not "N run, 0 failed" over an
+# unexercised surface, and tests/test-harness.sh pins that summary shape.
+pr_test_skip() {
+  PR_TESTS_SKIPPED=$((PR_TESTS_SKIPPED + 1))
+  printf '  SKIP %s: %s\n' "$PR_CURRENT_TEST" "$1"
+}
+
+pr_test_requires() {
+  if [[ "$1" == /* ]]; then
+    [[ -e "$1" ]] && return 0
+  else
+    command -v "$1" > /dev/null 2>&1 && return 0
+  fi
+  pr_test_skip "needs $1"
+  return 1
 }
 
 pr_fail() {
@@ -146,8 +171,8 @@ pr_run_tests() {
     PR_TESTS_RUN=$((PR_TESTS_RUN + 1))
     "$fn"
   done
-  printf '%s: %d run, %d failed\n' "$(basename "${BASH_SOURCE[1]}")" \
-    "$PR_TESTS_RUN" "$PR_TESTS_FAILED"
+  printf '%s: %d run, %d failed, %d skipped\n' "$(basename "${BASH_SOURCE[1]}")" \
+    "$PR_TESTS_RUN" "$PR_TESTS_FAILED" "$PR_TESTS_SKIPPED"
   # rm -rf cannot descend a mode-555 directory, and rsync -a reproduces exactly
   # those from a target repo (vendored deps do this — see test-sandbox.sh's
   # read-only case). Without the chmod the suite passes but litters TMPDIR.

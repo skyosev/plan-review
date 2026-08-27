@@ -136,6 +136,33 @@ test_the_printed_removal_line_removes_the_checkout_and_nothing_else() {
   assert_file_missing "$d/pwned" "and did not run the substitution in its name"
 }
 
+# --bin-dir is passed through to `plan-review install`, which owns the link. The
+# three things worth asserting are the three that can break independently: the
+# flag reaches install at all, the link it wrote resolves into THIS checkout
+# (rather than some older plan-review on the machine), and the epilogue's
+# removal line names the same directory -- that last one is not free, because
+# the epilogue re-derives the path from $bin_dir with its own default rather
+# than reusing what install was given.
+#
+# The removal assertion is scoped to the `rm` LINE, not to the whole output, and
+# that is load-bearing. $d/altbin appears three times in a successful run --
+# install's own `linked ...`, its not-on-PATH note, and the epilogue -- so a
+# whole-output `assert_contains` is satisfied by the first of them and says
+# nothing about the epilogue at all. Measured: with the epilogue's
+# `${bin_dir:-$HOME/.local/bin}` mutated to a bare `$HOME/.local/bin`, the
+# unscoped form stayed green and this one goes red. Same technique, same reason,
+# as test_the_printed_removal_line_removes_the_checkout_and_nothing_else below.
+test_bin_dir_flag_places_the_link_where_told() {
+  local d out; d="$(mk_case)"
+  out="$(run_bootstrap "$d" "$d/src" --bin-dir "$d/altbin")"
+  assert_file_exists "$d/altbin/plan-review" "the link landed in --bin-dir"
+  assert_eq "$(readlink -f "$d/altbin/plan-review")" \
+    "$(readlink -f "$(checkout_of "$d")/bin/plan-review")" \
+    "and it resolves into the checkout"
+  assert_contains "$(printf '%s\n' "$out" | grep '^ *rm ')" "$d/altbin" \
+    "the epilogue's removal line names it"
+}
+
 test_help_exits_zero_and_touches_nothing() {
   local d out rc; d="$(mk_case)"
   out="$(run_bootstrap "$d" "$d/src" --help)"; rc=$?
@@ -229,6 +256,39 @@ test_ref_switches_the_checkout_between_runs() {
   assert_eq "$head" "experiment" "the checkout moved to the named ref"
 }
 
+# The two halves of the split die on the upgrade path. They used to share one
+# message -- "no such ref after fetching" -- which sent someone hunting for a ref
+# that was sitting right there whenever the checkout itself was what failed.
+#
+# Only the SECOND of the two is a guard. This first one is characterisation: it
+# passes with the split fully reverted, because the old conflated die printed
+# this same message for a missing ref too. Measured, not assumed. It is kept
+# because it pins the message a missing ref gets, which is half of what the
+# split is for -- but it is not what would catch the split being undone.
+test_a_ref_that_does_not_exist_is_named_as_missing() {
+  local d out rc; d="$(mk_case)"
+  run_bootstrap "$d" "$d/src" > /dev/null 2>&1
+  out="$(run_bootstrap "$d" "$d/src" --ref no-such-branch)"; rc=$?
+  assert_exit_code "$rc" 1 "a missing ref is fatal"
+  assert_contains "$out" "no such ref after fetching: no-such-branch" "and is named as missing"
+}
+
+# An index.lock is what a concurrent git leaves -- including a second copy of
+# this installer running right now, which is the case the message is written for.
+# THIS is the guard: revert the split and this case goes red while the one above
+# stays green.
+test_a_checkout_that_cannot_run_is_not_reported_as_a_missing_ref() {
+  local d out rc; d="$(mk_case)"
+  git -C "$d/src" branch experiment > /dev/null 2>&1
+  run_bootstrap "$d" "$d/src" > /dev/null 2>&1
+  : > "$(checkout_of "$d")/.git/index.lock"
+  out="$(run_bootstrap "$d" "$d/src" --ref experiment)"; rc=$?
+  assert_exit_code "$rc" 1 "the failed checkout is fatal"
+  assert_contains "$out" "git checkout experiment failed" "and is named for what it was"
+  assert_contains "$out" "index lock" "with the cause that explains it"
+  assert_not_contains "$out" "no such ref" "and never as a missing ref"
+}
+
 test_a_dirty_checkout_is_refused() {
   local d out rc; d="$(mk_case)"
   run_bootstrap "$d" "$d/src" > /dev/null 2>&1
@@ -298,15 +358,9 @@ ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Ant
 # npx at all, so without it there is no add to make an assertion about. npx
 # implies node in production, but the suite must not fail on a machine that has
 # neither.
-need_node() {
-  command -v node > /dev/null 2>&1 && return 0
-  printf '  SKIP %s: node is not installed\n' "$PR_CURRENT_TEST"
-  return 1
-}
-
 test_one_add_covers_every_detected_harness() {
   local d log checkout; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   stub_npx "$d/stub" "$ALL_LINKED"
   run_bootstrap "$d" "$d/src" > /dev/null 2>&1
   log="$(cat "$d/npx.log")"
@@ -321,7 +375,7 @@ test_one_add_covers_every_detected_harness() {
 
 test_cursor_is_skipped_when_the_identity_probe_returns_no_version() {
   local d out log; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   # Exit 0, valid JSON, empty field: the case that an exit-status-only probe
   # passes and lib/doctor.sh:408's non-empty .cliVersion test catches.
   pr_test_mkstub "$d/stub/agent" 'printf "{\"cliVersion\":\"\"}\n"; exit 0'
@@ -338,7 +392,7 @@ test_cursor_is_skipped_when_the_identity_probe_returns_no_version() {
 # searched for. A substring hunt -- the first draft -- passes both of these.
 test_a_non_cursor_agent_does_not_pass_the_identity_probe() {
   local d log; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   pr_test_mkstub "$d/stub/agent" \
     'printf "agent: unknown flag --format (try: agent --cliVersion \"1.2\")\n"; exit 0'
   stub_npx "$d/stub" "$ALL_LINKED"
@@ -350,7 +404,7 @@ test_a_non_cursor_agent_does_not_pass_the_identity_probe() {
 
 test_a_missing_display_name_is_not_a_pass() {
   local d out rc; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   # The false positive the previous design could not see: linked into Claude Code
   # alone, while a per-harness `ls -a codex` query would still answer non-empty.
   stub_npx "$d/stub" '[{"name":"plan-review","agents":["Claude Code"]}]'
@@ -363,7 +417,7 @@ test_a_missing_display_name_is_not_a_pass() {
 
 test_unparseable_json_warns_rather_than_passing() {
   local d out rc; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   stub_npx "$d/stub" 'this is not json'
   out="$(run_bootstrap "$d" "$d/src")"; rc=$?
   assert_exit_code "$rc" 0 "unreadable output is not a failed install"
@@ -384,7 +438,7 @@ test_no_skill_takes_npm_out_of_the_install_path() {
 
 test_the_removal_line_appears_only_when_a_skill_was_installed() {
   local d out; d="$(mk_case)"
-  need_node || return 0
+  pr_test_requires node || return 0
   stub_npx "$d/stub" "$ALL_LINKED"
   out="$(run_bootstrap "$d" "$d/src")"
   assert_contains "$out" "npx skills remove -g plan-review" "printed after a real install"
@@ -411,6 +465,46 @@ test_a_missing_npx_warns_and_the_install_still_succeeds() {
   assert_contains "$out" "npx skills add" "with the command to run later"
   assert_contains "$out" "verified: plan-review" "the runner was still installed"
   assert_not_contains "$out" "skills remove" "and no removal line for a skill never installed"
+}
+
+# The bash-5 refusal is the one thing in this file no stub can reach:
+# BASH_VERSINFO belongs to the running shell, so the only way to exercise it is
+# to run the script under a real 3.2. Hence a container -- and hence a case that
+# is opt-in.
+#
+# Opt-in: pulls a container image, so it must never run inside `make test`'s
+# offline, seconds-long promise. PR_TEST_BASH32=1 is the operator saying "spend
+# the time"; docker is then a skip, not a failure.
+test_bash32_host_refusal_is_the_one_install_sh_promises() {
+  if [ "${PR_TEST_BASH32:-0}" != 1 ]; then
+    pr_test_skip "set PR_TEST_BASH32=1"
+    return 0
+  fi
+  pr_test_requires docker || return 0
+  # The binary is not the service. `docker` on PATH with no daemon behind it --
+  # a rootless setup that is not started, Docker Desktop not running -- fails
+  # `docker run` with a connection error, which would read as this case failing
+  # rather than as this machine not being able to run it. `docker info` is the
+  # cheapest question that distinguishes the two.
+  if ! docker info > /dev/null 2>&1; then
+    pr_test_skip "docker is on PATH but its daemon is not reachable"
+    return 0
+  fi
+  # A stub git, because main checks for git BEFORE preflight_host and the
+  # bash:3.2 image (measured 2026-08-26: bash 3.2.57, busybox readlink -f
+  # resolves, no git) would otherwise be refused for the wrong reason. Nothing
+  # ever runs it -- preflight_host dies two lines later -- it exists only so
+  # `command -v git` finds something. The mount stays read-only, so the stub is
+  # written into the container's own /tmp.
+  local out rc=0
+  out="$(docker run --rm -v "$PR_ROOT:/w:ro" bash:3.2 bash -c '
+    mkdir -p /tmp/stub
+    printf "#!/bin/sh\nexit 0\n" > /tmp/stub/git
+    chmod +x /tmp/stub/git
+    PATH=/tmp/stub:$PATH exec bash /w/scripts/install.sh' 2>&1)" || rc=$?
+  assert_exit_code "$rc" 1 "a 3.2 host is refused, not half-installed"
+  assert_contains "$out" "too old; plan-review needs 5" \
+    "and the refusal is the bash-version one, printed by 3.2 itself"
 }
 
 pr_run_tests

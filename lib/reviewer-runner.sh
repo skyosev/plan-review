@@ -10,7 +10,7 @@
 # calls -- pr_sandbox_dir/repo/tmp (lib/paths.sh), pr_sandbox_refresh
 # (lib/sandbox.sh), pr_status_event (lib/status.sh), pr_build_prompt and
 # pr_prompt_bytes (lib/prompt.sh), pr_session_get (lib/session.sh),
-# pr_parse_verdict and pr_parse_files_inspected (lib/verdict.sh),
+# pr_parse_verdict, pr_parse_files_inspected and PR_VERDICTS (lib/verdict.sh),
 # pr_adapter_exec (lib/adapter-exec.sh) -- and the variable contract below.
 #
 # THE VARIABLE CONTRACT. Beyond its arguments, this module reads a fixed set
@@ -23,6 +23,13 @@
 # before the first spawn, where a refusal is loud and synchronous, and this
 # module declares no locals named like contract variables, so its own frames
 # cannot shadow them.
+#
+# That validation covers the FAN-OUT, which is the part that runs in the
+# background. The record accessors below (pr_reviewer_result_path,
+# pr_reviewer_result_read, pr_reviewer_result_ensure) are public too and
+# validate nothing: they read `round_dir`, and _ensure also `status_file`, and
+# they run only in the round's serial pass, in the foreground, where an unset
+# one fails immediately and visibly instead of vanishing with a child.
 _PR_REVIEWER_CONTRACT="repo session_key artifact_dir round_dir round fresh_flag \
 status_file session_map criteria_initial criteria_rereview \
 PR_ROOT PR_TIMEOUT_SECS PR_KILL_GRACE_SECS PR_MAX_ARG_BYTES"
@@ -45,6 +52,29 @@ _PR_REVIEWER_CONTRACT_EMPTY_OK=" criteria_initial criteria_rereview "
 # RULINGS made here. Prose, not nesting -- a facts/rulings split of the JSON
 # would rewrite both readers for no failure caught today.
 
+# pr_reviewer_result_path <reviewer>
+# The record's location, stated once. The round reads the record through this
+# and pr_reviewer_result_read; it composes no scratch name of its own.
+pr_reviewer_result_path() { printf '%s/.result-%s' "$round_dir" "$1"; }
+
+# pr_reviewer_scratch_rm <reviewer>
+# Every scratch name this module owns, retired in one place. The published
+# review and the reviewer log are NOT scratch and are deliberately absent.
+#
+# `.review-$1.scratch.log` was briefly on this list: adapters/claude.sh and
+# adapters/agent.sh derived `"${review_out}.log"`, which on the round path landed
+# here as a hidden file nothing swept. Sweeping it was the wrong half of the fix
+# -- it deleted the CLI's only stderr copy. Both adapters now inherit stderr into
+# <round>/log-<reviewer>.txt instead, so no shipped adapter derives a path from
+# review_out and there is nothing extra to retire. If one ever does again, the
+# contract (docs/adapter-contract.md) points here.
+pr_reviewer_scratch_rm() {
+  rm -f "$(pr_reviewer_result_path "$1")" "$round_dir/.meta-$1" \
+        "$round_dir/.reason-$1" \
+        "$round_dir/.prompt-$1.txt" "$round_dir/.review-$1.scratch" \
+        "$round_dir/review-$1.md.publish"
+}
+
 # _pr_reviewer_result_write <reviewer> <status> <detail> <verdict> <session>
 #                           <model> <effort> <cli> [discard] [timed_out]
 _pr_reviewer_result_write() {
@@ -53,7 +83,7 @@ _pr_reviewer_result_write() {
         --arg session "$5" --arg model "$6" --arg effort "$7" --arg cli "$8" \
         --argjson discard "${9:-false}" --argjson timed_out "${10:-false}" \
         '{$status, $detail, $verdict, $session, $model, $effort, $cli, $discard, $timed_out}' \
-    > "$round_dir/.result-$reviewer"
+    > "$(pr_reviewer_result_path "$reviewer")"
 }
 
 # pr_reviewer_result_read <reviewer> <status-var> <session-var> <discard-var> <timed-out-var>
@@ -72,7 +102,57 @@ pr_reviewer_result_read() {
   { IFS= read -r _status; IFS= read -r _session; IFS= read -r _discard
     IFS= read -r _timed_out; } < <(
     jq -r '.status, .session, (.discard == true), (.timed_out == true)' \
-      < "$round_dir/.result-$1")
+      < "$(pr_reviewer_result_path "$1")")
+}
+
+# _pr_reviewer_result_valid <reviewer> -> 0 valid, 1 missing, 2 invalid.
+# jq -es over the nine fields AND their closed domains -- exactly one JSON
+# object, status from {ok, failed}, verdict from pr_parse_verdict's output set
+# or empty (a failed reviewer's) -- not existence or types alone: a truncated,
+# concatenated or hand-mangled record must not flow into round.json as
+# authoritative. detail/session/model/effort/cli stay free-form by design --
+# they are display strings, and inventing constraints for them would reject
+# tomorrow's legitimate vendor value.
+_pr_reviewer_result_valid() {
+  local rec; rec="$(pr_reviewer_result_path "$1")"
+  [[ -f "$rec" ]] || return 1
+  jq -es --arg verdicts "$PR_VERDICTS UNPARSEABLE" \
+         'length == 1 and (.[0] |
+          type == "object"
+          and ([.status, .detail, .verdict, .session, .model, .effort, .cli]
+               | all(type == "string"))
+          and ([.discard, .timed_out] | all(type == "boolean"))
+          and (.status | IN("ok", "failed"))
+          and (.verdict | IN("", ($verdicts | split(" ")[]))))' \
+    < "$rec" > /dev/null 2>&1 && return 0
+  return 2
+}
+
+# pr_reviewer_result_ensure <reviewer>
+# The serial parent's guard: 0 = the record is present and valid; 1 = it was
+# not, and a synthesized failed record now stands in its place (detail says
+# "record missing" or "record invalid" -- the diagnosis differs); 2 = the store
+# refused the synthesized write too, which is no longer a reviewer-scoped
+# failure and the caller must abort rather than promise a coherent artifact.
+pr_reviewer_result_ensure() {
+  local why
+  _pr_reviewer_result_valid "$1"
+  case $? in 0) return 0 ;; 1) why=missing ;; *) why=invalid ;; esac
+  _pr_reviewer_result_write "$1" failed "reviewer result record $why" \
+    "" "" "" "" "" || return 2
+  pr_status_event "$status_file" "$1" failed "reviewer result record $why"
+  return 1
+}
+
+# _pr_reviewer_fail <reviewer> <detail> [session model effort cli discard timed_out]
+# The child's failure exit, written once: the status event and the result record
+# always carry the same detail, and a reviewer that failed before or instead of
+# publishing has no verdict to record. The optional tail is the publication
+# case, which is the only failure holding facts worth keeping.
+_pr_reviewer_fail() {
+  pr_status_event "$status_file" "$1" failed "$2"
+  _pr_reviewer_result_write "$1" failed "$2" "" \
+    "${3-}" "${4-}" "${5-}" "${6-}" "${7-}" "${8-}"
 }
 
 # What an exit code is allowed to be reported as.
@@ -105,6 +185,7 @@ _pr_reviewer_run_one() {
   local sandbox review_out meta_out reason_out log prompt_file
   sandbox="$(pr_sandbox_dir "$session_key" "$reviewer")"
   review_out="$round_dir/review-$reviewer.md"
+  local review_scratch="$round_dir/.review-$reviewer.scratch"
   meta_out="$round_dir/.meta-$reviewer"
   reason_out="$round_dir/.reason-$reviewer"
   log="$round_dir/log-$reviewer.txt"
@@ -116,8 +197,33 @@ _pr_reviewer_run_one() {
   # given this prompt at all is refused without first rsyncing a full copy of
   # the repository for it. pr_build_prompt reads only the artifact directory,
   # never the sandbox, so the order is free.
-  pr_build_prompt "$artifact_dir" "$round" "$reviewer" "$fresh_flag" \
-    "$criteria_initial" "$criteria_rereview" > "$prompt_file"
+  #
+  # A reviewer that cannot be given this prompt is refused before anything is
+  # rsynced or spawned -- a failed record and a reason, never an empty-stdin
+  # review. -s as well as the exit status: a function whose last write failed
+  # can still return 0, and the prompt is never legitimately empty (the
+  # instructions heredoc alone guarantees bytes).
+  #
+  # Measured before the guard existed (2026-08-26, a /dev/full symlink at
+  # $prompt_file): the write errors went to stderr, the failure was ignored,
+  # and the adapter was spawned reading that same descriptor -- /dev/full
+  # READS as an endless stream of NULs, so the reviewer got zero bytes where
+  # the plan should have been, wrote a review of nothing, and the round
+  # recorded it ok/MINOR. An empty prompt was the optimistic half of it.
+  #
+  # The residue, since -s closes the empty case and not the class: a prompt
+  # TRUNCATED by a full disk can still arrive here. pr_build_prompt's exit
+  # status is the only defence against that, and it is not airtight --
+  # _pr_emit_section returns 0 early when its file is empty (lib/prompt.sh:26),
+  # so a heredoc that failed partway followed by a skipped last section leaves
+  # rc 0 over a short but non-empty file. It needs an empty plan.snapshot.md to
+  # line up, which is why it is named rather than defended against.
+  if ! pr_build_prompt "$artifact_dir" "$round" "$reviewer" "$fresh_flag" \
+       "$criteria_initial" "$criteria_rereview" > "$prompt_file" 2>> "$log" \
+     || [[ ! -s "$prompt_file" ]]; then
+    _pr_reviewer_fail "$reviewer" "prompt write failed"
+    return 0
+  fi
 
   # Keyed on the adapter PATH, never the reviewer name -- the rule
   # pr_doctor_preflight follows, and for the same reason: tests run fakes under
@@ -128,36 +234,94 @@ _pr_reviewer_run_one() {
     prompt_bytes="$(pr_prompt_bytes "$prompt_file")"
     if (( prompt_bytes >= PR_MAX_ARG_BYTES )); then
       local cap_detail="prompt is $prompt_bytes bytes, over agy's $PR_MAX_ARG_BYTES argv cap"
-      pr_status_event "$status_file" "$reviewer" failed "$cap_detail"
-      _pr_reviewer_result_write "$reviewer" failed "$cap_detail" "" "" "" "" ""
+      _pr_reviewer_fail "$reviewer" "$cap_detail"
       return 0
     fi
   fi
 
   if ! pr_sandbox_refresh "$repo" "$sandbox" >> "$log" 2>&1; then
-    pr_status_event "$status_file" "$reviewer" failed "sandbox refresh failed"
-    _pr_reviewer_result_write "$reviewer" failed "sandbox refresh failed" "" "" "" "" ""
+    _pr_reviewer_fail "$reviewer" "sandbox refresh failed"
     return 0
   fi
 
-  printf '\n\n\n' > "$meta_out"
+  # Checked for the same reason as the prompt: the meta pre-seed is what makes
+  # a short meta file readable as "empty lines", and a pre-seed that failed to
+  # write says the store under this reviewer is already broken.
+  #
+  # It is also what keeps the mapfile below off a file it cannot trust.
+  # Measured unguarded (2026-08-26, a /dev/full symlink at $meta_out): the
+  # failed printf was ignored, and `mapfile -t meta < "$meta_out"` then read
+  # the same device -- an endless NUL stream -- past 3GB RSS in twelve seconds
+  # and never returned. Nothing bounds that read: the kernel's deadline covers
+  # the adapter, not this child's own artifact reads.
+  if ! printf '\n\n\n' > "$meta_out" 2>> "$log"; then
+    _pr_reviewer_fail "$reviewer" "meta pre-seed failed"
+    return 0
+  fi
 
   local session_in rc=0 timed_out=0 timed_out_json=false
   session_in="$(pr_session_get "$session_map" "$reviewer")"
 
-  # The spawn, the deadline, the 124/137 classification and the group sweep
-  # live in the kernel (lib/adapter-exec.sh), which reads the prompt from ITS
-  # stdin -- the file redirect below -- and sweeps before returning, so the
-  # artifact reads that follow see final files. TMPDIR travels as a kernel env
-  # word, not a prefix assignment on the function call (tests/test-doctor.sh
-  # states why prefixes on function calls are not relied on here). Nothing in
-  # this path closes a descriptor, so the session lock is still inherited.
+  # The spawn, the deadline, the 124/137 classification and the sweeps live in
+  # the kernel (lib/adapter-exec.sh), which reads the prompt from ITS stdin --
+  # the file redirect below -- and before returning sweeps the adapter's
+  # process group and, best-effort, the descendants it sampled while the
+  # adapter ran. Best-effort is the whole point of the qualifier: P6 measured a
+  # reviewer whose tool layer took its own session, and a survivor that
+  # detaches between the last sample and the kill still escapes. So what makes
+  # the artifact reads below final is the PUBLICATION step immediately after
+  # this call, not the sweep. The adapter is handed the scratch path, never the
+  # published one. TMPDIR is a POSITIONAL now, not a trailing env word: the
+  # kernel is the single writer of the adapter's environment and exports both
+  # the deadline it is handed and this tmpdir itself, so PR_TIMEOUT_SECS is not
+  # passed here at all -- the eighth positional IS what the adapter reads, and
+  # adapters/agy.sh derives its inner --print-timeout from that one value.
+  # Nothing in this path closes a descriptor, so the session lock is still
+  # inherited.
   pr_adapter_exec "$adapter" "$(pr_sandbox_repo "$session_key" "$reviewer")" \
-    "$session_in" "$review_out" "$meta_out" "$reason_out" \
-    "$log" "$PR_TIMEOUT_SECS" rc timed_out \
-    TMPDIR="$(pr_sandbox_tmp "$session_key" "$reviewer")" \
-    < "$prompt_file"
+    "$session_in" "$review_scratch" "$meta_out" "$reason_out" \
+    "$log" "$PR_TIMEOUT_SECS" "$(pr_sandbox_tmp "$session_key" "$reviewer")" \
+    rc timed_out < "$prompt_file"
   (( timed_out )) && timed_out_json=true
+
+  # Publication. The child owns judgment -- the size check, the verdict and
+  # files-inspected all run below, before the serial parent -- so the child
+  # publishes too: scratch -> fresh copy -> rename, and every semantic read
+  # after this point uses the published file. The rename is safe because a
+  # survivor holds the SCRATCH inode, never the copy's; what this prevents is
+  # post-publication mutation, so the record and the artifact describe the same
+  # bytes. It is not an instantaneous snapshot: a survivor writing during the
+  # copy can leave a torn tail, accepted because every downstream read uses the
+  # same immutable copy. An absent scratch publishes nothing and the size check
+  # below fails the reviewer exactly as an absent review always has.
+  #
+  # <meta_out> is read BEFORE publication rather than beside the other judgment
+  # below, because the publication-failure record needs it: a reviewer that
+  # timed out and then failed to publish still timed out, and its model is
+  # still on disk. Its line order is the adapter contract; see
+  # docs/adapter-contract.md. Read as a whole: one builtin, and the positions
+  # stay visibly the contract's line numbers. A short file is not an error --
+  # an adapter that died before writing its version leaves fewer than four
+  # lines, and the missing ones are empty, exactly as the per-line reads left
+  # them.
+  local meta=()
+  [[ -r "$meta_out" ]] && mapfile -t meta < "$meta_out"
+  if [[ -e "$review_scratch" ]]; then
+    if ! cp "$review_scratch" "$review_out.publish" 2>> "$log" \
+       || ! mv "$review_out.publish" "$review_out" 2>> "$log"; then
+      # Every fact the child holds, not just the ruling: `verdict` is empty
+      # because nothing was published to parse one from, and `discard` is
+      # false because a reviewer whose review could not be written is exactly
+      # the case whose sandbox is worth keeping. timed_out and the four meta
+      # lines are carried, so round.json does not claim a timed-out reviewer
+      # finished on time and the duplicate-model warning can still see this
+      # reviewer's model.
+      _pr_reviewer_fail "$reviewer" "review publication failed" \
+        "${meta[0]-}" "${meta[1]-}" "${meta[2]-}" "${meta[3]-}" false \
+        "$timed_out_json"
+      return 0
+    fi
+  fi
 
   # Judge on output, not exit code alone: Cursor exits 2 on a denied tool call
   # while still producing a correct review (D7).
@@ -201,14 +365,6 @@ _pr_reviewer_run_one() {
   # and three concurrent unlocked read-modify-writes through a shared temp file
   # would drop handles or make one `mv` fail. The caller applies them serially
   # after the fan-out, using the session id carried in this record.
-  # <meta_out> line order is the adapter contract; see docs/adapter-contract.md.
-  # Read as a whole: one builtin, and the positions stay visibly the contract's
-  # line numbers. A short file is not an error -- an adapter that died before
-  # writing its version leaves fewer than four lines, and the missing ones are
-  # empty, exactly as the per-line reads left them.
-  local meta=()
-  [[ -r "$meta_out" ]] && mapfile -t meta < "$meta_out"
-
   # Whether this reviewer's repo copy can go. Decided here, where every input to
   # the decision -- rc, timed_out and the operator's PR_KEEP_SANDBOX, which a
   # background job of this shell sees just as the parent does -- is already in

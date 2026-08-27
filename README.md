@@ -16,6 +16,20 @@ requirement: nothing here uses a construct newer than `bash` 4 (`${x^^}`, `mapfi
 is catching macOS's `/bin/bash` 3.2. The one exception is `scripts/install.sh`, which runs
 under 3.2 on purpose, because it is the file that has to deliver that message.
 
+**`claude` is the one that is usually installed and still not found.** Measured here on
+2026-08-26: the native installer had put the binary at `~/.local/bin/claude`, a symlink into
+`~/.local/share/claude/versions/<version>`. If `plan-review doctor` says `claude not on PATH`
+while `claude` works in your terminal, that directory is on your *interactive* `PATH` — a shell
+rc file — and a non-interactive shell never reads it; put `~/.local/bin` somewhere every shell
+sees. The other location to know about is `~/.claude/local/claude`, which an npm install
+migrated with `claude migrate-installer` leaves behind together with a shell **alias** — an
+alias being invisible to everything here, that one needs a symlink from a directory on `PATH`.
+That path was checked on this machine on the same date and **does not exist here**, so the
+migrate-installer behaviour is reported from its documentation and not observed; only the
+native location above was seen. Neither installer's future layout is promised here — if
+`claude` is somewhere else again, `command -v claude` in a non-interactive shell is the
+question the doctor is actually asking.
+
 **macOS** ships `/bin/bash` 3.2 and none of the GNU utilities. Install the reviewer CLIs however
 their vendors say to, and `git` with the Xcode command line tools; the rest is one brew command,
 plus the `PATH` line that makes it count:
@@ -117,8 +131,8 @@ are reported without failing. Nothing it runs costs tokens — unless you pass `
 why that one is opt-in.
 
 `--smoke` sends every reviewer in the roster one trivial prompt, through its adapter exactly as a
-round would send one — same sandbox layout, same stdin contract, same process-group sweep on
-timeout — under a short deadline (`PR_SMOKE_TIMEOUT_SECS`, default 90s) instead of the round's. It
+round would send one — same sandbox layout, same stdin contract, same process-group and
+descendant sweep — under a short deadline (`PR_SMOKE_TIMEOUT_SECS`, default 90s) instead of the round's. It
 exists because the auth checks hit status endpoints, and the exec path is different code in a
 vendor's CLI: it can hang on an interactive login prompt the auth check never reaches, or die on
 flag drift the version check only warns about. Alive means the adapter produced a review file, the
@@ -445,10 +459,40 @@ rather than in preflight, because `PR_SKIP_PREFLIGHT=1` turns preflight off;
 expiry and the SIGKILL that follows. It applies to the **adapter itself and not to its
 descendants**: `timeout` stops escalating as soon as the direct child is reaped, so an
 adapter that handles TERM politely used to leave a TERM-ignoring grandchild behind
-forever. On a timeout the runner now kills the reviewer's whole process group, before it
-reads any artifact — which is what makes the review file final, but also means a
-descendant mid-write loses whatever it had buffered. A reviewer that exits on its own is
-not swept; the deadline is what triggers it.
+forever. The runner now kills the reviewer's whole process group — on every round, not
+only on a timeout, since a cleanly exiting adapter can leak a child too — and then, on a
+best-effort basis, any descendant that escaped the group by taking one of its own. Those
+are sampled while the reviewer runs, one `ps` per second, and killed afterwards only if
+their start time still matches, so a recycled pid is not signalled by mistake. A
+descendant that detaches after the last sample still escapes; when one does, it keeps the
+session's lock, and the next command on that session waits rather than writing over it.
+The cost of the sweep is that a descendant mid-write loses whatever it had buffered.
+
+What makes the review file final is not the sweep but **publication**: the adapter writes
+to a scratch file, and the runner copies it into place before reading anything from it. A
+survivor still writing to the scratch file cannot change the review the round recorded.
+
+**A write the runner cannot make is never reported as a round that worked.** Every
+critical write is checked, and the two ways one can fail are answered differently. A
+failure scoped to *one reviewer* fails that reviewer and nothing else: a prompt that
+cannot be written refuses to start that adapter at all rather than sending it an empty
+prompt, and a result record that is missing or unparseable becomes a synthesized `failed`
+entry (`reviewer result record missing` / `record invalid`) so `round.json` always
+carries every reviewer in the roster. Either way the resume handle is forfeited, like any
+other failure, and the round continues on the reviewers that worked. Loss of the
+**artifact store itself** — `round.json`, the session map or the runner's own record
+cannot be written, because the disk is full or the directory is not writable — is a hard
+abort: the runner prints what it could not write, ending in `aborting`, and exits 2. It
+does not print "Round complete" over an artifact it failed to record, and the state left
+in `round.json` is the last one that actually persisted — usually `reviewing`, and it
+stays that way on disk: `abort` rewrites `round.json` through the same directory that
+just refused a write, so it too fails, loudly and without explanation, until the store is
+writable again. Fix the disk or the permissions first; then the round aborts and reads
+exactly as any other unfinished one. **Run the next round `--fresh`**: the
+serial pass stopped part-way, so every reviewer it had not reached yet still holds the
+resume handle from the round before — including handles this round would have forfeited.
+The runner does not clear the map on its way out, because clearing it needs the same
+store that just refused a write.
 
 **agy runs under a deadline of its own**, derived by the adapter as 90% of
 `PR_TIMEOUT_SECS` and passed as `--print-timeout`. Left unset, agy would apply its own

@@ -65,7 +65,18 @@ fi
 
 say()  { printf '%s\n' "$*"; }
 step() { printf '%s==>%s %s\n' "$C_B" "$C_0" "$*"; }
-warn() { printf '%swarning:%s %s\n' "$C_Y" "$C_0" "$*" >&2; }
+# warn <headline> [remedy...] -- the same shape as die below, and for the same
+# reason: the remedy used to follow as `say` lines, which go to STDOUT while the
+# warning goes to stderr. Anything that redirects one and not the other -- a log
+# file, a pipe, the doctor's own output being read -- then separated a warning
+# from the fix for it, or dropped one of the two entirely. One stream, one
+# message. (`local` is fine here: bash 3.2 has it.)
+warn() {
+  local line
+  printf '%swarning:%s %s\n' "$C_Y" "$C_0" "$1" >&2
+  shift
+  for line in "$@"; do printf '  %s\n' "$line" >&2; done
+}
 
 # die <headline> [detail...] -- details are indented continuation lines, so a
 # refusal can say what to do about itself without a heredoc at every call site.
@@ -203,8 +214,30 @@ upgrade_checkout() {
   step "updating $checkout to $ref"
   git -C "$checkout" fetch --quiet --tags origin < /dev/null \
     || die "git fetch failed in $checkout"
-  git -C "$checkout" checkout --quiet "$ref" < /dev/null \
+  # Two commands, two messages. A single `checkout || die "no such ref"` was one
+  # message for two very different failures: the ref really being absent, and a
+  # checkout that could not run -- most often a concurrent git holding
+  # .git/index.lock, which is also what a second installer running right now
+  # looks like. Sending someone to hunt for a ref that is sitting right there is
+  # the worse half, so existence is asked separately first. `$ref^{commit}`
+  # rather than a bare `$ref`: a tag resolves to a tag object, and this is the
+  # same question `checkout` is about to ask.
+  #
+  # Both spellings, because `checkout` accepts both. Measured against
+  # tests/test-bootstrap.sh's ref-switch case: a branch that exists only on the
+  # remote is checked out by git's DWIM, which creates the local branch from
+  # refs/remotes/origin/<ref> -- but `rev-parse --verify <ref>` never looks in
+  # refs/remotes/origin/, so a local-refs-only test refuses exactly the ref the
+  # next line would have checked out fine. The remote spelling is written the
+  # same way the fast-forward below writes it.
+  git -C "$checkout" rev-parse --quiet --verify "$ref^{commit}" > /dev/null 2>&1 \
+    || git -C "$checkout" rev-parse --quiet --verify "refs/remotes/origin/$ref^{commit}" \
+         > /dev/null 2>&1 \
     || die "no such ref after fetching: $ref"
+  git -C "$checkout" checkout --quiet "$ref" < /dev/null \
+    || die "git checkout $ref failed in $checkout" \
+           "The ref exists; this is usually a concurrent git process holding the" \
+           "index lock. Wait for it and run this again."
 
   # Fast-forward against the remote ref BY NAME, rather than asking `git pull` to
   # find an upstream. A tag has no refs/remotes/origin/<ref>, so nothing happens
@@ -294,12 +327,12 @@ install_skill() {
   # node before npx, because cursor_identity_ok and verify_skill both need it and
   # a bare `npx` with no node behind it is not a thing anyone has.
   if ! command -v npx > /dev/null 2>&1 || ! command -v node > /dev/null 2>&1; then
-    warn "npx and node are needed for the skill, and one of them is not on PATH."
     # A concrete id, not a <harness> placeholder: pasted, `<harness>` is a
     # redirect and the line dies on "harness: No such file or directory". The
     # whole reason q() exists is that these lines get pasted.
-    say  "  install it later with: npx skills add $(q "$checkout") -g -a claude-code"
-    say  "  repeat -a for each one you use: claude-code, codex, cursor, antigravity-cli"
+    warn "npx and node are needed for the skill, and one of them is not on PATH." \
+      "install it later with: npx skills add $(q "$checkout") -g -a claude-code" \
+      "repeat -a for each one you use: claude-code, codex, cursor, antigravity-cli"
     return 0
   fi
   # The same four CLIs lib/roster.sh's PR_ROSTER_ADAPTERS names, spelled again
@@ -309,8 +342,8 @@ install_skill() {
   for cli in claude codex agent agy; do
     command -v "$cli" > /dev/null 2>&1 || continue
     if [ "$cli" = agent ] && ! cursor_identity_ok; then
-      warn "the 'agent' on PATH does not answer 'agent about --format json'."
-      say  "  it looks like a different tool with the same name; skipping Cursor."
+      warn "the 'agent' on PATH does not answer 'agent about --format json'." \
+        "it looks like a different tool with the same name; skipping Cursor."
       continue
     fi
     targets="$targets $cli"
@@ -335,8 +368,8 @@ install_skill() {
   # running it -- and it is on BOTH npx calls, not just this one. stdin is closed
   # because under `curl | bash` stdin is us.
   if ! DISABLE_TELEMETRY=1 npx -y skills add "$checkout" -g $add_args -y < /dev/null; then
-    warn "the skill install failed."
-    say  "  retry with: DISABLE_TELEMETRY=1 npx -y skills add $(q "$checkout") -g$add_args -y"
+    warn "the skill install failed." \
+      "retry with: DISABLE_TELEMETRY=1 npx -y skills add $(q "$checkout") -g$add_args -y"
     return 0
   fi
   PR_SKILL_INSTALLED=1
@@ -377,8 +410,8 @@ verify_skill() {
   local targets="$1" cli out rc=0
   out="$(DISABLE_TELEMETRY=1 npx -y skills ls -g --json < /dev/null 2>/dev/null)" || out=""
   if [ -z "$out" ]; then
-    warn "could not read 'skills ls -g --json'; the links are unverified."
-    say  "  check it by hand: npx skills ls -g --json"
+    warn "could not read 'skills ls -g --json'; the links are unverified." \
+      "check it by hand: npx skills ls -g --json"
     return 2
   fi
   # `set --` rather than an array: this file has to run under bash 3.2, and the
@@ -404,11 +437,16 @@ verify_skill() {
     });' "$@" || rc=$?
   case "$rc" in
     0) say "  verified: the skill is linked into$targets"; return 0 ;;
-    1) warn "the skill is installed but not linked everywhere (see above)."
-       say  "  a harness you have never launched reports this way whether linked or not." ;;
-    *) warn "could not parse 'skills ls -g --json'; the links are unverified." ;;
+    # The hand-check line is repeated rather than shared after the case: it is a
+    # remedy, and a remedy now travels as an argument of the warning it belongs
+    # to. Two copies of one short string is the price of not printing it on a
+    # different stream from the warning it explains.
+    1) warn "the skill is installed but not linked everywhere (see above)." \
+         "a harness you have never launched reports this way whether linked or not." \
+         "check it by hand: npx skills ls -g --json" ;;
+    *) warn "could not parse 'skills ls -g --json'; the links are unverified." \
+         "check it by hand: npx skills ls -g --json" ;;
   esac
-  say "  check it by hand: npx skills ls -g --json"
   return "$rc"
 }
 

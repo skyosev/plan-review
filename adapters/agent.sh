@@ -58,7 +58,20 @@ fi
 args=(-p --trust --sandbox enabled --resume "$session" --output-format text
       --model "$PR_AGENT_MODEL")
 
-agent "${args[@]}" > "$review_out" 2>>"${review_out}.log"
+# stderr is NOT redirected: it is inherited, so it lands on this adapter's own
+# stderr, which the execution kernel points at <round>/log-agent.txt
+# (lib/adapter-exec.sh runs every adapter as `>> "$log" 2>&1`). That is where an
+# operator looks, and it puts the CLI's error text beside this adapter's own
+# echoes instead of in a file nothing names. It used to go to
+# `"${review_out}.log"`; on the round path review_out is a scratch name, so that
+# was <round>/.review-agent.scratch.log -- a dotfile no documentation mentions.
+#
+# What must stay separated is stderr from STDOUT, not stderr from this script's
+# stderr: stdout IS the review here. `> "$review_out" 2>&1` would therefore
+# splice the CLI's error text into the review markdown itself -- the artifact the
+# verdict parser and the `Switched to` scan below both read. Deleting the
+# redirect is the fix; duplicating fd 2 onto fd 1 is its opposite.
+agent "${args[@]}" > "$review_out"
 rc=$?
 
 # Cursor can swap the model out from under the pin and say so only in prose in
