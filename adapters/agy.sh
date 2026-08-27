@@ -116,10 +116,16 @@ fi
 # no set -e here -- and fatal, because the jail would refuse to start anyway.
 # ${HOME:-} rather than $HOME for the reason adapters/codex.sh:97 states at
 # length: set -u is on, and PR_CACHE_ROOT makes a round with no HOME reachable.
-if ! mkdir -p "${HOME:-}/.gemini" 2>/dev/null; then
-  echo "agy adapter: cannot create the bind destination ${HOME:-}/.gemini" >&2
-  echo "bwrap cannot mkdir a bind destination under --ro-bind / /, so the jail" >&2
-  echo "would refuse to start. Refusing to run agy without it." >&2
+# But unlike codex, agy cannot DEGRADE to a round without one: an unset HOME
+# would resolve every path here to "/", and "/.gemini" is a real destination --
+# mkdir fails for an ordinary user, and for root it would create a directory at
+# the filesystem root. So an absent HOME is refused outright rather than
+# resolved. Nothing is lost by refusing: the auth file the loop below needs is
+# looked up under the same HOME, so that round could not have authenticated.
+if [[ -z "${HOME:-}" ]] || ! mkdir -p "$HOME/.gemini" 2>/dev/null; then
+  echo "agy adapter: cannot create the bind destination ${HOME:-<HOME is unset>}/.gemini" >&2
+  echo "agy's private state is bound over ~/.gemini, and bwrap cannot mkdir that" >&2
+  echo "destination itself under --ro-bind / /. Refusing to run agy without it." >&2
   exit 1
 fi
 

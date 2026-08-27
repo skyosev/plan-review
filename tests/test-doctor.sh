@@ -85,12 +85,21 @@ test_present_core_utilities_pass_as_one_check() {
 # claim above. It also keeps the counters in a fresh bash -- calling the check
 # in this file's own shell would print a red [FAIL] block in the middle of a
 # green run and leave PR_DOCTOR_FAIL raised for every case after it.
+# The stub answers on STDERR with nothing on stdout and a non-zero exit, because
+# that is what busybox does -- measured, v1.36.1: an unrecognized long option
+# gets `timeout: unrecognized option '<opt>'` and the usage block, all on stderr,
+# rc=1. An earlier version of this stub echoed to STDOUT, which made the case
+# pass over a real defect: doctor_run merges 2>&1 itself, so "BusyBox" appeared
+# in $out whether or not the check had put it on the `got:` line, and it had not
+# (pr_doctor_run's stdout replay is unguarded, so $v arrived with a leading
+# newline and the line printed empty). Hence the assertion below is on
+# `got: BusyBox`, not on `BusyBox`: the substring alone proves nothing here.
 test_doctor_fails_a_non_gnu_timeout() {
   local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
-  pr_test_mkstub "$d/bin/timeout" 'echo "BusyBox v1.36.1 multi-call binary"'
+  pr_test_mkstub "$d/bin/timeout" 'echo "BusyBox v1.36.1 multi-call binary" >&2; exit 1'
   local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_gnu_timeout')"
   assert_contains "$out" "not GNU coreutils" "names what is wrong"
-  assert_contains "$out" "BusyBox" "and echoes back what it found"
+  assert_contains "$out" "got: BusyBox" "the diagnostic reaches the got: line, not just the stream"
   assert_contains "$out" "counts 0 0 1" "non-GNU timeout is a FAILURE, not a warning"
 }
 

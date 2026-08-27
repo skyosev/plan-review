@@ -570,14 +570,16 @@ file and locks that, and both run at once.
 
 ## What the sandbox is and is not
 
-An accidental-dirtiness barrier, not a security boundary. Every reviewer is
-write-confined, but not by the same thing:
+An accidental-dirtiness barrier, not a security boundary. Three of the four reviewers are
+write-confined, each by a different thing, and one currently is not:
 
-- **codex** and **Cursor** confine themselves, via their own OS sandboxes. Writes land
-  inside the disposable copy; writes outside it are denied. Cursor's half of that is
-  currently in doubt: re-measured 2026-08-27 against `2026.08.25-3e8eec8`, a tool-call
-  write to `/tmp` and to `$HOME` both succeeded, wrapped and unwrapped alike. Treat
-  Cursor as unconfined for writes at that version until a probe says otherwise.
+- **Cursor is not write-confined at `2026.08.25-3e8eec8`.** Its `--sandbox enabled` is
+  meant to be its barrier; re-measured 2026-08-27, a tool-call write to `/tmp` and to
+  `$HOME` both succeeded, wrapped and unwrapped alike. Treat it as unconfined for writes at
+  that version until a probe says otherwise — `adapters/agent.sh`'s bubblewrap is a pid
+  fence, and deliberately not a write barrier.
+- **codex** confines itself, via its own OS sandbox. Writes land inside the disposable
+  copy; writes outside it are denied.
 
   codex additionally runs under a private `CODEX_HOME` beside the repo copy —
   `<sandbox>/codex-home` — so the operator's user-level `~/.codex` is never read and never

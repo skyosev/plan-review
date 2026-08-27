@@ -212,10 +212,24 @@ pr_doctor_check_gnu_timeout() {
   # where the inner one is not GNU the outer is the same binary and the FAIL
   # below is what the operator gets either way.
   # 2>&1, unlike pr_doctor_version_of: busybox timeout answers --version with a
-  # usage block on STDERR, which is the diagnostic the `got:` line should show.
-  # Safe here because the match is the fixed string "GNU coreutils", which no
-  # deprecation notice on stderr turns into a false pass.
+  # usage block on STDERR and NOTHING on stdout, and that block is the whole
+  # diagnostic the `got:` line exists to print. Safe here because the match is
+  # the fixed string "GNU coreutils", which no notice on stderr turns into a
+  # false pass.
+  #
+  # The strip is what makes that actually arrive. pr_doctor_run replays stdout
+  # through an UNGUARDED `printf '%s\n' "$(< "$out")"` -- unlike the stderr
+  # replay below it, which is guarded by [[ -s ]] -- so a command that wrote
+  # nothing to stdout still contributes one newline, and $v comes back as
+  # "\n<stderr>". Command substitution strips trailing newlines, not leading
+  # ones, so the `${v%%...}` below then cut at that first newline and printed
+  # `got: ` empty. MEASURED, not reasoned: against a stub with busybox's exact
+  # shape (usage on stderr, nothing on stdout, rc=1) the line was blank before
+  # this strip and carries the usage text after it. Fixed here rather than in
+  # pr_doctor_run, because guarding that shared printf would change what every
+  # other probe in this file receives for a one-line problem in one caller.
   v="$(pr_doctor_run 10 timeout --version 2>&1)"
+  v="${v#$'\n'}"
   if [[ "$v" == *"GNU coreutils"* ]]; then
     pr_d_pass "timeout is GNU coreutils (the kernel's group sweep depends on its process-group behaviour)"
     return 0

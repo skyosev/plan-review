@@ -230,6 +230,20 @@ test_an_uncreatable_gemini_mountpoint_fails_before_spawning() {
   assert_file_missing "$d/bin/agy-argv.txt" "the CLI was never invoked"
 }
 
+# An unset HOME is the one case the adapter must not "handle": every path here
+# would resolve to "/", and mkdir -p /.gemini is a no-op for root rather than an
+# error. codex degrades gracefully with no HOME (there is simply no auth to
+# copy); agy cannot, because the token it needs is looked up under the same HOME.
+test_an_unset_home_is_refused_rather_than_resolved_to_the_filesystem_root() {
+  local d rc out; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/sandbox/repo"
+  out="$(echo "prompt" | PATH="$d/bin:$PATH" env -u HOME \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" 2>&1)"
+  rc=$?
+  assert_exit_code "$rc" 1 "an absent HOME is refused, not resolved to /"
+  assert_contains "$out" "HOME is unset" "and the message says which"
+  assert_file_missing "$d/bin/agy-argv.txt" "the CLI was never invoked"
+}
+
 test_prompt_is_passed_as_argv_because_agy_cannot_read_stdin() {
   local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
   echo "the actual prompt text" | PATH="$d/bin:$PATH" \

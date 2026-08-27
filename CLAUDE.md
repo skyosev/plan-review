@@ -304,16 +304,17 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
   *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
   because agy cannot be told to look elsewhere, while claude's is bound at its own path
-  and named by `CLAUDE_CONFIG_DIR`. That mount is also why `adapters/agy.sh` `mkdir -p`s
-  `~/.gemini` first: bwrap makes a missing bind destination with `mkdir`, and under
-  `--ro-bind / /` it cannot, so on a host that has never run agy the jail refused to start
-  and the adapter blamed auto-denied tool permissions (bubblewrap 0.9.0). Neither the
-  doctor's jail probe nor preflight sees it — both bind a `$TMPDIR` directory they created. Neither operator directory is ever a bind **source**:
+  and named by `CLAUDE_CONFIG_DIR`. Neither operator directory is ever a bind **source**:
   both CLIs run hooks out of `~/.claude` and `~/.gemini` in the operator's own later
   sessions, which is what makes a writable bind of one a persistence channel out of the
   jail. agy's file list came from a measurement, not a guess — the obvious-looking
   `oauth_creds.json` is the wrong answer
-  (`docs/process/probes/2026-08-27-pid-namespace-adapters/`, leg 3).
+  (`docs/process/probes/2026-08-27-pid-namespace-adapters/`, leg 3). agy's mount is also
+  why `adapters/agy.sh` `mkdir -p`s `~/.gemini` before building the jail: bwrap makes a
+  missing bind destination with `mkdir`, and under `--ro-bind / /` it cannot, so on a host
+  that had never run agy the jail refused to start and the adapter blamed auto-denied tool
+  permissions (bubblewrap 0.9.0). Neither the doctor's jail probe nor preflight sees that —
+  both bind a `$TMPDIR` directory they created first.
 
   **codex has the third private directory, and it is not a bind at all**:
   `$(dirname "$workdir")/codex-home`, exported as `CODEX_HOME`, sited beside the repo
