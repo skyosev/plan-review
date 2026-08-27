@@ -286,9 +286,12 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   no scratch name of its own, so a rename inside the module cannot silently
   break the round. Every `round.json` and session-map mutation stays serial, in
   the parent.
-- **Confinement is per-adapter and not uniform**: codex and Cursor confine their own
-  *writes*; `agy` and `claude` are wrapped in bubblewrap by their adapters and **fail
-  closed** when `bwrap` is missing. `claude` additionally rebuilds the environment from a
+- **Confinement is per-adapter and not uniform**: codex confines its own *writes*, and
+  Cursor is supposed to but was re-measured not doing so at `2026.08.25-3e8eec8` (leg 4 of
+  the pid-namespace probe: a tool-call write reached `/tmp` and `$HOME`, wrapped and
+  unwrapped alike), which is why the macOS roster is one self-confining reviewer and one
+  confining nothing; `agy` and `claude` are wrapped in bubblewrap by their adapters and
+  **fail closed** when `bwrap` is missing. `claude` additionally rebuilds the environment from a
   whitelist (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail)
   and runs `--safe-mode`. Never add an unconfined fallback — for those two.
   `adapters/agent.sh` is the exception and is deliberately **not** fail-closed: its bwrap
@@ -301,7 +304,11 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
   *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
   because agy cannot be told to look elsewhere, while claude's is bound at its own path
-  and named by `CLAUDE_CONFIG_DIR`. Neither operator directory is ever a bind **source**:
+  and named by `CLAUDE_CONFIG_DIR`. That mount is also why `adapters/agy.sh` `mkdir -p`s
+  `~/.gemini` first: bwrap makes a missing bind destination with `mkdir`, and under
+  `--ro-bind / /` it cannot, so on a host that has never run agy the jail refused to start
+  and the adapter blamed auto-denied tool permissions (bubblewrap 0.9.0). Neither the
+  doctor's jail probe nor preflight sees it — both bind a `$TMPDIR` directory they created. Neither operator directory is ever a bind **source**:
   both CLIs run hooks out of `~/.claude` and `~/.gemini` in the operator's own later
   sessions, which is what makes a writable bind of one a persistence channel out of the
   jail. agy's file list came from a measurement, not a guess — the obvious-looking
@@ -318,7 +325,9 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   in scope, and nothing here detects a conflicting managed layer. `auth.json` is **copied
   in** rather than bound, because the reviewer needs it writable and must never write the
   operator's — a second credential at rest, and the stated remedy for staleness is
-  deleting it. The adapter seeds no `config.toml`; codex writes one itself recording the
+  deleting it. `_pr_doctor_smoke_one` removes that copy, by path, from a smoke directory it
+  keeps for diagnosis: the smoke's session key is `doctor-smoke.$$`, nothing ever cleans a
+  kept one, and the smoke fails most often while codex auth is what is being debugged. The adapter seeds no `config.toml`; codex writes one itself recording the
   workdir's trust level, which is why the Q8 diagnostics now name *that* file and no
   longer name `~/.codex`. codex also passes `-c features.hooks=false`: the repository
   under review can ship a `.codex/hooks.json` and codex was measured reading it, while

@@ -311,14 +311,17 @@ meant.
   does not have, so the resume fails before the banner and codex is recorded as failed for
   that round. Say what it is rather than debugging it: the handle is dropped by that
   failure and the next round starts codex cold, so running again is the whole fix.
-  `--fresh` skips the wasted round if the user would rather not spend it. This happens
-  once per plan, never again.
+  `--fresh` skips the wasted round if the user would rather not spend it, but say what it
+  costs: it drops EVERY reviewer's handle and the history baseline, not just codex's, so
+  spending the one wasted round is usually cheaper. This happens once per plan, never again.
 - **Repo-supplied codex hooks are off for reviews** (`-c features.hooks=false`). A
   repository can ship a `.codex/hooks.json` and codex was measured reading the one in the
   workspace under review. Handlers from an untrusted source were measured *not* executing
-  at codex-cli 0.150.1 — codex gates them behind an interactive trust review a headless
-  run cannot reach — so do not describe this to a user as a closed exploit. It closes a
-  read, ahead of an execution path that is codex's to open.
+  at codex-cli 0.150.1 — codex *appears to gate* them behind an interactive trust review a
+  headless run cannot reach — so do not describe this to a user as a closed exploit. The
+  non-execution was measured; the gate is inferred from the binary's own strings and the
+  once-trusted path was never attempted. It closes a read, ahead of an execution path that
+  is codex's to open.
 - A reviewer's recorded model reads `<something> (requested: <pin>)`: the CLI swapped the
   model out mid-run and the adapter caught it. The pin did not answer. Say so when
   reporting verdicts — that round is not comparable to one run on the pinned model.

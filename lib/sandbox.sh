@@ -43,11 +43,16 @@ pr_sandbox_refresh() {
 # Removes <sandbox-dir>/repo and nothing else.
 #
 # It appends `/repo` itself, and there is no flag or parameter that could make it
-# remove anything higher. That is deliberate: adapters/claude.sh puts
-# CLAUDE_CONFIG_DIR at <sandbox-dir>/config precisely so it survives the wipe at
-# the start of every round, and one directory holding two things with opposite
-# lifetimes is what a blanket `rm -rf` gets wrong. Making it inexpressible beats
-# documenting that it must not be done.
+# remove anything higher. That is deliberate, and THREE adapters now depend on
+# it: adapters/claude.sh sites CLAUDE_CONFIG_DIR at <sandbox-dir>/config,
+# adapters/agy.sh its private state at <sandbox-dir>/gemini-state, and
+# adapters/codex.sh its CODEX_HOME at <sandbox-dir>/codex-home -- each holding
+# the sessions or rollouts that make round-to-round resume work, and each sited
+# there precisely so it survives the wipe at the start of every round. One
+# directory holding two things with opposite lifetimes is what a blanket
+# `rm -rf` gets wrong. Making it inexpressible beats documenting that it must
+# not be done. A fourth private directory would need no change here, which is
+# the point.
 pr_sandbox_discard() {
   local sandbox="$1"
   # Before constructing anything: "" + /repo is /repo.

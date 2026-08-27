@@ -99,13 +99,21 @@ Every adapter — real or fake — is invoked identically:
   dodge, for that adapter alone, with no fallback path. It must measure the
   prompt and fail with a clear message above the cap rather than let `execve`
   return a bare `E2BIG`. Do not "fix" this by moving the whole contract to argv.
-- **confinement is the adapter's job, and it is not uniform.** codex and Cursor
-  confine their own writes via their sandbox flags. `agy` does not: its
+- **confinement is the adapter's job, and it is not uniform.** codex confines
+  its own writes via its sandbox flags. Cursor is *supposed* to, and no longer
+  does: re-measured 2026-08-27 against `2026.08.25-3e8eec8`, a tool-call write to
+  `/tmp` and to `$HOME` both succeeded, wrapped and unwrapped alike
+  (`docs/process/probes/2026-08-27-pid-namespace-adapters`, leg 4). Treat Cursor
+  as unconfined for writes at that version; `adapters/agent.sh`'s bwrap is a pid
+  fence and deliberately not a write barrier, and widening it needs its own probe
+  because Cursor's sandbox machinery runs inside it. `agy` never did: its
   `--sandbox` was measured to allow a write to `/tmp` while reporting itself
   enabled, so its adapter wraps the CLI in `bubblewrap` instead and **fails
   closed** when `bwrap` is unavailable. `claude` exposes no sandbox flag to ask
   for, so it is confined the same way and fails closed the same way. An adapter
-  that cannot confine writes must refuse to run, never run unconfined.
+  that cannot confine writes must refuse to run, never run unconfined — a vendor
+  sandbox you have not measured *at the version you ship against* is not
+  confinement, it is a claim.
 - **the environment is part of the boundary.** A jail confines the filesystem;
   it does not stop a variable. When the orchestrating harness is itself an agent
   CLI, its own variables are inherited by everything the runner spawns —
@@ -119,13 +127,28 @@ Every adapter — real or fake — is invoked identically:
   keeps its private `CLAUDE_CONFIG_DIR` at `<sandbox>/config` for that reason:
   the sessions that make carry-forward possible would otherwise be deleted by
   the next round's copy. `adapters/agy.sh` does the same at
-  `<sandbox>/gemini-state`, bound over `~/.gemini`. Isolating it also keeps the
+  `<sandbox>/gemini-state`, bound over `~/.gemini`, and `adapters/codex.sh` at
+  `<sandbox>/codex-home`, exported as `CODEX_HOME` — three private directories,
+  one per adapter that has durable state. codex's is not a bind at all: it is an
+  environment variable the CLI honours, which is the cheaper mechanism wherever a
+  CLI offers one. Isolating them also keeps the
   operator's own `~/.claude/settings.json` — which defines hooks that run in
   *their* interactive sessions — outside the reviewer's reach, and the same
-  argument applies to `~/.gemini`, whose workspace hooks agy honours. Auth
-  material comes in **read-only and by path**, one file at a time, measured
+  argument applies to `~/.gemini`, whose workspace hooks agy honours, and to
+  `~/.codex`, whose ambient configuration had already taken a reviewer out.
+
+  Auth material comes in **read-only and by path**, one file at a time, measured
   rather than guessed: never a read-write bind of the operator's real directory,
-  which would be a persistence channel out of the jail.
+  which would be a persistence channel out of the jail. **Where the CLI needs its
+  credential writable, copy the one file instead** — `adapters/codex.sh` copies
+  `~/.codex/auth.json` into the private home because codex may refresh the token
+  in place, and a bind would have it refresh the operator's. A copy is a second
+  credential at rest, so it comes with three obligations: copy **once** (round
+  N+1 must not clobber a refresh round N wrote), copy only into a directory the
+  reviewer already owns, and name the copy anywhere it can be left behind —
+  `lib/doctor.sh` removes it from a smoke directory kept for diagnosis, by path.
+  A read-write bind of the real directory remains forbidden; this carve-out is
+  for one file, not for the directory holding it.
 - **Containment.** An adapter must contain its own process tree where the
   platform provides a mechanism — on Linux, `bwrap --unshare-pid` (agy, claude,
   agent) or the CLI's own equivalent (codex `--as-pid-1`). Where the platform

@@ -61,7 +61,10 @@ barrier, and both adapters refuse to run without it. A project config naming nei
 for it.
 
 `bwrap` is Linux-only, and no macOS equivalent is wired up yet, so on macOS the roster is
-`codex` and `agent` — both of which confine themselves. All four CLIs still work there as
+`codex` and `agent` — of which only `codex` confines itself. Cursor's write barrier was
+measured gone at `2026.08.25-3e8eec8` (see *What the sandbox is and is not* below), and with
+no `bwrap` it has no pid fence there either, so a macOS roster today is one self-confining
+reviewer and one confining nothing. All four CLIs still work there as
 orchestrators and as skill targets; only reviewing is affected.
 
 **What has actually been run on macOS** is one manual pass, on 2026-08-20, on Darwin 25 with the
@@ -111,9 +114,12 @@ Three things the runner cannot check for you:
   warning — string equality is the only version of this the artifact can prove.
 - **Cost, when `claude` reviews.** Claude Code hands a reviewer its full tool surface, which
   includes `Task` and `Workflow` (subagents, so unbounded spend), the `Cron*` tools and
-  `ScheduleWakeup` (work that would outlive the round), and `SendMessage` / `RemoteTrigger`. The
-  bubblewrap jail confines writes and the environment scrub closes the messaging channel, but
-  neither bounds cost. `PR_TIMEOUT_SECS` (default 900) is what actually caps a runaway reviewer.
+  `ScheduleWakeup` (work scheduled to run later), and `SendMessage` / `RemoteTrigger`. The
+  bubblewrap jail confines writes, its `--unshare-pid` collapses the reviewer's whole process
+  tree when the round ends — so a process the reviewer left running does not outlive the round,
+  though nothing here reaches a schedule registered somewhere other than this machine — and the
+  environment scrub closes the messaging channel. None of the three bounds cost.
+  `PR_TIMEOUT_SECS` (default 900) is what actually caps a runaway reviewer.
 
 Check all of it with:
 
@@ -586,7 +592,10 @@ write-confined, but not by the same thing:
 
   The copied `auth.json` is a second credential at rest, and it goes stale when the
   operator re-authenticates. The remedy is deleting `<sandbox>/codex-home/auth.json`; the
-  next round copies a fresh one in.
+  next round copies a fresh one in. A failed `plan-review doctor --smoke` keeps its
+  throwaway directory for diagnosis and removes the copy from it first, so repeated smokes
+  do not leave a trail of credentials under `~/.cache/plan-review/` — `PR_KEEP_SANDBOX=1`
+  is the explicit exception, and keeps everything.
 
   **One round is lost for a plan that was already mid-loop when this landed.** A stored
   codex session handle names a rollout in the operator's `~/.codex/sessions/`, which the
@@ -594,14 +603,18 @@ write-confined, but not by the same thing:
   banner — measured at codex 0.150.1 as `no rollout found for thread id <id>`, rc=1 — and
   the round records that reviewer as failed. Nothing is corrupted and no action is
   required: the failure drops the handle, and the next round starts codex cold. `--fresh`
-  skips the wasted round if you would rather not spend it.
+  skips the wasted round if you would rather not spend it — at the price it always carries:
+  it drops *every* reviewer's handle and the history baseline, not just codex's, so spending
+  the one wasted codex round is usually the cheaper of the two.
 
   Repo-supplied codex hooks are disabled for reviews, via `-c features.hooks=false`.
   A repository can ship a `.codex/hooks.json`, and codex was measured reading the one in
   the workspace under review; with the flag it is not read at all. Handlers from an
-  untrusted source did not actually execute at codex-cli 0.150.1 — codex gates them
-  behind an interactive trust review a headless `codex exec` cannot reach — so this
-  closes a read ahead of an execution path, rather than an exploit anyone has landed.
+  untrusted source did not actually execute at codex-cli 0.150.1 — codex *appears to gate*
+  them behind an interactive trust review a headless `codex exec` cannot reach — so this
+  closes a read ahead of an execution path, rather than an exploit anyone has landed. The
+  hedge is deliberate in both halves: the non-execution was measured, the gate was inferred
+  from the binary's own strings, and trusting a hook and re-running was never attempted.
 - **agy** does not. Its `--sandbox` flag exists, reports itself as enabled, and was
   measured allowing a write to `/tmp` anyway. It is confined by **bubblewrap**, which
   this project applies in `adapters/agy.sh` — so that one barrier is ours to maintain
