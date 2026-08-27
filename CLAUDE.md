@@ -52,12 +52,17 @@ it to 10.674s. **Any new suite that shells out to `plan-review doctor`, `init` o
 needs that export**, and the indirect ones are the easy misses.
 `tests/test-runner.sh` (29.5s, still the single largest file) never moved.
 
-What task 3 costs, net of that fix, is +6.6s over tasks 1–2 at +6 tests, and **all of it is
-four clamp/hang tests in `tests/test-adapter-exec.sh`** (3.028s → 18.004s). Each stalls a
-stubbed `ps` on purpose and asserts the cap cuts it short: `PR_PS_CAP_SECS=1` for the two
-hang cases, and ~5s each for the clamped `999999` and `0`. That is the price of a clamp —
-there is nothing observable about one but the consequence, and the `0` case in particular
-buys real coverage, since GNU `timeout` reads `0` as *disabling* the timeout. The fifth,
+Task 3 itself **costs ~+15s** and **all of it is in `tests/test-adapter-exec.sh`**
+(3.028s → 18.004s; `tests/test-doctor.sh`'s 9.479s → 11.684s was tasks 1–2, and task 3's
+two checks there cost 0.03s on top). That +15s against the bootstrap fix's −16.0s is the
+whole reason the tree lands marginally *cheaper* than before task 3 started — 84.6s at 491
+tests against 85.3s at 485 — and the two numbers have to be read together: the saving paid
+for the coverage exactly once, and the next contributor gets no such refund. **Budget the
++15s, not the net.** Every second of it is four clamp/hang tests that stall a stubbed `ps`
+on purpose and assert the cap cuts it short: `PR_PS_CAP_SECS=1` for the two hang cases, and
+~5s each for the clamped `999999` and `0`. That is the price of a clamp — there is nothing
+observable about one but the consequence — and the `0` case in particular buys real
+coverage, since GNU `timeout` reads `0` as *disabling* the timeout. The fifth,
 `abc`, is checked against the escaper instead of the clock for ~1s, because an unclamped
 `abc` makes the suite *faster* while silently switching descendant tracking off.
 
@@ -196,10 +201,11 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   30s deadline stamped before it starts: `timeout(1)` bounds the *adapter*,
   never the loop watching it, so an uncapped `ps` that never returned would
   wedge the round forever with the session lock held. The cap is
-  `PR_PS_CAP_SECS`, read once and clamped to `1..5` — it exists so the offline suite can shrink its hang tests, not as an
-  operator knob, and it is clamped because the environment is still input and
-  GNU `timeout` accepts a syntactically valid `999999` verbatim (and reads `0`
-  as *disabling* the timeout, which is why the clamp rejects it too). The
+  `PR_PS_CAP_SECS`, read once and clamped to `1..5` — it exists so the offline
+  suite can shrink its hang tests, not as an operator knob, and it is clamped
+  because the environment is still input and GNU `timeout` accepts a
+  syntactically valid `999999` verbatim (and reads `0` as *disabling* the
+  timeout, which is why the clamp rejects it too). The
   sweep's true bound is the deadline **plus one cap of slack**, since a read
   that starts just under the wire still runs to its own cap. `--kill-after` is
   load-bearing in that sentence: `timeout N` does not *return* at N, it signals
