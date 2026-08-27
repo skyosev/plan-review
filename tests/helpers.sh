@@ -113,7 +113,10 @@ install_containing_bwrap_stub() {
   local bindir="$1"
   pr_test_mkstub "$bindir/bwrap" 'prev=""
 for a in "$@"; do
-  [[ "$prev" == "--bind" ]] && { : > "$a/spawned"; break; }
+  # Skip `--bind / /`: the agent fence is probed with a READ-WRITE root bind, so
+  # the first --bind in argv is no longer the probe directory. The probe dir is
+  # the only other one, and it is never "/".
+  [[ "$prev" == "--bind" && "$a" != "/" ]] && { : > "$a/spawned"; break; }
   prev="$a"
 done
 exit 0'

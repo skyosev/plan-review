@@ -7,8 +7,9 @@ between three terminals.
 ## Requirements
 
 `bash` 5+, `git`, `jq`, `rsync`, GNU coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`,
-and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well, if `agy` or `claude` is in the
-roster — see the `bwrap` note below and "Reviewer roster".
+and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well: required if `agy` or `claude` is
+in the roster, and used by `agent` when it is there — see the `bwrap` note below and "Reviewer
+roster".
 
 The GNU part of "GNU coreutils" is now enforced rather than merely asked for: `plan-review
 doctor` **fails** on a `timeout` that is not GNU coreutils (busybox's, typically). The process
@@ -56,9 +57,10 @@ runner calls the unprefixed names. `flock` is its own formula — `util-linux` i
 installing it does not put `flock` on `PATH`.
 
 `bwrap` is not optional if `agy` or `claude` is in the roster: it is those reviewers' only write
-barrier, and both adapters refuse to run without it. A project config naming neither — `"reviewers":
-["codex"]` — needs no `bwrap` at all, and the doctor skips the check rather than failing the machine
-for it.
+barrier, and both adapters refuse to run without it. `agent` uses one too, but only as a pid fence
+and never as a requirement — it runs unwrapped when the jail does not work, so the doctor reports
+that case as a warning rather than failing the machine. A project config naming none of the three —
+`"reviewers": ["codex"]` — needs no `bwrap` at all, and the doctor skips the check entirely.
 
 `bwrap` is Linux-only, and no macOS equivalent is wired up yet, so on macOS the roster is
 `codex` and `agent` — of which only `codex` confines itself. Cursor's write barrier was

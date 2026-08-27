@@ -170,18 +170,12 @@ test_working_jail_passes() {
 # shape of --die-with-parent without --unshare-pid) has to fail. The stub
 # runs the payload with plain host bash -- uncontained by construction -- so
 # both markers appear and the probe must notice within its wait window.
-# Runs the probe payload with plain host bash -- uncontained by construction,
-# so both markers appear.
 install_escaping_bwrap_stub() {
-  cat > "$1/bwrap" <<'STUB'
-#!/usr/bin/env bash
-args=("$@")
+  pr_test_mkstub "$1/bwrap" 'args=("$@")
 for i in "${!args[@]}"; do
   [[ "${args[$i]}" == bash ]] && exec "${args[@]:$i}"
 done
-exit 0
-STUB
-  chmod +x "$1/bwrap"
+exit 0'
 }
 
 test_bwrap_probe_fails_when_a_detached_process_survives() {
@@ -200,8 +194,7 @@ test_bwrap_probe_fails_when_the_payload_never_ran() {
   local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
   pr_test_mkstub "$d/bin/bwrap" 'exit 0'
   local out rc=0
-  PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=2 \
-    _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  PATH="$d/bin:$PATH" _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
   assert_eq "$rc" "1" "no spawned marker means the measurement never happened"
   assert_contains "$out" "never started" "the failure names what happened"
 }
@@ -226,8 +219,7 @@ test_bwrap_probe_passes_when_the_jail_contains() {
   local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
   install_containing_bwrap_stub "$d/bin"
   local out rc=0
-  PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=2 \
-    _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  PATH="$d/bin:$PATH" _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
   assert_eq "$rc" "0" "spawned without survived is containment"
 }
 

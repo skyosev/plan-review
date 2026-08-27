@@ -114,8 +114,11 @@ fi
 # leave on a first run, and the jail overmounts it, so nothing of the
 # operator's is touched. Checked by hand like the state dir above -- there is
 # no set -e here -- and fatal, because the jail would refuse to start anyway.
-# ${HOME:-} rather than $HOME for the reason adapters/codex.sh:97 states at
-# length: set -u is on, and PR_CACHE_ROOT makes a round with no HOME reachable.
+# ${HOME:-} in the TEST rather than $HOME for the reason adapters/codex.sh:97
+# states at length: set -u is on, and PR_CACHE_ROOT makes a round with no HOME
+# reachable. Past this guard the bare form is correct and used: an empty HOME
+# has already exited, and `:-` there would quietly resolve a later slip to
+# "/.gemini" instead of failing.
 # But unlike codex, agy cannot DEGRADE to a round without one: an unset HOME
 # would resolve every path here to "/", and "/.gemini" is a real destination --
 # mkdir fails for an ordinary user, and for root it would create a directory at
@@ -146,23 +149,21 @@ jail=(
   --proc /proc
   --tmpfs /tmp
   --bind "$workdir" "$workdir"
-  --bind "$state" "${HOME:-}/.gemini"
+  --bind "$state" "$HOME/.gemini"
   --die-with-parent
   --unshare-uts
   --unshare-ipc
   --unshare-pid
 )
-# The minimal auth material, measured in leg 3 of the probe above: bind each
-# file the CLI needs to authenticate, read-only and by path, over the private
-# dir. The list is the probe's output, not a guess -- and the guess would have
-# been wrong. Starting from an empty private dir, agy answered "authentication
+# The minimal auth material, measured in leg 3 of the probe above: the one file
+# the CLI needs to authenticate, bound read-only and by path over the private
+# dir. It is the probe's output, not a guess -- and the guess would have been
+# wrong. Starting from an empty private dir, agy answered "authentication
 # required" with nothing bound AND with the obvious-looking oauth_creds.json
 # bound; it authenticated on the nested antigravity-cli token alone. Re-run leg
-# 3 before adding or removing a name here.
-for f in antigravity-cli/antigravity-oauth-token; do
-  [[ -f "${HOME:-}/.gemini/$f" ]] \
-    && jail+=(--ro-bind "${HOME:-}/.gemini/$f" "${HOME:-}/.gemini/$f")
-done
+# 3 before changing this path, or before adding a second one beside it.
+creds="$HOME/.gemini/antigravity-cli/antigravity-oauth-token"
+[[ -f "$creds" ]] && jail+=(--ro-bind "$creds" "$creds")
 
 # --sandbox is passed for defence in depth, not because it works: Task 0 measured
 # it as inert here. If a future release makes it real, this costs nothing.

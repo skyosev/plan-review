@@ -140,7 +140,7 @@ test_a_hung_sweep_identity_read_is_bounded_and_never_kills_blind() {
 exec $real_ps \"\$@\""
   local t0=$SECONDS
   PATH="$d/bin:$PATH" PR_PS_CAP_SECS=1 \
-    pr_adapter_exec "$FAKES/fake-escaper-exit-marker.sh" "$d/w" "" \
+    pr_adapter_exec "$FAKES/fake-escaper.sh" "$d/w" "" \
     "$d/review.md" "$d/meta" "$d/reason" "$d/log" 5 "$d/tmp" rc timed_out \
     <<< "prompt"
   assert_exit_code "$rc" 0 "the adapter's own run is unaffected"

@@ -243,6 +243,18 @@ if (( offline == 1 )); then
   pr_d_info "and the pins below are written unvalidated."
 fi
 
+# init measures containment TWICE for one answer: pr_init_probe_jail below, and
+# then the verifying `plan-review doctor` this script execs at the end. Since the
+# probe started measuring rather than merely starting a jail, each costs 1.04s at
+# the default ten ticks -- 2.09s of init's 3.06s, half of it duplicate. Three
+# ticks is what pr_doctor_preflight settles on for the same reason and by the same
+# measurement (lib/doctor.sh): the marker lands on the second of three checks, one
+# whole tick of slack. Exported, because the second probe runs in a subprocess and
+# the first is a FUNCTION call, where an assignment prefix persists or not by shell
+# mode. `:-` so the offline suite's own smaller value still wins. The generous
+# default stays where it belongs: on a `doctor` an operator ran by hand.
+export PR_BWRAP_PROBE_TICKS="${PR_BWRAP_PROBE_TICKS:-3}"
+
 for cli in $roster; do
   pr_init_probe "$cli" "$(pr_init_lookup "$models" "$cli" || true)"
 done

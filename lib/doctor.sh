@@ -284,10 +284,10 @@ pr_doctor_check_cli() {
   return 1
 }
 
-# _pr_doctor_bwrap_probe <probe-name> [output-var]
+# _pr_doctor_bwrap_probe <probe-name> [output-var] [root-bind-flag]
 #
-# Runs bwrap with adapters/agy.sh's and claude.sh's exact flag set against a
-# throwaway directory, and returns its exit status. It deliberately does NOT use
+# Runs bwrap with a shipped adapter's exact flag set against a throwaway
+# directory, and returns its exit status. It deliberately does NOT use
 # the README's `unshare --user --map-root-user true`, because the two are not
 # equivalent: Ubuntu 24.04 defaults
 # kernel.apparmor_restrict_unprivileged_userns=1, which leaves unshare(1)
@@ -295,7 +295,15 @@ pr_doctor_check_cli() {
 # one reviewer that needs a jail cannot run at all.
 #
 # The flag set is the point of this function: it must match what the adapters
-# run, so it is written once here rather than once per caller.
+# run, so it is written once here rather than once per caller. The adapters do
+# NOT all run the same one, though: agy and claude bind / read-only, while
+# adapters/agent.sh binds it READ-WRITE (its bwrap is a pid fence, not a write
+# barrier). So the root bind is the third positional, defaulting to the strict
+# form -- a probe that certified agent's fence with agy's flags would be back
+# to measuring a proxy, and would report a working fence on any host that
+# refuses a read-write bind of / while allowing a read-only one. Nothing else
+# about the two invocations is material to the property being measured: what
+# fails here is the namespace, not the mounts.
 #
 # 200 means the probe directory could not be created, which is a different
 # failure from a jail that does not work. It is deliberately outside the range
@@ -305,7 +313,7 @@ pr_doctor_check_cli() {
 # CALLER's scope: an ordinary `out` here would shadow the very variable the
 # nameref is supposed to reach.
 _pr_doctor_bwrap_probe() {
-  local _probe="${TMPDIR:-/tmp}/$1.$$" _said _rc _i _ticks
+  local _probe="${TMPDIR:-/tmp}/$1.$$" _said _rc _i _ticks _rootbind="${3:---ro-bind}"
   mkdir -p "$_probe" 2>/dev/null || return 200
   # Two signals, because "no marker" alone cannot tell containment from a
   # payload that never ran (a no-op bwrap, a quoting error, a bwrap that
@@ -322,9 +330,12 @@ _pr_doctor_bwrap_probe() {
   # (docs/process/probes/2026-08-27-pid-namespace-adapters).
   #
   # Pass = bwrap exited 0 AND spawned exists AND survived never appears within
-  # the wait window. The payload's own wait on `spawned` is bounded (exit 1 ->
-  # bwrap reports non-zero) so a writer that never starts cannot hang the
-  # probe.
+  # the wait window. The payload's own wait on `spawned` is bounded at 100
+  # hundredths, so a writer that never starts cannot hang the probe; it then
+  # falls off the end at 0 and the `spawned` check below is the SINGLE arbiter
+  # of that case. Deliberately not `exit 1` there: a non-zero payload reads
+  # back here as "the jail did not work", losing the one wording that names
+  # what actually happened.
   #
   # The wait window is the probe's whole cost, because the pass path always
   # waits it out for a marker that must never appear: measured on this host
@@ -354,7 +365,7 @@ _pr_doctor_bwrap_probe() {
   # The writer's own output goes to /dev/null on purpose: this is a command
   # substitution, and a descendant that inherited the pipe would hold it open
   # past bwrap's exit -- the same trap adapters/agy.sh documents.
-  _said="$(bwrap --ro-bind / / --dev /dev --proc /proc --tmpfs /tmp \
+  _said="$(bwrap "$_rootbind" / / --dev /dev --proc /proc --tmpfs /tmp \
                  --bind "$_probe" "$_probe" --die-with-parent \
                  --unshare-uts --unshare-ipc --unshare-pid \
                  bash -c '{ : > "$1/spawned"; sleep 0.2; : > "$1/survived"; } \
@@ -362,15 +373,12 @@ _pr_doctor_bwrap_probe() {
                           for (( i = 0; i < 100; i++ )); do
                             [[ -e "$1/spawned" ]] && exit 0
                             sleep 0.01
-                          done
-                          exit 1' _ "$_probe" 2>&1)"
+                          done' _ "$_probe" 2>&1)"
   _rc=$?
   if (( _rc == 0 )) && [[ ! -e "$_probe/spawned" ]]; then
     _said="the probe payload never started its detached writer"
     _rc=1
   fi
-  _ticks="${PR_BWRAP_PROBE_TICKS:-10}"
-  [[ "$_ticks" =~ ^[1-9][0-9]*$ ]] || _ticks=10
   # SLEEP FIRST, then check. Same wall time, one more useful check inside it:
   # the writer stamps `survived` 0.2s after `spawned`, so a check at t=0 can
   # never see anything and the last sleep of a check-first loop was thrown away.
@@ -383,6 +391,8 @@ _pr_doctor_bwrap_probe() {
   # number. The failure direction is what makes this worth the swap: a marker
   # that lands after the last check reads as a PASS.
   if (( _rc == 0 )); then
+    _ticks="${PR_BWRAP_PROBE_TICKS:-10}"
+    [[ "$_ticks" =~ ^[1-9][0-9]*$ ]] || _ticks=10
     for (( _i = 0; _i < _ticks; _i++ )); do
       sleep 0.1
       if [[ -e "$_probe/survived" ]]; then
@@ -397,6 +407,20 @@ _pr_doctor_bwrap_probe() {
   rm -rf "$_probe" 2>/dev/null
   if [[ -n "${2:-}" ]]; then local -n _sink="$2"; _sink="$_said"; fi
   return "$_rc"
+}
+
+# _pr_doctor_bwrap_diagnosis <probe-output> -- what a failed jail usually means.
+#
+# Shared by the two callers of the probe, which differ in severity (fail-closed
+# for agy/claude, warn for agent's fence) but not in the diagnosis: the cause is
+# the same kernel policy either way, and a 24.04 note that has to be updated in
+# two places is a note that will be updated in one. Each caller keeps its own
+# closing sentence, which is the part that genuinely differs.
+# Builtins only, like the rest of this file.
+_pr_doctor_bwrap_diagnosis() {
+  [[ -n "$1" ]] && pr_d_info "bwrap said: ${1%%$'\n'*}"
+  pr_d_info "On Ubuntu 24.04 and later this is usually AppArmor. Check with:"
+  pr_d_info "  sysctl kernel.apparmor_restrict_unprivileged_userns"
 }
 
 pr_doctor_check_bwrap_jail() {
@@ -425,9 +449,7 @@ pr_doctor_check_bwrap_jail() {
     return 0
   fi
   pr_d_fail "bwrap is installed but the jail those reviewers run in does not work (exit $rc)"
-  [[ -n "$out" ]] && pr_d_info "bwrap said: ${out%%$'\n'*}"
-  pr_d_info "On Ubuntu 24.04 and later this is usually AppArmor. Check with:"
-  pr_d_info "  sysctl kernel.apparmor_restrict_unprivileged_userns"
+  _pr_doctor_bwrap_diagnosis "$out"
   pr_d_info "A 1 there denies bwrap while leaving unshare(1) working, which is why"
   pr_d_info "this probe runs bwrap itself rather than the unshare check in the README."
   return 1
@@ -456,7 +478,10 @@ pr_doctor_check_agent_pid_fence() {
     pr_d_info "has neither bubblewrap nor pid namespaces."
     return 0
   fi
-  _pr_doctor_bwrap_probe pr-doctor-agent-fence out
+  # --bind, not the default --ro-bind: adapters/agent.sh binds / READ-WRITE,
+  # and certifying its fence with agy's stricter flags would pass a host that
+  # allows a read-only bind of / and refuses a read-write one.
+  _pr_doctor_bwrap_probe pr-doctor-agent-fence out --bind
   rc=$?
   if (( rc == 0 )); then
     pr_d_pass "bwrap pid namespace available for agent (a fence, not a write barrier)"
@@ -467,9 +492,7 @@ pr_doctor_check_agent_pid_fence() {
     return 0
   fi
   pr_d_warn "bwrap is installed but its jail does not work; agent runs without a pid namespace"
-  [[ -n "$out" ]] && pr_d_info "bwrap said: ${out%%$'\n'*}"
-  pr_d_info "On Ubuntu 24.04 and later this is usually AppArmor. Check with:"
-  pr_d_info "  sysctl kernel.apparmor_restrict_unprivileged_userns"
+  _pr_doctor_bwrap_diagnosis "$out"
   pr_d_info "The reviewer still runs -- adapters/agent.sh degrades to unwrapped rather"
   pr_d_info "than refusing -- but a process it leaks is bounded only by the runner's"
   pr_d_info "best-effort descendant sweep."

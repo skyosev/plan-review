@@ -133,6 +133,19 @@
 # setsid parent, no longer in the child's group, so a group kill misses the
 # child anyway. timeout(1) does both jobs correctly with no watchdog.
 
+# _pr_ae_ps <ps-args...> -- every `ps` this module runs, capped.
+#
+# One function rather than three spellings of the same command substitution:
+# the cap variable, the `--kill-after` escalation and the `2>/dev/null` are a
+# single contract, argued at length at the first call site, and three copies of
+# it are three places for that contract to drift. `_pr_ae_cap` is reached by
+# dynamic scope from pr_adapter_exec, which is the only caller's caller.
+#
+# No extra process: every call site was already a command substitution.
+_pr_ae_ps() {
+  timeout --kill-after=1 "$_pr_ae_cap" ps "$@" 2> /dev/null
+}
+
 # _pr_ae_descendants <root-pid> <pid-ppid-table> -> _pr_ae_desc, space-padded
 #
 # Assigns rather than echoes: this runs on every poll tick of every adapter, and
@@ -233,7 +246,8 @@ pr_adapter_exec() {
     # the suite budget in CLAUDE.md. PR_PS_CAP_SECS exists so the offline
     # suite can shrink the hang test, not as an operator knob.
     #
-    # --kill-after, because `timeout N` does not RETURN at N -- it signals and
+    # --kill-after (the flag lives in _pr_ae_ps, with every other ps here),
+    # because `timeout N` does not RETURN at N -- it signals and
     # then WAITS for its child, the same escalation the adapter's own timeout
     # above needs and for the same reason. Measured 2026-08-27, GNU coreutils
     # 9.4: `timeout 1 bash -c 'trap "" TERM; sleep 5'` took 5.003s, and the
@@ -247,8 +261,7 @@ pr_adapter_exec() {
     # and nothing here should be read as claiming they do. What the cap does
     # bound is every stall a signal can end, which is every stall anyone has
     # actually seen.
-    _pr_ae_table="$(timeout --kill-after=1 "$_pr_ae_cap" ps -eo pid=,ppid= 2> /dev/null)" \
-      || _pr_ae_table=""
+    _pr_ae_table="$(_pr_ae_ps -eo pid=,ppid=)" || _pr_ae_table=""
     if [[ -n "$_pr_ae_table" ]]; then
       _pr_ae_descendants "$_pr_ae_pid" "$_pr_ae_table"
       for _pr_ae_p in $_pr_ae_desc; do
@@ -269,7 +282,7 @@ pr_adapter_exec() {
         # Capped for the same reason as the table read above; the existing
         # `[[ -n ]]` guard already treats a failed read as skip-this-pid --
         # unknown, never empty.
-        _pr_ae_id="$(timeout --kill-after=1 "$_pr_ae_cap" ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
+        _pr_ae_id="$(_pr_ae_ps -o lstart= -p "$_pr_ae_p")"
         [[ -n "$_pr_ae_id" ]] && _pr_ae_seen[$_pr_ae_p]="$_pr_ae_id"
       done
     fi
@@ -333,7 +346,7 @@ pr_adapter_exec() {
   for _pr_ae_p in "${!_pr_ae_seen[@]}"; do
     (( SECONDS >= _pr_ae_sweep_deadline )) && break
     kill -0 "$_pr_ae_p" 2> /dev/null || continue
-    _pr_ae_id="$(timeout --kill-after=1 "$_pr_ae_cap" ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
+    _pr_ae_id="$(_pr_ae_ps -o lstart= -p "$_pr_ae_p")"
     [[ -n "$_pr_ae_id" && "$_pr_ae_id" == "${_pr_ae_seen[$_pr_ae_p]}" ]] || continue
     kill -KILL "$_pr_ae_p" 2> /dev/null
   done
