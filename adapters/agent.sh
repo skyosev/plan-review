@@ -92,13 +92,14 @@ cd "$workdir" || exit 1
 # operator they lost the fence (pr_doctor_check_agent_pid_fence, a WARN --
 # there is no fail-closed rule to enforce here). One extra bwrap spawn per
 # adapter run, ~10ms, against silently losing a reviewer.
-wrap=()
-if bwrap --bind / / --dev /dev --proc /proc \
-         --die-with-parent --unshare-uts --unshare-ipc --unshare-pid \
-         true > /dev/null 2>&1; then
-  wrap=(bwrap --bind / / --dev /dev --proc /proc
-        --die-with-parent --unshare-uts --unshare-ipc --unshare-pid)
-fi
+#
+# The flag list is written ONCE and then trialled, rather than stated for the
+# trial and restated for the wrap: two copies three lines apart are two copies
+# that can disagree, and a trial that no longer matches what actually runs
+# proves nothing about it.
+wrap=(bwrap --bind / / --dev /dev --proc /proc
+      --die-with-parent --unshare-uts --unshare-ipc --unshare-pid)
+"${wrap[@]}" true > /dev/null 2>&1 || wrap=()
 
 session="$session_in"
 if [[ -z "$session" ]]; then
