@@ -159,6 +159,7 @@ pr_d_info "orchestrator: $orchestrator — reviewers: ${reviewer_keys// /, }"
 pr_d_section "Machine"
 pr_doctor_check_bash
 pr_doctor_check_utils
+pr_doctor_check_gnu_timeout
 for cli in $PR_ROSTER_ADAPTERS; do
   if [[ " $shipped " != *" $cli "* ]]; then
     pr_d_skip "$cli is not in this round's roster"

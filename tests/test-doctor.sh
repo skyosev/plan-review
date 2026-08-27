@@ -72,6 +72,28 @@ test_present_core_utilities_pass_as_one_check() {
   assert_contains "$out" "counts 1 0 0" "one pass for the whole set"
 }
 
+# The group sweep asserts GNU timeout's own-process-group behaviour
+# (lib/adapter-exec.sh header, measured 2026-08-27). busybox timeout stays in
+# the caller's group, so under it `kill -- -$pid` is silently inert. README
+# already requires GNU coreutils; this checks the requirement -- and FAILS,
+# not warns, because a silently inert sweep is the kind of degrade nothing
+# else would ever surface.
+test_doctor_fails_a_non_gnu_timeout() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/timeout" 'echo "BusyBox v1.36.1 multi-call binary"'
+  local rc=0
+  PATH="$d/bin:$PATH" pr_doctor_check_gnu_timeout || rc=$?
+  assert_eq "$rc" "1" "non-GNU timeout is a failure, not a warning"
+}
+
+test_doctor_passes_gnu_timeout() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/timeout" 'echo "timeout (GNU coreutils) 9.4"'
+  local rc=0
+  PATH="$d/bin:$PATH" pr_doctor_check_gnu_timeout || rc=$?
+  assert_eq "$rc" "0" "GNU coreutils timeout passes"
+}
+
 test_absent_reviewer_cli_points_at_the_roster_escape_hatch() {
   local d; d="$(pr_test_tmpdir)"
   mkdir -p "$d/bin"

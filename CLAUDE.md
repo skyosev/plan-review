@@ -25,9 +25,35 @@ branch (455 tests) — **+21%**, measured 2026-08-27, two back-to-back runs each
 clone. Roughly half of that is the execution kernel's polled descendant sweep, which
 costs every `pr_adapter_exec` a minimum 0.05s tick plus a `ps` fork: stripping the poll
 loop runs 56.8s on the same 455, so the poll is ~5.5s and the remaining ~5.2s is simply
-the 22 tests that branch added. (457 tests and ~62s as of the two adapter-stderr tests
-that followed.) Budget against the ~5.5s, not the whole delta, and weigh the next
-per-adapter poll before adding it.
+the 22 tests that branch added.
+
+The 457/~62s figure that stood here was stale in its count but not in its clock. Measured
+2026-08-27 on this host (32 cores, load ~0.5), two back-to-back `make test` runs per tree,
+a `git worktree` per revision:
+
+| tree | tests | run 1 | run 2 |
+| --- | --- | --- | --- |
+| `ea2b59e` (pre-`reviewer-isolation-hardening`) | 467 | 62.159s | 62.214s |
+| + tasks 1–2 of that branch | 485 | 85.243s | 85.359s |
+| + task 3 (`ps` caps, sweep deadline, GNU-`timeout` check) | 490 | 93.993s | 94.060s |
+
+So ~62s was still exactly right for `main`, and the whole +31.8s is this branch's, not
+host drift — worth knowing, because "the host got slower" was the first explanation
+offered and it was wrong. Where it went, by per-file timing of both trees: **+20.5s in
+`tests/test-bootstrap.sh`** (6.156s → 26.707s), a file this branch never edited. It drives
+`plan-review doctor` as a subprocess ~20 times, and task 1 gave `_pr_doctor_bwrap_probe` a
+real containment window that the pass path always waits out — ~1s per doctor run at the
+default `PR_BWRAP_PROBE_TICKS=10`. `tests/test-doctor.sh` accounts for another +2.2s;
+`tests/test-runner.sh` (29.5s, the single largest file) did not move at all.
+
+Task 3's own +8.7s is **entirely** its three hang tests in `tests/test-adapter-exec.sh`
+(3.028s → 11.560s): each deliberately stalls a stubbed `ps` and measures that the cap cuts
+it short, at `PR_PS_CAP_SECS=1`, 1 and the clamped 5. The per-tick `timeout` fork those
+caps add to every `pr_adapter_exec` — one more fork beside the `ps` it wraps, on the poll
+loop and on each identity read — is below the noise floor here: the remaining ~0.2s of the
+delta covers it and everything else. Budget against the ~5.5s poll and the ~1s-per-doctor
+probe, not the whole delta; weigh the next per-adapter poll, and the next always-waited
+probe window, before adding either.
 
 There is no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
 `test_*` function in the sourcing file. Anything that would break "offline and seconds"
@@ -153,6 +179,26 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   it exits — the accepted availability cost. Nothing in the poller closes a
   descriptor. `ps` is therefore a core utility (`PR_DOCTOR_UTILS`), though that
   is a presence check and busybox's `ps` rejects `-eo`, which degrades silently.
+  **Every one of those three `ps` calls is wrapped in `timeout`**, and the
+  post-`wait` sweep additionally carries a 30s deadline stamped before it
+  starts: `timeout(1)` bounds the *adapter*, never the loop watching it, so an
+  uncapped `ps` that never returned would wedge the round forever with the
+  session lock held. The cap is `PR_PS_CAP_SECS`, read once and clamped to
+  `1..5` — it exists so the offline suite can shrink its hang tests, not as an
+  operator knob, and it is clamped because the environment is still input and
+  GNU `timeout` accepts a syntactically valid `999999` verbatim. The sweep's
+  true bound is the deadline **plus one cap of slack**, since a read that
+  starts just under the wire still runs to its own cap. That a `ps` ever stalls
+  is *unmeasured* — a `/proc` read against a task in uninterruptible sleep is
+  the credible mechanism, not reproduced — and the comments say so; the
+  unbounded wait itself was certain. Both degradations, a capped read and a
+  tripped deadline, land on the same documented group-only cleanup.
+  Which makes **GNU** `timeout` load-bearing twice over: the group kill only
+  reaches the adapter's tree because GNU `timeout` puts *itself* in a new
+  process group (measured 2026-08-27, transcript in `lib/adapter-exec.sh`'s
+  header), and busybox's does not, leaving the sweep silently inert in the same
+  environment its `ps` already breaks. `pr_doctor_check_gnu_timeout` therefore
+  **fails** rather than warns.
   macOS descendant cleanup is unverified live (first row of the macOS cycle).
   The round (`lib/reviewer-runner.sh`) and `doctor --smoke` both spawn
   through the kernel — the smoke's call guarded by `declare -F` so the stub-PATH

@@ -104,6 +104,72 @@ test_sweep_reaches_a_setsid_escaper() {
   assert_pid_gone "$(< "$d/escaper.pid")" "the setsid grandchild is swept"
 }
 
+# The poll loop and post-wait sweep run ps with no deadline of their own:
+# timeout(1) bounds the ADAPTER, not the loop watching it, so a ps that
+# never returns (the credible trigger is a /proc read against a task in
+# uninterruptible sleep -- plausible, NOT reproduced) would hang the round
+# forever with the session lock held. Every ps is therefore capped; a capped
+# read that dies degrades to the group-only sweep, the documented path.
+test_a_hung_ps_table_read_does_not_hang_the_kernel() {
+  local d rc=99 timed_out=99; d="$(pr_test_tmpdir)"; mkdir -p "$d/w" "$d/bin" "$d/tmp"
+  pr_test_mkstub "$d/bin/ps" 'sleep 60'
+  local t0=$SECONDS
+  PATH="$d/bin:$PATH" PR_PS_CAP_SECS=1 \
+    pr_adapter_exec "$FAKES/fake-echo-prompt.sh" "$d/w" "" \
+    "$d/review.md" "$d/meta" "$d/reason" "$d/log" 5 "$d/tmp" rc timed_out \
+    <<< "prompt"
+  assert_exit_code "$rc" 0 "the adapter's own run is unaffected"
+  assert_file_exists "$d/review.md" "the round still produced its artifact"
+  (( SECONDS - t0 < 20 )) \
+    || pr_fail "kernel took $((SECONDS - t0))s against a hung ps; the cap is not working"
+}
+
+# Same cap, the SWEEP's call site. While the adapter lives, ps is real, so
+# the poller remembers the escaper's grandchild with a genuine identity.
+# The fixture's exit marker then flips the stub: from the adapter's exit
+# onward every ps hangs, so the post-wait sweep's identity read is the one
+# that stalls -- capped, and the kernel must NOT kill a pid whose identity
+# it could not re-read (unknown is not a match). The stub execs the real ps
+# by absolute path so it cannot recurse into itself.
+test_a_hung_sweep_identity_read_is_bounded_and_never_kills_blind() {
+  pr_test_requires setsid || return 0   # the fixture's escape needs it; absent on macOS
+  local d rc=99 timed_out=99 real_ps child
+  d="$(pr_test_tmpdir)"; mkdir -p "$d/w" "$d/bin" "$d/tmp"
+  real_ps="$(command -v ps)"
+  pr_test_mkstub "$d/bin/ps" "[[ -e \"$d/w/exiting\" ]] && sleep 60
+exec $real_ps \"\$@\""
+  local t0=$SECONDS
+  PATH="$d/bin:$PATH" PR_PS_CAP_SECS=1 \
+    pr_adapter_exec "$FAKES/fake-escaper-exit-marker.sh" "$d/w" "" \
+    "$d/review.md" "$d/meta" "$d/reason" "$d/log" 5 "$d/tmp" rc timed_out \
+    <<< "prompt"
+  assert_exit_code "$rc" 0 "the adapter's own run is unaffected"
+  (( SECONDS - t0 < 30 )) \
+    || pr_fail "kernel took $((SECONDS - t0))s against a hung sweep read"
+  # Degraded, not dangerous: the pid WAS remembered, its identity at sweep
+  # time was unreadable, and the sweep must therefore have left it alone.
+  child="$(< "$d/w/escaper.pid")"
+  kill -0 "$child" 2>/dev/null \
+    || pr_fail "the kernel killed a pid whose identity it could not re-read"
+  kill -KILL "$child" 2>/dev/null   # test hygiene: reap what the kernel correctly spared
+}
+
+# The clamp, behaviourally: an inherited huge-but-valid cap must not stretch
+# the bound -- GNU timeout would accept `timeout 999999 ...` verbatim. Costs
+# one ~5s clamped tick; weighed against CLAUDE.md's budget paragraph.
+test_an_oversized_cap_is_clamped() {
+  local d rc=99 timed_out=99; d="$(pr_test_tmpdir)"; mkdir -p "$d/w" "$d/bin" "$d/tmp"
+  pr_test_mkstub "$d/bin/ps" 'sleep 60'
+  local t0=$SECONDS
+  PATH="$d/bin:$PATH" PR_PS_CAP_SECS=999999 \
+    pr_adapter_exec "$FAKES/fake-echo-prompt.sh" "$d/w" "" \
+    "$d/review.md" "$d/meta" "$d/reason" "$d/log" 5 "$d/tmp" rc timed_out \
+    <<< "prompt"
+  assert_exit_code "$rc" 0 "the adapter's own run is unaffected"
+  (( SECONDS - t0 < 30 )) \
+    || pr_fail "kernel took $((SECONDS - t0))s; an oversized cap was not clamped"
+}
+
 # The one parseable ps table shape the sweep fixes: two whitespace-separated
 # numeric columns, which is what `ps -eo pid=,ppid=` gives on GNU and (per the
 # man pages) on Darwin. The pair below differ only in COLUMN WIDTH, so what the

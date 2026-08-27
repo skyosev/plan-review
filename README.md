@@ -10,6 +10,11 @@ between three terminals.
 and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well, if `agy` or `claude` is in the
 roster — see the `bwrap` note below and "Reviewer roster".
 
+The GNU part of "GNU coreutils" is now enforced rather than merely asked for: `plan-review
+doctor` **fails** on a `timeout` that is not GNU coreutils (busybox's, typically). The process
+cleanup after every reviewer relies on GNU `timeout` putting itself in its own process group,
+and under a `timeout` that does not, that cleanup silently does nothing.
+
 5 is what `make doctor` enforces and it is a support statement rather than a measured
 requirement: nothing here uses a construct newer than `bash` 4 (`${x^^}`, `mapfile`,
 `printf %()T`), so 4.4 would very likely run — it is simply never tested. Its practical job

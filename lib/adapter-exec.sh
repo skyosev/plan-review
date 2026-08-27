@@ -10,7 +10,22 @@
 # substitution is the opposite discipline, and folding it in would be the
 # flag-driven single entry point that note refused.
 #
-# Requires timeout(1). Callers own the fallback: the smoke tier skips without
+# Requires GNU timeout(1) -- not merely a timeout(1). The group sweep below
+# rests on GNU coreutils putting timeout in a process group of ITS OWN, which
+# is what makes `kill -- -$pid` on timeout's pid reach the adapter's whole
+# tree. Measured 2026-08-27, GNU coreutils 9.4, in both a script and a
+# `bash -c`, the runner never being timeout's group:
+#
+#     runner  pid=2189488 pgid=2189488
+#     timeout pid=2189492 pgid=2189492
+#
+# busybox's timeout does not do this: it stays in the caller's group, so
+# `kill -- -$pid` addresses the runner's own group instead of the adapter's,
+# and the group sweep is SILENTLY inert -- in the same environment where
+# busybox `ps` already rejects `-eo` and degrades just as silently.
+# `pr_doctor_check_gnu_timeout` (lib/doctor.sh) exists to catch exactly that,
+# and FAILS rather than warning, because nothing else would ever surface it.
+# Callers own the fallback for outright ABSENCE: the smoke tier skips without
 # it, the round has always assumed it.
 
 # pr_adapter_exec <adapter> <workdir> <session> <review> <meta> <reason> <log> \
@@ -169,6 +184,13 @@ pr_adapter_exec() {
   # Nothing here closes a descriptor: the lock fd still rides through.
   local -A _pr_ae_seen=()
   local _pr_ae_tick=0.05 _pr_ae_table _pr_ae_p _pr_ae_id _pr_ae_desc
+  # PR_PS_CAP_SECS exists so the offline suite can shrink the hang tests --
+  # but it is read from the environment, and GNU timeout accepts a
+  # syntactically valid huge duration verbatim, so an inherited
+  # PR_PS_CAP_SECS=999999 would stretch every bound below to days. Clamped
+  # once: outside 1..5 means the default.
+  local _pr_ae_cap="${PR_PS_CAP_SECS:-5}"
+  [[ "$_pr_ae_cap" =~ ^[1-5]$ ]] || _pr_ae_cap=5
   # `kill -0` succeeds on a ZOMBIE, so what ends this loop is bash reaping its
   # own async job in its SIGCHLD handling and only then making the pid
   # unsignallable; `wait` below still returns the status bash stashed. Verified
@@ -185,7 +207,19 @@ pr_adapter_exec() {
   # (pid_max 4194304 here, ~99999 on macOS) and untreated for the same reason:
   # the treatment costs more than the exposure. Stated, not hidden.
   while kill -0 "$_pr_ae_pid" 2> /dev/null; do
-    _pr_ae_table="$(ps -eo pid=,ppid= 2> /dev/null)" || _pr_ae_table=""
+    # Capped: timeout(1) above bounds the ADAPTER, not this loop watching it,
+    # and an uncapped ps that never returns would hang the round forever with
+    # the session lock held (unbounded wait: certain; the stall itself:
+    # plausible, a /proc read against uninterruptible sleep, NOT reproduced --
+    # do not upgrade this comment to "measured" until it is). A read that
+    # dies here leaves the table EMPTY-AS-UNKNOWN, not empty-as-no-processes:
+    # the || branch skips the walk for this tick rather than concluding the
+    # tree has no members, which is why tidying it into "table is empty, no
+    # descendants" would be wrong. One extra fork per tick; measured against
+    # the suite budget in CLAUDE.md. PR_PS_CAP_SECS exists so the offline
+    # suite can shrink the hang test, not as an operator knob.
+    _pr_ae_table="$(timeout "$_pr_ae_cap" ps -eo pid=,ppid= 2> /dev/null)" \
+      || _pr_ae_table=""
     if [[ -n "$_pr_ae_table" ]]; then
       _pr_ae_descendants "$_pr_ae_pid" "$_pr_ae_table"
       for _pr_ae_p in $_pr_ae_desc; do
@@ -203,7 +237,10 @@ pr_adapter_exec() {
         # folded into one atomic `ps -eo pid=,ppid=,lstart=` because that is a
         # third column shape to parse and pin across two platforms, for an
         # exposure this size.
-        _pr_ae_id="$(ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
+        # Capped for the same reason as the table read above; the existing
+        # `[[ -n ]]` guard already treats a failed read as skip-this-pid --
+        # unknown, never empty.
+        _pr_ae_id="$(timeout "$_pr_ae_cap" ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
         [[ -n "$_pr_ae_id" ]] && _pr_ae_seen[$_pr_ae_p]="$_pr_ae_id"
       done
     fi
@@ -238,9 +275,28 @@ pr_adapter_exec() {
   # changes no semantics -- it skips exactly the pids `kill -KILL` could not
   # have signalled anyway (ESRCH, or EPERM, which `ps` would not have helped
   # with either). Zombies still pass `kill -0` and are handled below as before.
+  # A deadline over the sweep, stamped before it starts and checked before
+  # each read: the per-call cap bounds each read, not their sum, and N
+  # survivors x 5s is unbounded in principle even though the kill -0 guard
+  # cuts N to a handful (434 remembered pids -> single digits, measured
+  # 2026-08-27). The true bound is this deadline PLUS one per-call cap of
+  # slack -- a read that starts just under the wire still runs to its own
+  # cap. Stopping early skips the identity check and the kill for the
+  # remaining pids -- degrading to group-only cleanup, the same documented
+  # degradation as a failed read. 30s is deliberate slack: at the measured
+  # survivor counts the sweep ends in well under one cap's worth of time, so
+  # this trips only when something is already wrong with ps itself.
+  #
+  # ACCEPTED VERIFICATION GAP: no test reaches this `break`. Forcing it needs
+  # several REMEMBERED survivors whose reads all hang at sweep time, and that
+  # machinery outweighs a one-line guard whose failure mode is "sweeps longer
+  # than it had to". The per-call cap on the read below IS covered
+  # (tests/test-adapter-exec.sh); the deadline is not. Do not claim otherwise.
+  local _pr_ae_sweep_deadline=$(( SECONDS + 30 ))
   for _pr_ae_p in "${!_pr_ae_seen[@]}"; do
+    (( SECONDS >= _pr_ae_sweep_deadline )) && break
     kill -0 "$_pr_ae_p" 2> /dev/null || continue
-    _pr_ae_id="$(ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
+    _pr_ae_id="$(timeout "$_pr_ae_cap" ps -o lstart= -p "$_pr_ae_p" 2> /dev/null)"
     [[ -n "$_pr_ae_id" && "$_pr_ae_id" == "${_pr_ae_seen[$_pr_ae_p]}" ]] || continue
     kill -KILL "$_pr_ae_p" 2> /dev/null
   done

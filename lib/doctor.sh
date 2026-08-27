@@ -188,6 +188,33 @@ pr_doctor_check_utils() {
   return 1
 }
 
+# Presence is not sufficiency: PR_DOCTOR_UTILS proves timeout EXISTS, and the
+# execution kernel's group sweep additionally requires GNU coreutils'
+# behaviour -- timeout placing ITSELF in a new process group, which is what
+# makes `kill -- -$pid` reach the adapter's tree (measured 2026-08-27; the
+# transcript is in lib/adapter-exec.sh's header). busybox timeout stays in
+# the caller's group and the sweep is then silently inert, in the same
+# environment where busybox ps already rejects -eo. A FAIL, not a warning:
+# README's Requirements already demand GNU coreutils, and a warning invites
+# running with a load-bearing sweep that does nothing.
+# The version check, not a capability probe: `timeout 1 sleep 0` is racy --
+# the child can exit before ps samples it -- and would argue against the
+# project's own stated baseline. Bash-builtin match on purpose: this file
+# parses with builtins only, so the stub-PATH doctor tests stay green.
+pr_doctor_check_gnu_timeout() {
+  local v
+  v="$(timeout --version 2>/dev/null)"
+  if [[ "$v" == *"GNU coreutils"* ]]; then
+    pr_d_pass "timeout is GNU coreutils (the kernel's group sweep depends on its process-group behaviour)"
+    return 0
+  fi
+  pr_d_fail "timeout is not GNU coreutils; the execution kernel's group sweep would be silently inert"
+  pr_d_info "got: ${v%%$'\n'*}"
+  pr_d_info "macOS: brew install coreutils, then put the GNU names first:"
+  pr_d_info "  PATH=\"\$(brew --prefix)/opt/coreutils/libexec/gnubin:\$PATH\""
+  return 1
+}
+
 # What to say when a reviewer CLI is absent. No install URLs: the three CLIs are
 # installed by different mechanisms that change independently of this repo, and a
 # stale command line printed with authority is worse than none. codex and agy do
