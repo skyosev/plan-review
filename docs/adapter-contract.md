@@ -41,6 +41,10 @@ Every adapter — real or fake — is invoked identically:
       line 3   effective reasoning effort, or '' if the CLI has no separate axis
       line 4   CLI version
 
+  The runner reads `<meta_out>` back only while it is a regular file -- a
+  symlink to a device or a FIFO reads as four empty lines -- and reads at
+  most its first 4096 bytes.
+
   The adapter reports the *effective* values because a pin the CLI silently
   ignored would make `round.json` claim a model that never ran (Q2, R11).
 

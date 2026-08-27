@@ -168,7 +168,7 @@ pr_doctor_check_bash() {
 # tier stays a `command -v` over a stub PATH by design.
 # This list does NOT reach a round: pr_doctor_preflight never calls
 # pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
-PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps"
+PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head"
 
 pr_doctor_check_utils() {
   local u missing=()

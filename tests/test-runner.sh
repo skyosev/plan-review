@@ -699,6 +699,57 @@ test_a_failed_discard_warns_without_failing_the_round() {
     "could not discard" "and recorded it in the artifact"
 }
 
+# The child's meta read is guarded (-f, so a symlink to a device or a FIFO is
+# skipped) and bounded (head -c 4096). Measured unguarded (2026-08-27): the
+# device symlink ballooned the child past 3GB RSS with no deadline over it,
+# and the writer-less FIFO blocked forever at open(2). The outer timeout is
+# why a regression fails red here instead of hanging the suite -- though the
+# symlink case's failure mode is memory, not time: if this goes red, check
+# for a leaked child before rerunning.
+test_a_meta_swapped_for_a_device_symlink_reads_as_empty_meta() {
+  pr_test_requires /dev/zero || return 0
+  local d art rc=0; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  PR_CACHE_ROOT="$d/cache" PR_ADAPTER_MAP="codex=$FAKES/fake-ok-meta-symlink.sh" \
+  PR_TIMEOUT_SECS=10 PR_ORCHESTRATOR=none \
+    timeout 30 bash "$RUNNER" round --repo "$d/target" --plan docs/plan.md \
+    > /dev/null 2>&1 || rc=$?
+  assert_exit_code "$rc" 0 "the round completed despite the hostile meta"
+  art="$(ls -d "$d/target/.plan-review/"*/)"
+  assert_eq "$(jq -r '.state' < "$art/round-1/round.json")" "awaiting_integration" \
+    "and finished"
+  assert_eq "$(jq -r '.reviewers.codex.model' < "$art/round-1/round.json")" "" \
+    "no meta line was read from the device"
+}
+
+test_a_meta_swapped_for_a_writerless_fifo_reads_as_empty_meta() {
+  pr_test_requires mkfifo || return 0
+  local d art rc=0; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  PR_CACHE_ROOT="$d/cache" PR_ADAPTER_MAP="codex=$FAKES/fake-ok-meta-fifo.sh" \
+  PR_TIMEOUT_SECS=10 PR_ORCHESTRATOR=none \
+    timeout 30 bash "$RUNNER" round --repo "$d/target" --plan docs/plan.md \
+    > /dev/null 2>&1 || rc=$?
+  assert_exit_code "$rc" 0 "the round completed; the -f guard skipped the FIFO"
+  art="$(ls -d "$d/target/.plan-review/"*/)"
+  assert_eq "$(jq -r '.reviewers.codex.session_id' < "$art/round-1/round.json")" "" \
+    "no session handle was read from the FIFO"
+}
+
+# The bound itself, on a regular file the -f guard waves through: 8192 bytes
+# in, exactly 4096 recorded. The symlink and FIFO cases cannot pin this --
+# they never reach the read -- so dropping head -c while keeping -f would
+# leave them green; this one goes red.
+test_an_oversize_meta_is_cut_at_the_4096_byte_bound() {
+  local d art rc=0; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  PR_CACHE_ROOT="$d/cache" PR_ADAPTER_MAP="codex=$FAKES/fake-ok-meta-oversize.sh" \
+  PR_TIMEOUT_SECS=10 PR_ORCHESTRATOR=none \
+    timeout 30 bash "$RUNNER" round --repo "$d/target" --plan docs/plan.md \
+    > /dev/null 2>&1 || rc=$?
+  assert_exit_code "$rc" 0 "oversize gibberish lands where undersize gibberish does"
+  art="$(ls -d "$d/target/.plan-review/"*/)"
+  assert_eq "$(jq -r '.reviewers.codex.session_id | length' < "$art/round-1/round.json")" \
+    "4096" "the recorded line is the first 4096 bytes, no more"
+}
+
 # Loss of the artifact store: the parent aborts hard with the error on stderr
 # rather than reaching awaiting_integration with an artifact it could not write.
 #
