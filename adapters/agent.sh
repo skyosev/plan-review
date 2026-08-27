@@ -6,7 +6,9 @@
 # storage), not network-off; an early probe against a host outside that
 # allowlist was misread as the sandbox blocking all traffic. Verified against
 # 2026.08.11-e8db854: github.com 200, api.github.com 200, write inside the
-# workdir OK, write outside denied with no file created.
+# workdir OK, write outside denied with no file created -- but that last
+# clause is NO LONGER TRUE at 2026.08.25-3e8eec8, where a tool-call write to
+# both /tmp and $HOME succeeded; see the wrap comment below.
 #
 # Cursor exits 2 when a tool call is denied while still producing a correct
 # review, so the adapter normalises that to 0 when output exists.
@@ -77,8 +79,23 @@ cd "$workdir" || exit 1
 # has no bwrap at all. Where the platform provides no mechanism the kernel's
 # descendant sweep is the bound -- docs/adapter-contract.md states exactly
 # that.
+#
+# The gate is a working jail, not `command -v bwrap`. Presence is not
+# function: on the host class lib/doctor.sh already documents -- Ubuntu 24.04
+# with kernel.apparmor_restrict_unprivileged_userns=1 -- bwrap is installed and
+# every jail it starts is denied. Gated on presence, all three invocations
+# below would fail there and the round would lose this reviewer entirely
+# ("create-chat produced no session id") on a machine where `agent` worked fine
+# before this wrap existed. So the flags are tried once, on `true`, and a jail
+# that will not start simply means no wrap: the reviewer still runs,
+# containment degrades to the kernel's sweep, and the doctor is what tells the
+# operator they lost the fence (pr_doctor_check_agent_pid_fence, a WARN --
+# there is no fail-closed rule to enforce here). One extra bwrap spawn per
+# adapter run, ~10ms, against silently losing a reviewer.
 wrap=()
-if command -v bwrap > /dev/null 2>&1; then
+if bwrap --bind / / --dev /dev --proc /proc \
+         --die-with-parent --unshare-uts --unshare-ipc --unshare-pid \
+         true > /dev/null 2>&1; then
   wrap=(bwrap --bind / / --dev /dev --proc /proc
         --die-with-parent --unshare-uts --unshare-ipc --unshare-pid)
 fi

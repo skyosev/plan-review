@@ -172,8 +172,14 @@ done
 # be unconditional, on the premise that one of agy and claude is always
 # reviewing -- which a config naming only codex makes false, and which would
 # then FAIL a machine for missing bwrap on a round that never needed it.
+# agent is the third case, added 2026-08-27: its adapter now wraps every vendor
+# invocation in a pid-namespace bwrap, so "no reviewer here needs the jail" was
+# false for a codex+agent roster. It gets a WARN-only check, because that
+# adapter runs unwrapped rather than refusing -- see pr_doctor_check_agent_pid_fence.
 if [[ " $shipped " == *" agy "* || " $shipped " == *" claude "* ]]; then
   pr_doctor_check_bwrap_jail
+elif [[ " $shipped " == *" agent "* ]]; then
+  pr_doctor_check_agent_pid_fence
 else
   pr_d_skip "no reviewer here needs the bubblewrap jail"
 fi

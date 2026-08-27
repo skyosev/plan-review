@@ -74,7 +74,11 @@ pr_init_needs_pin() { [[ "$1" == agent || "$1" == agy ]]; }
 
 # Which CLIs need the bubblewrap jail. agy's own --sandbox does not confine
 # writes and Claude Code exposes no sandbox flag, so both adapters refuse to run
-# without bwrap.
+# without bwrap. This is REFUSAL, not use: adapters/agent.sh also wraps itself in
+# bwrap, for a pid namespace rather than a write barrier, and runs unwrapped when
+# there is none -- so listing it here would block `init` on a machine where the
+# roster works. The doctor reports that case as a warning instead
+# (pr_doctor_check_agent_pid_fence).
 pr_init_needs_jail() { [[ "$1" == agy || "$1" == claude ]]; }
 
 # pr_init_lookup <pairs> <key>  -- "cli=value cli=value" -> value, or 1.

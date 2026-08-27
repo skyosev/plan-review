@@ -132,9 +132,10 @@ test_working_jail_passes() {
 # shape of --die-with-parent without --unshare-pid) has to fail. The stub
 # runs the payload with plain host bash -- uncontained by construction -- so
 # both markers appear and the probe must notice within its wait window.
-test_bwrap_probe_fails_when_a_detached_process_survives() {
-  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
-  cat > "$d/bin/bwrap" <<'STUB'
+# Runs the probe payload with plain host bash -- uncontained by construction,
+# so both markers appear.
+install_escaping_bwrap_stub() {
+  cat > "$1/bwrap" <<'STUB'
 #!/usr/bin/env bash
 args=("$@")
 for i in "${!args[@]}"; do
@@ -142,7 +143,12 @@ for i in "${!args[@]}"; do
 done
 exit 0
 STUB
-  chmod +x "$d/bin/bwrap"
+  chmod +x "$1/bwrap"
+}
+
+test_bwrap_probe_fails_when_a_detached_process_survives() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  install_escaping_bwrap_stub "$d/bin"
   local out rc=0
   PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=5 \
     _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
@@ -162,6 +168,22 @@ test_bwrap_probe_fails_when_the_payload_never_ran() {
   assert_contains "$out" "never started" "the failure names what happened"
 }
 
+# A garbage tick count must not silently disable the containment window:
+# `(( _i < abc ))` reads an unset name as 0, so an unclamped bound would skip
+# the loop entirely and report an escaping jail as contained -- a false pass on
+# the one thing this probe adds. The stub is the escaping one, so the correct
+# answer is still a failure. (It costs ~0.2s, not the clamped ten ticks: the
+# loop breaks as soon as `survived` lands.)
+test_a_non_numeric_tick_count_is_clamped_not_honoured() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  install_escaping_bwrap_stub "$d/bin"
+  local out rc=0
+  PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=abc \
+    _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
+  assert_eq "$rc" "1" "the escape is still caught with a garbage tick count"
+  assert_contains "$out" "survived" "the window ran at the clamped default"
+}
+
 test_bwrap_probe_passes_when_the_jail_contains() {
   local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
   install_containing_bwrap_stub "$d/bin"
@@ -169,6 +191,34 @@ test_bwrap_probe_passes_when_the_jail_contains() {
   PATH="$d/bin:$PATH" PR_BWRAP_PROBE_TICKS=2 \
     _pr_doctor_bwrap_probe pr-test-jail out || rc=$?
   assert_eq "$rc" "0" "spawned without survived is containment"
+}
+
+# agent's bwrap is a pid fence, not a write barrier, and its adapter degrades
+# to unwrapped rather than refusing -- so a jail that does not work is a WARN
+# here, not the failure pr_doctor_check_bwrap_jail reports for agy and claude.
+# Failing would refuse a roster that works.
+test_a_broken_jail_only_warns_for_agent() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/bwrap" 'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1'
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agent_pid_fence')"
+  assert_contains "$out" "counts 0 1 0" "a warning, not a failure"
+  assert_contains "$out" "runs without a pid namespace" "says what was lost"
+  assert_contains "$out" "still runs" "and that the reviewer is not lost with it"
+}
+
+test_a_missing_bwrap_only_warns_for_agent() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  local out; out="$(doctor_run "$d/bin" 'pr_doctor_check_agent_pid_fence')"
+  assert_contains "$out" "counts 0 1 0" "no bwrap is a warning here; macOS never has one"
+  assert_contains "$out" "session lock" "names the consequence of a survivor"
+}
+
+test_a_working_jail_passes_for_agent_as_a_fence() {
+  local d; d="$(pr_test_tmpdir)"
+  install_containing_bwrap_stub "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agent_pid_fence')"
+  assert_contains "$out" "counts 1 0 0" "a working jail is one pass"
+  assert_contains "$out" "not a write barrier" "and the report says what it is not"
 }
 
 test_unwritable_cache_root_fails() {
@@ -972,6 +1022,24 @@ test_a_codex_only_roster_does_not_check_the_bubblewrap_jail() {
   out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "no reviewer here needs the bubblewrap jail" "skipped, and said so"
   assert_not_contains "$out" "bwrap jail contains" "the probe did not run"
+}
+
+# agent wraps every vendor invocation in a pid-namespace bwrap now, so the old
+# "no reviewer here needs the bubblewrap jail" was false for this roster.
+test_an_agent_roster_checks_the_pid_fence_instead_of_skipping() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkrepo_with_config "$d/repo" '{"reviewers": ["codex", "agent"]}'
+  # `agent` is stubbed even though this case runs on the real PATH: the roster
+  # makes the doctor run pr_doctor_check_agent_identity, and that invokes the
+  # real Cursor CLI. Nothing in this suite may call a real CLI.
+  pr_test_mkstub "$d/bin/agent" \
+    '[[ "$1 $2" == "about --format" ]] && { echo "{\"cliVersion\":\"stub\"}"; exit 0; }
+exit 1'
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
+         bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
+  assert_not_contains "$out" "no reviewer here needs the bubblewrap jail" \
+    "agent needs one now, and the report no longer claims otherwise"
+  assert_contains "$out" "pid namespace" "the fence is what is reported"
 }
 
 test_an_agy_roster_does_check_the_bubblewrap_jail() {

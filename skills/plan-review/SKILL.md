@@ -283,7 +283,9 @@ meant.
   reviewer whose CLI does not confine its own writes. This is correct behaviour, not a
   bug. Report it and continue with the other reviewers; do not work around it by editing
   the adapter. `agent` never fails this way — its bubblewrap supplies only a pid
-  namespace, not a write barrier, so with no `bwrap` it runs unwrapped by design.
+  namespace, not a write barrier, so with no working `bwrap` it runs unwrapped by design.
+  The doctor warns for that case rather than failing; report the warning, and do not
+  treat it as a reason to drop the reviewer.
 - The doctor's jail check now says "bwrap jail **contains** a detached process". It
   measures containment, not whether the flags were accepted, so a failure there means a
   reviewer could leave a process running after the round returns — not merely that a

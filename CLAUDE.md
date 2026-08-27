@@ -216,15 +216,19 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   and runs `--safe-mode`. Never add an unconfined fallback — for those two.
   `adapters/agent.sh` is the exception and is deliberately **not** fail-closed: its bwrap
   supplies the pid namespace and nothing else (`/` is bound read-write on purpose), so
-  where there is no bwrap it runs unwrapped and the kernel's sweep is the bound, exactly
-  as `docs/adapter-contract.md`'s containment clause says. Both jailed adapters also keep
-  a **private state directory** beside the repo copy — `<sandbox>/config` for claude,
-  `<sandbox>/gemini-state` for agy — bound over the path the CLI expects, with the one
-  auth file each needs bound in read-only *by path*. The operator's real `~/.claude` and
-  `~/.gemini` are never bind targets: both CLIs run hooks out of those directories in the
-  operator's own later sessions, which is what makes a writable bind a persistence
-  channel out of the jail. agy's file list came from a measurement, not a guess — the
-  obvious-looking `oauth_creds.json` is the wrong answer
+  where the jail does not *work* it runs unwrapped and the kernel's sweep is the bound,
+  exactly as `docs/adapter-contract.md`'s containment clause says — and that gate is a
+  trial run of the flags, not `command -v`, because a host with bwrap installed and its
+  userns denied would otherwise lose the reviewer outright. Both fail-closed adapters also
+  keep a **private state directory** beside the repo copy — `<sandbox>/config` for claude,
+  `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
+  *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
+  because agy cannot be told to look elsewhere, while claude's is bound at its own path
+  and named by `CLAUDE_CONFIG_DIR`. Neither operator directory is ever a bind **source**:
+  both CLIs run hooks out of `~/.claude` and `~/.gemini` in the operator's own later
+  sessions, which is what makes a writable bind of one a persistence channel out of the
+  jail. agy's file list came from a measurement, not a guess — the obvious-looking
+  `oauth_creds.json` is the wrong answer
   (`docs/process/probes/2026-08-27-pid-namespace-adapters/`, leg 3).
 
 - **`PR_TIMEOUT_SECS` must be a positive integer**, enforced in

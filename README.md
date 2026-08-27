@@ -598,9 +598,12 @@ round's session lock. On Linux every reviewer is now contained by a pid namespac
 `--as-pid-1`. `--die-with-parent` alone was not enough — measured 2026-08-27, a detached
 `setsid sleep` survived the jail's exit without `--unshare-pid` and was gone with it. For
 `agent` the bubblewrap is *only* a pid fence: `/` is bound read-write, the write barrier
-stays Cursor's own, and where there is no `bwrap` — macOS — the adapter runs unwrapped
-rather than refusing, because refusing would remove the reviewer for a barrier it never
-supplied. On macOS there are no pid namespaces at all, and the runner's best-effort
+stays Cursor's own, and where the jail does not work — macOS has no `bwrap` at all, and
+some Linux hosts have it installed with user namespaces denied — the adapter runs
+unwrapped rather than refusing, because refusing would remove the reviewer for a barrier
+it never supplied. It decides by trying the flags once, not by looking for the binary,
+so a broken jail costs the fence and not the review; `plan-review doctor` reports that
+case as a warning. On macOS there are no pid namespaces at all, and the runner's best-effort
 descendant sweep is the only bound.
 
 Reads are unconfined for every reviewer. Codex has open network access; Cursor's is

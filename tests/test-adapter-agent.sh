@@ -36,10 +36,17 @@ install_bwrap_stub() {
   local bindir="$1"
   cat > "$bindir/bwrap" <<STUB
 #!/usr/bin/env bash
-printf '%s\n' "\$@" >> "$bindir/bwrap-argv.txt"
 args=("\$@")
 for i in "\${!args[@]}"; do
-  [[ "\${args[\$i]}" == agent ]] && exec "\${args[@]:\$i}"
+  # The adapter's readiness probe is \`bwrap <flags> true\`: presence on PATH is
+  # not a working jail, so it tries the flags before deciding to wrap. It is
+  # not a vendor invocation, so it is answered but NOT recorded -- the argv log
+  # counts wrapped \`agent\` calls and the count assertion below depends on that.
+  [[ "\${args[\$i]}" == true ]] && exit 0
+  if [[ "\${args[\$i]}" == agent ]]; then
+    printf '%s\n' "\$@" >> "$bindir/bwrap-argv.txt"
+    exec "\${args[@]:\$i}"
+  fi
 done
 exit 1
 STUB
@@ -233,6 +240,27 @@ test_review_still_runs_without_bwrap() {
   rc=$?
   assert_exit_code "$rc" 0 "runs unwrapped when the platform has no mechanism"
   assert_file_exists "$d/bin/argv.txt" "the CLI ran"
+}
+
+# Presence on PATH is not a working jail. On a host with bwrap installed but
+# its user namespaces denied (Ubuntu 24.04's
+# kernel.apparmor_restrict_unprivileged_userns=1 — the exact case
+# lib/doctor.sh diagnoses), a wrap gated on `command -v` made all three
+# invocations fail and the round lost this reviewer with "create-chat produced
+# no session id". The adapter tries the flags instead, so a jail that will not
+# start costs the pid fence and not the review.
+test_a_broken_jail_costs_the_fence_not_the_reviewer() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0
+  pr_test_mkstub "$d/bin/bwrap" \
+    'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1'
+  mkdir -p "$d/work"
+  echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 0 "the review still runs unwrapped"
+  assert_file_exists "$d/bin/argv.txt" "the CLI ran"
+  assert_file_missing "$d/bin/bwrap-argv.txt" "and no vendor call was wrapped"
 }
 
 pr_run_tests
