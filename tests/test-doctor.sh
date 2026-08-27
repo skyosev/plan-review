@@ -601,6 +601,20 @@ test_completed_round_clears_the_way() {
   assert_contains "$out" "counts 1 0 0" "a pass"
 }
 
+# The runner refuses a round over an aborted predecessor without --fresh
+# (pr_round_needs_fresh, lib/round.sh); a doctor that said plain "can start"
+# would send the operator straight into that refusal. Still a pass, not a
+# blocker: the way is clear, and the flag is the way.
+test_an_aborted_round_is_startable_with_fresh_only() {
+  local d; d="$(pr_test_tmpdir)"
+  mkrepo "$d/repo"
+  seed_round "$d/repo" plan.md aborted > /dev/null
+  local out; out="$(rounds_run "$d/repo" plan.md)"
+  assert_contains "$out" "round 1 is aborted; round 2 starts with --fresh only" \
+    "the doctor and the runner tell one story"
+  assert_contains "$out" "counts 1 0 0" "a pass"
+}
+
 # --- the session lock -------------------------------------------------------
 #
 # round.json cannot tell these two apart. Its state is written once, so

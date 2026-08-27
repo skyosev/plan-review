@@ -413,7 +413,10 @@ is never the fix for a single reviewer; it discards every handle.
 
 `--fresh` starts a new baseline. It drops the resume handles *and* omits the diff,
 your previous critique and the rationale from the prompt, so the reviewer sees only
-the plan as it stands. Round numbering carries on; nothing is deleted.
+the plan as it stands. Round numbering carries on; nothing is deleted. Dropping the
+handles is a store-scoped write like any other: a `--fresh` that cannot clear the
+session map aborts with exit 2 before any reviewer starts, rather than running a
+round marked `fresh` whose reviewers resume from the handles it failed to drop.
 
 ## What it writes
 
@@ -485,14 +488,15 @@ cannot be written, because the disk is full or the directory is not writable —
 abort: the runner prints what it could not write, ending in `aborting`, and exits 2. It
 does not print "Round complete" over an artifact it failed to record, and the state left
 in `round.json` is the last one that actually persisted — usually `reviewing`, and it
-stays that way on disk: `abort` writes through the same directory that
-just refused a write, so it refuses too — one sentence naming the store — until the store
-is writable again. Fix the disk or the permissions first; then the round aborts and reads
-exactly as any other unfinished one. **Run the next round `--fresh`**: the
-serial pass stopped part-way, so every reviewer it had not reached yet still holds the
-resume handle from the round before — including handles this round would have forfeited.
-The runner does not clear the map on its way out, because clearing it needs the same
-store that just refused a write.
+stays that way on disk: `abort` writes through the same directory that just refused a
+write, so it refuses too — one sentence naming the store — until the store is writable
+again. Fix the disk or the permissions first; then the round aborts and reads exactly as
+any other unfinished one. **The next round is then `--fresh`, and the runner enforces
+it**: a round whose predecessor is `aborted` is refused with exit 2 and a message naming
+the flag. The reason is that the serial pass stopped part-way, so every reviewer it had
+not reached yet still holds the resume handle from the round before — including handles
+this round would have forfeited. The runner does not clear the map on its way out,
+because clearing it needs the same store that just refused a write.
 
 **agy runs under a deadline of its own**, derived by the adapter as 90% of
 `PR_TIMEOUT_SECS` and passed as `--print-timeout`. Left unset, agy would apply its own

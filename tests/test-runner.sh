@@ -218,6 +218,58 @@ test_fresh_discards_session_handles_without_destroying_history() {
   assert_eq "$(jq -r '.fresh' < "$art/round-1/round.json")" "false" "round 1 not a baseline"
 }
 
+# An aborted predecessor forces --fresh, whatever aborted it -- including this
+# routine all-reviewers-failed case, whose handles R1 already forfeited. The
+# policy is one sentence: aborted means "this round did not finish, resume
+# nothing from it". Enforced here since 2026-08-27; before that, README prose
+# alone carried the obligation and nothing detected the condition.
+test_an_aborted_predecessor_refuses_the_next_round_without_fresh() {
+  local d art out rc; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  run_round "$d/target" "$d/cache" "codex=$FAKES/fake-fail.sh" > /dev/null 2>&1
+  art="$(ls -d "$d/target/.plan-review/"*/)"
+  assert_eq "$(jq -r '.state' < "$art/round-1/round.json")" "aborted" \
+    "precondition: the all-failed round marked itself aborted"
+  out="$(run_round "$d/target" "$d/cache" "codex=$FAKES/fake-ok.sh" 2>&1)"; rc=$?
+  assert_exit_code "$rc" 2 "refused"
+  assert_contains "$out" "--fresh" "the message names the remedy"
+  assert_file_missing "$art/round-2" "no round was started"
+}
+
+test_fresh_starts_over_an_aborted_predecessor() {
+  local d art rc=0; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  run_round "$d/target" "$d/cache" "codex=$FAKES/fake-fail.sh" > /dev/null 2>&1
+  art="$(ls -d "$d/target/.plan-review/"*/)"
+  PR_CACHE_ROOT="$d/cache" PR_ADAPTER_MAP="codex=$FAKES/fake-ok.sh" \
+  PR_ORCHESTRATOR=none \
+    bash "$RUNNER" round --repo "$d/target" --plan docs/plan.md --fresh \
+    > /dev/null 2>&1 || rc=$?
+  assert_exit_code "$rc" 0 "--fresh is the sanctioned path past an aborted round"
+  assert_eq "$(jq -r '.fresh' < "$art/round-2/round.json")" "true" "and is a baseline"
+}
+
+# The other half of the gate: --fresh that cannot clear the map must not
+# start reviewers that would resume from it. Reproduced on the unchecked
+# clear (2026-08-27): a read-only session-map.json printed Permission denied,
+# the status was ignored, the round exited 0 with fresh:true, and the
+# reviewer resumed from the old handle.
+test_a_fresh_that_cannot_clear_the_map_starts_nothing() {
+  (( EUID != 0 )) || { pr_test_skip "root writes anywhere; the case cannot exist"; return 0; }
+  local d art out rc before; d="$(pr_test_tmpdir)"; make_target "$d/target"
+  run_round "$d/target" "$d/cache" "codex=$FAKES/fake-ok.sh" > /dev/null 2>&1
+  art="$(ls -d "$d/target/.plan-review/"*/)"
+  complete_round "$art/round-1" > /dev/null
+  before="$(cat "$art/session-map.json")"
+  chmod a-w "$art/session-map.json"
+  out="$(PR_CACHE_ROOT="$d/cache" PR_ADAPTER_MAP="codex=$FAKES/fake-ok.sh" \
+    PR_ORCHESTRATOR=none \
+    bash "$RUNNER" round --repo "$d/target" --plan docs/plan.md --fresh 2>&1)"; rc=$?
+  chmod u+w "$art/session-map.json"
+  assert_exit_code "$rc" 2 "a --fresh that cannot clear the map is a hard abort"
+  assert_contains "$out" "aborting" "with the store-loss vocabulary"
+  assert_file_missing "$art/round-2" "no round directory was created"
+  assert_eq "$(cat "$art/session-map.json")" "$before" "the old map is intact"
+}
+
 # Starting round N+1 while N still awaits integration would silently skip the
 # rationale step, which is the whole point of the loop.
 test_runner_refuses_to_start_while_the_previous_round_awaits_integration() {

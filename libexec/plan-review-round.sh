@@ -183,11 +183,31 @@ if [[ "$highest_round" -gt 0 ]]; then
     esac
     exit 2
   fi
+
+  # An aborted predecessor forces --fresh, whatever aborted it -- including
+  # the routine all-reviewers-failed round: aborted does not mean "store
+  # loss", it means "this round did not finish, resume nothing from it" (R1
+  # already forfeited the handles). The rule is pr_round_needs_fresh in
+  # lib/round.sh, shared with the doctor's report. A read-only check, on a
+  # state the guard above just read.
+  if pr_round_needs_fresh "$prev_state" && [[ "$fresh" -ne 1 ]]; then
+    echo "round $highest_round is aborted: its resume handles are forfeit." >&2
+    echo "Run again with --fresh to start a new baseline." >&2
+    exit 2
+  fi
 fi
 
 # Only after the guard: a refused --fresh must not have already destroyed the
-# handles it was going to reset.
-[[ "$fresh" -eq 1 ]] && pr_session_clear "$session_map"
+# handles it was going to reset. Checked like every other store-scoped write
+# (reproduced unchecked, 2026-08-27: a read-only session-map.json printed
+# Permission denied, the round exited 0 with fresh:true, and the reviewer
+# resumed from the handle --fresh promised to drop). Before the round
+# directory is created: a --fresh that could not clear the map must start
+# nothing that would resume from it.
+if [[ "$fresh" -eq 1 ]] && ! pr_session_clear "$session_map"; then
+  echo "cannot clear the session map at $session_map; aborting" >&2
+  exit 2
+fi
 
 round_dir="$(pr_round_dir "$artifact_dir" "$round")"
 mkdir -p "$round_dir"
@@ -317,6 +337,10 @@ for reviewer in $reviewer_keys; do
   # `aborting` exit must therefore be `--fresh`; README.md ("When a round does
   # not finish") and skills/plan-review/SKILL.md say so to the operator, who
   # is the only one in a position to act on it.
+  #
+  # Since 2026-08-27 the runner enforces it too: the next-round gate refuses
+  # an aborted predecessor without --fresh, so the prose is no longer the only
+  # thing standing between an operator and a poisoned resume.
   #
   # The message names the likeliest cause, not a diagnosis. pr_session_set and
   # pr_session_del both read the map through jq, so they fail on a map an

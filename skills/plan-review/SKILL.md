@@ -232,8 +232,8 @@ meant.
 
   It deletes nothing; the round stays readable. If `abort` refuses because the session is
   locked, reviewers spawned by the dead runner are still writing — report that and wait
-  rather than forcing anything. If instead it refuses with exit 2 and the sentence `the artifact
-  store refuses writes: <dir>`, the artifact store is unwritable and this is the
+  rather than forcing anything. If instead it refuses with exit 2 and the sentence `the
+  artifact store refuses writes: <dir>`, the artifact store is unwritable and this is the
   store-loss case two bullets down — `abort` cannot succeed until that is fixed, so do
   not loop on it.
 - The runner exits 2 with a message ending in `aborting` that names something it could
@@ -249,10 +249,12 @@ meant.
   file, `Permission denied` when the directory is unwritable, `No space left on device`
   when the disk is full; match those on the `.tmp` filename, not on either message. Do
   not run `abort` until the store is writable again — which is also the only point at
-  which it is worth running. When
-  the user is ready to run again, the next round **must** be `--fresh`: the serial pass
-  stopped part-way, so reviewers it never reached still hold last round's resume handles,
-  including ones this round would have thrown away.
+  which it is worth running. When the user is ready to run again, run the next round with
+  `--fresh`: the runner refuses a round whose predecessor is `aborted` without it, exiting
+  2 with a message naming the flag. The reason is unchanged — the serial pass stopped
+  part-way, so reviewers it never reached still hold last round's resume handles,
+  including ones this round would have thrown away — but a forgotten flag is now a
+  refusal to relay, not a silent unsafe resume.
 - A reviewer's `detail` reads `reviewer result record missing` or `record invalid`: that
   reviewer's job died without leaving a readable record, and the runner synthesized a
   failed entry so `round.json` still lists it. Treat it as a failed reviewer — there is
