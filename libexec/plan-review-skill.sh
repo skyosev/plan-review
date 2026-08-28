@@ -25,6 +25,15 @@ PR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PR_ROOT/lib/paths.sh"
 source "$PR_ROOT/lib/doctor.sh"   # pr_agent_identity_version, pr_doctor_run
 
+# printf %q, for the lines that exist to be pasted back into a shell. Carried
+# over from scripts/install.sh's q() with its reason intact, because the lines
+# came with it: the whole point of this helper is that these get pasted, and a
+# checkout path with a space in it otherwise hands the operator a command that
+# breaks on the paste. An ordinary path comes through completely untouched. Only
+# the PATHS go through it -- the -a ids beside them are bare words by
+# construction (skill_id_for), so escaping those would only add noise.
+q() { printf '%q' "$1"; }
+
 usage() {
   cat <<'USAGE'
 usage: plan-review skill
@@ -83,7 +92,7 @@ skill_name_for() {
 
 command -v npx > /dev/null 2>&1 && command -v node > /dev/null 2>&1 || {
   echo "npx and node are needed for the skill, and one of them is not on PATH." >&2
-  echo "install it later with: npx skills@1.5.18 add $PR_ROOT -g -a claude-code" >&2
+  echo "install it later with: npx skills@1.5.18 add $(q "$PR_ROOT") -g -a claude-code" >&2
   echo "repeat -a for each one you use: claude-code, codex, cursor, antigravity-cli" >&2
   exit 2
 }
@@ -124,7 +133,7 @@ echo "installing the skill for: ${targets[*]}"
 # measurements first.
 if ! DISABLE_TELEMETRY=1 npx -y skills@1.5.18 add "$PR_ROOT" -g "${ids[@]}" -y < /dev/null; then
   echo "the skill install failed." >&2
-  echo "retry with: DISABLE_TELEMETRY=1 npx -y skills@1.5.18 add $PR_ROOT -g ${ids[*]} -y" >&2
+  echo "retry with: DISABLE_TELEMETRY=1 npx -y skills@1.5.18 add $(q "$PR_ROOT") -g ${ids[*]} -y" >&2
   exit 1
 fi
 
@@ -143,18 +152,36 @@ if [[ -z "$out" ]]; then
   echo "check it by hand: npx skills@1.5.18 ls -g --json" >&2
   exit 1
 fi
-missing="$(jq -r --args '
+# TWO lines out of one jq: what was wanted and did not come back, then what did.
+# The second line is the half the id/name table comment above promises ("a wrong
+# name is at least self-diagnosing rather than silent"), and it went missing when
+# scripts/install.sh's verify_skill was deleted -- that node program printed
+# `skills reports: ...` beside the misses. Without it a mistyped display name
+# reads as a bare "not linked into: Antigravity CLI" with nothing to compare it
+# against, which is exactly the confusion the table's two-strings-per-harness
+# design exists to resolve. $have is already computed here; only printing it was
+# lost. `no agent at all` is verify_skill's own wording, kept, because it is the
+# case that separates "linked somewhere else" from "this install did nothing".
+#
+# One command substitution, split with parameter expansion rather than a process
+# substitution: `< <(jq ...)` would drop jq's exit status, and that status is the
+# unparseable-JSON branch below.
+verdict="$(jq -r --args '
     (if type == "array" then . else (.skills // []) end)
     | (map(select(.name == "plan-review")) | first) as $hit
     | (($hit.agents // []) | map(tostring)) as $have
-    | [$ARGS.positional[] | select(. as $w | $have | index($w) | not)]
-    | join(", ")' "${names[@]}" <<< "$out" 2>/dev/null)" || {
+    | ([$ARGS.positional[] | select(. as $w | $have | index($w) | not)] | join(", ")),
+      (if ($have | length) == 0 then "no agent at all" else ($have | join(", ")) end)
+    ' "${names[@]}" <<< "$out" 2>/dev/null)" || {
   echo "could not parse 'skills ls -g --json'; the links are unverified." >&2
   echo "check it by hand: npx skills@1.5.18 ls -g --json" >&2
   exit 1
 }
+missing="${verdict%%$'\n'*}"
+have="${verdict#*$'\n'}"
 if [[ -n "$missing" ]]; then
   echo "not linked into: $missing" >&2
+  echo "skills reports: $have" >&2
   echo "a harness you have never launched reports this way whether linked or not." >&2
   echo "check it by hand: npx skills@1.5.18 ls -g --json" >&2
   exit 1

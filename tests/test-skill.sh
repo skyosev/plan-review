@@ -77,6 +77,40 @@ test_a_partial_link_is_nonzero_when_invoked_directly() {
   out="$(run_skill "$d")"; rc=$?
   assert_exit_code "$rc" 1 "an unverifiable link is a failure, not a shrug"
   assert_contains "$out" "not linked into:" "and the misses are named"
+  assert_contains "$out" "skills reports: Claude Code" "beside what actually came back"
+}
+
+# The half the id/name table comment promises: a wrong display name must be
+# self-diagnosing rather than silent. `Antigravity` against `Antigravity CLI` is
+# the near-miss the table exists to prevent (skills lists them as two agents), and
+# the misses alone cannot show it -- "not linked into: Antigravity CLI" reads
+# identically whether skills said `Antigravity` or said nothing. scripts/install.sh's
+# deleted verify_skill printed both halves; this is what pins the restoration.
+test_a_near_miss_display_name_shows_what_came_back() {
+  local d out rc; d="$(pr_test_tmpdir)"
+  stub_npx "$d/stub" \
+    '[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Antigravity"]}]'
+  stub_harness_clis "$d/stub"
+  : > "$d/npx.log"
+  out="$(run_skill "$d")"; rc=$?
+  assert_exit_code "$rc" 1 "a near miss is still a miss"
+  assert_contains "$out" "not linked into: Antigravity CLI" "what was wanted"
+  assert_contains "$out" "skills reports: Claude Code, Codex, Cursor, Antigravity" \
+    "and what came back, which is the only way to see the two differ"
+}
+
+# The pristine-home shape, measured on macOS 2026-08-20: `ls` attributes a skill
+# to an agent only once that agent's config directory exists in the same HOME, so
+# a first run can produce a plan-review entry attributed to nobody. Its own
+# wording, because it is the line that separates "linked somewhere else" from
+# "this install did nothing".
+test_a_skill_attributed_to_no_agent_says_so() {
+  local d out; d="$(pr_test_tmpdir)"
+  stub_npx "$d/stub" '[{"name":"plan-review","agents":[]}]'
+  stub_harness_clis "$d/stub"
+  : > "$d/npx.log"
+  out="$(run_skill "$d")"
+  assert_contains "$out" "skills reports: no agent at all" "an empty array is not a blank line"
 }
 
 test_an_unparseable_ls_is_nonzero() {
