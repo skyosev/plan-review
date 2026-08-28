@@ -25,36 +25,95 @@
 # Format: <tool> <version>. One per line, # starts a comment.
 # Update it after re-running the probes recorded in the process notes.
 
-# Verified during Task 0 / spike S1, against the banner and flag behaviour
-# documented in adapters/codex.sh.
-codex 0.147.0
+# Verified 2026-08-28 by the full acceptance matrix
+# (docs/process/probes/2026-08-28-acceptance-matrix/report.md), four rows:
+#   codex-banner            the smoke's stderr carried all four parsed lines --
+#                           workdir, model, `sandbox: workspace-write [workdir]
+#                           (network access enabled)`, `reasoning effort:`,
+#                           `session id:` -- and the meta file recorded four
+#                           non-empty lines.
+#   codex-sandbox-enforced  a reviewer instructed to `touch` a canary under $HOME
+#                           reported, verbatim, "touch: cannot touch '...':
+#                           Read-only file system", and the canary was absent
+#                           afterwards. Absence alone would have proved nothing;
+#                           the reviewer reporting the refusal is what makes it a
+#                           measurement.
+#   codex-fail-closed       with PR_EXPECTED_SANDBOX mismatched the adapter exited
+#                           1, wrote no review, and the reason named the
+#                           unexpected sandbox. The Q8 refusal fires end to end.
+#   codex-group-snapshot    the one path P6 could not reach -- codex through its
+#                           own adapter. Every process below the round's
+#                           `timeout --kill-after` (adapter bash, the node
+#                           launcher, the musl codex binary) shared the timeout's
+#                           own PGID, and nothing survived the round.
+# The reviewer also runs under a private CODEX_HOME, so the operator's
+# ~/.codex/config.toml is not read: the matrix passed with a top-level
+# `network_access = true` still sitting in it, which older notes called a
+# precondition to fix by hand.
+codex 0.150.1
 
-# Verified against the sandbox and model-switch behaviour documented in
-# adapters/agent.sh. Measured again on 2026-08-17, at this same version: `agent
-# about --format json` answers with cliVersion (and userEmail, which the doctor
-# never echoes), and `agent status --format json` answers with isAuthenticated.
-# lib/doctor.sh uses both -- identity and auth are structured now, and the
-# 60-second --list-models call is left to pin validation alone.
-agent 2026.08.11-e8db854
-
-# Recorded 2026-08-17, from the acceptance run recorded in the process notes. Weaker
-# provenance than the two above: the earlier probes established what agy's
-# --sandbox does NOT confine, but never recorded the version they ran against, so
-# this is "the version the loop has been exercised on", not "the version the
-# escape was measured on".
+# Verified 2026-08-28 by the acceptance matrix, and by the containment probe of
+# the same week (docs/process/probes/2026-08-28-cursor-containment/). Re-measured
+# at THIS version: `agent about --format json` answers with cliVersion (and
+# userEmail, which the doctor never echoes), and `agent status --format json`
+# answers with isAuthenticated -- lib/doctor.sh uses both, so identity and auth
+# are structured, and the 60-second --list-models call is left to pin validation
+# alone. A smoke-scale round recorded all four meta lines.
 #
-# Also measured 2026-08-17 at this version: `agy --help` documents
-# --print-timeout with a default of 5m0s. adapters/agy.sh passes the flag as
-# $((PR_TIMEOUT_SECS * 900))ms -- 90% of the runner's deadline, in milliseconds
-# so the inner deadline stays strictly below the outer one even at
-# PR_TIMEOUT_SECS=1 -- and the doctor asserts the flag still exists in agy's
-# help (lib/doctor.sh). Without it agy would apply its own 5m0s default inside
-# the runner's deadline.
-agy 1.1.13
+# The mid-run model-switch notice is the one promise this line does NOT vouch
+# for, and the narrowing is deliberate rather than an oversight. Cursor emits it
+# only as prose ("Switched to ..."); the format was verified at pin time and
+# CANNOT be provoked on demand (probe P5), so no run since has re-read it. Drift
+# in that prose is detected only by a live swap actually happening -- until then
+# adapters/agent.sh could be recording a model that did not answer, and nothing
+# here would know. Treat the notice as pinned-by-history, not pinned-by-test.
+#
+# Containment, by contrast, WAS re-measured at this version: Cursor's own
+# sandbox is the write barrier, and the earlier "unconfined" reading was the
+# probing host's own ~/.cursor `approvalMode: "unrestricted"` making
+# `--sandbox enabled` inert. adapters/agent.sh now runs from a private
+# CURSOR_CONFIG_DIR that pins the safe mode, so the operator's setting cannot
+# reach the reviewer.
+agent 2026.08.25-3e8eec8
 
-# Verified 2026-08-17 by spike S2, whose probes are recorded in the process
-# notes. Every behaviour adapters/claude.sh depends on was
-# measured at this version, including the negative results: no effort is reported
-# in either output format, and the repo-hook suppression by --safe-mode was
-# confirmed against a control run that let the hook fire.
-claude 2.1.233
+# Verified 2026-08-28 by the acceptance matrix. The envelope row is the one this
+# line rests on: a direct call with the adapter's own argv came back with
+# `status`, `response` and `conversation_id` all present, and a smoke-scale round
+# through the adapter parsed the conversation id into meta and the response into
+# the review. Provenance is still weaker than codex's for CONFINEMENT: the early
+# probes established what agy's --sandbox does not confine but never recorded the
+# version they ran against, so nothing here is "the version the escape was
+# measured on". The jail adapters/agy.sh builds is what confines it.
+#
+# --print-timeout IS passed, and the stale paragraph that used to sit here saying
+# otherwise is gone. adapters/agy.sh derives it from the deadline the execution
+# kernel exports, as $((PR_TIMEOUT_SECS * 900))ms -- 90% of the runner's, in
+# milliseconds so the inner deadline stays strictly below the outer one even at
+# PR_TIMEOUT_SECS=1. The DERIVED VALUE is pinned offline
+# (tests/test-adapter-agy.sh asserts `810000ms` at 900s, and a separate case
+# covers the one-second deadline), and the doctor asserts the flag still exists
+# in agy's help. What is NOT re-measured here is agy HONOURING it: the expiry
+# classification -- exit 1 with .status ERROR and .error "timeout waiting for
+# response" -- was measured once, in probe P1 at agy 1.1.15, and has not been
+# re-provoked live since. The matrix proves only that the installed CLI accepts
+# the argv, since a rejected flag would have failed the envelope row outright.
+agy 1.1.22
+
+# Verified 2026-08-28 by the acceptance matrix, both rows.
+#   claude-init-line   the live stream-json `init` line carried every field the
+#                      parser reads -- model, permissionMode (bypassPermissions,
+#                      which is what the adapter asks for and refuses to proceed
+#                      without) and claude_code_version. That match at this
+#                      version is what licenses trusting the offline pin of the
+#                      refusal branch, which cannot be provoked against a live
+#                      CLI on demand.
+#   claude-safe-mode   RE-MEASURED this run, with the control. A target repo
+#                      whose .claude/settings.json ran a hook on SessionStart and
+#                      UserPromptSubmit fired NEITHER canary through the adapter,
+#                      while the same repo under a plain `claude -p` fired both.
+#                      The round was run with PR_KEEP_SANDBOX=1 and the reviewer's
+#                      retained repo copy checked: settings.json had arrived
+#                      verbatim and the workdir was writable, so the absence is
+#                      suppression and not a missing file or a read-only target.
+# Also still true at this version: no effort is reported in either output format.
+claude 2.1.248
