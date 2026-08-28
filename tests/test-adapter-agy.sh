@@ -213,6 +213,22 @@ test_the_gemini_mountpoint_is_created_when_the_host_has_none() {
   # helpers' assert_file_exists is [[ -f ]] and would always fail on a dir
   [[ -d "$d/home/.gemini" ]] || pr_fail "the adapter created the bind destination"
   assert_file_exists "$d/r.md" "and the round still produced a review"
+  # The reproduced failure was ordering-shaped: under --ro-bind / / bwrap cannot
+  # mkdir a missing destination, so the mountpoint must exist BEFORE the jail is
+  # built and the root bind must precede the state bind that mounts over it.
+  # Assert the TUPLES, not first-token positions: keying on the first --ro-bind
+  # alone stays green when the root bind is gone and some other ro-bind (the
+  # creds file) stands in for it.
+  local -a argv=(); mapfile -t argv < "$d/bin/bwrap-argv.txt"
+  local i root_at='' state_at=''
+  for ((i = 0; i + 2 < ${#argv[@]}; i++)); do
+    [[ -z "$root_at" && "${argv[i]}" == "--ro-bind" \
+       && "${argv[i+1]}" == "/" && "${argv[i+2]}" == "/" ]] && root_at=$i
+    [[ -z "$state_at" && "${argv[i]}" == "--bind" \
+       && "${argv[i+1]}" == "$d/sandbox/gemini-state" ]] && state_at=$i
+  done
+  [[ -n "$root_at" && -n "$state_at" && "$root_at" -lt "$state_at" ]] \
+    || pr_fail "the --ro-bind / / triple precedes the --bind of gemini-state over ~/.gemini"
 }
 
 # Reviewer-scoped write integrity, the state dir's shape: a mountpoint that

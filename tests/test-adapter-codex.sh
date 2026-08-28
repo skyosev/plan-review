@@ -257,7 +257,13 @@ test_no_home_still_runs_with_the_private_home() {
   assert_not_contains "$(cat "$d/out.txt")" "unbound variable" "and not this way"
   assert_contains "$(< "$d/bin/env.txt")" "CODEX_HOME=$d/sandbox/codex-home" \
     "the private home is still set"
-  assert_file_missing "$d/sandbox/codex-home/auth.json" "nothing to copy, nothing copied"
+  # The copy-absence assertion that used to close this case is gone: with HOME
+  # unset the adapter reads "${HOME:-}/.codex/auth.json" as "/.codex/auth.json",
+  # so what it measured was whether the HOST has a file at the filesystem root
+  # (BACKLOG 2026-08-27, "Four checks..."). The property is real and now lives
+  # in test_a_missing_operator_auth_json_copies_nothing, which owns a HOME.
+  # What is left here is this case's actual subject: set -u survival, and
+  # CODEX_HOME still set.
 }
 
 # Reviewer-scoped write integrity: an uncreatable home fails THIS reviewer

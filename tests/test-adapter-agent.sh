@@ -251,8 +251,12 @@ test_review_still_runs_without_bwrap() {
 # start costs the pid fence and not the review.
 test_a_broken_jail_costs_the_fence_not_the_reviewer() {
   local d rc; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0
+  # The failing stub still RECORDS: without that, asserting bwrap-argv.txt
+  # missing proved only that the recording stub was overwritten (BACKLOG
+  # 2026-08-27, "Four checks..."). Appending, so the trial and any would-be
+  # wrap both land in the file.
   pr_test_mkstub "$d/bin/bwrap" \
-    'echo "bwrap: setting up uid map: Permission denied" >&2; exit 1'
+    "printf '%s\n' \"\$@\" >> '$d/bin/bwrap-argv.txt'; exit 1"
   mkdir -p "$d/work"
   echo "prompt" | PATH="$d/bin:$PATH" \
     bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" \
@@ -260,7 +264,8 @@ test_a_broken_jail_costs_the_fence_not_the_reviewer() {
   rc=$?
   assert_exit_code "$rc" 0 "the review still runs unwrapped"
   assert_file_exists "$d/bin/argv.txt" "the CLI ran"
-  assert_file_missing "$d/bin/bwrap-argv.txt" "and no vendor call was wrapped"
+  assert_contains "$(cat "$d/bin/bwrap-argv.txt")" "true" "the jail was trialled once"
+  assert_not_contains "$(cat "$d/bin/bwrap-argv.txt")" "agent" "and no vendor call was wrapped"
 }
 
 pr_run_tests
