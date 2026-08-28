@@ -315,7 +315,14 @@ wrap=(bwrap --bind / / --dev /dev --proc /proc
 # So bound it and keep what it printed. The id is on stdout within a second or
 # two, long before the hang, and a chat created by a create-chat that was then
 # KILLED resumes normally -- measured, not assumed, because "the id exists" and
-# "the chat is usable" are different claims. GNU `timeout` is already a hard
+# "the chat is usable" are different claims. The measurement is
+# docs/process/probes/2026-08-28-acceptance-matrix/, NOT leg 7 of the containment
+# probe, whose rc=0 the same branch retired as a non-discriminator (`agent
+# --resume` returns 0 for a UUID that was never a chat id). The matrix's agent
+# resume leg ran from a fresh throwaway repo, so round 1's chat was minted
+# through exactly this bound in a cold directory, and round 2 resumed that id and
+# reproduced a token round 1 had been told to hold and never write down -- a
+# token absent from round 1's published review and from round 2's prompt. GNU `timeout` is already a hard
 # requirement of this project (pr_doctor_check_gnu_timeout FAILS without it) --
 # this is the one adapter that reaches for it directly, and the reasoning is
 # restated here rather than shared because adapters source nothing.

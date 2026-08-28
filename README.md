@@ -6,8 +6,8 @@ between three terminals.
 
 ## Requirements
 
-`bash` 5+, `git`, `jq`, `rsync`, GNU coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`,
-and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well: required if `agy` or `claude` is
+`bash` 5+, `git`, `jq`, `rsync`, `ps`, `tee` (every `claude` review is piped through it), GNU
+coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`, and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well: required if `agy` or `claude` is
 in the roster, and used by `agent` when it is there — see the `bwrap` note below and "Reviewer
 roster".
 
@@ -15,6 +15,15 @@ The GNU part of "GNU coreutils" is now enforced rather than merely asked for: `p
 doctor` **fails** on a `timeout` that is not GNU coreutils (busybox's, typically). The process
 cleanup after every reviewer relies on GNU `timeout` putting itself in its own process group,
 and under a `timeout` that does not, that cleanup silently does nothing.
+
+`ps` is enforced the same way and for the same cleanup, but by behaviour rather than by name:
+the doctor **runs** both forms that cleanup reads — `ps -eo pid=,ppid=` for the descendant
+table and `ps -o lstart= -p <pid>` for the identity check — and **fails** on either. That is a
+machine-level requirement a host could previously pass without meeting, so a `ps` that is
+busybox's (it rejects `-eo`) is now red where it used to be green. The two degrades are not
+the same: no `-eo` loses the descendant table outright, while a `ps` that answers the table
+but no `lstart` skips every remembered process — safe, but group-only cleanup under a doctor
+that would otherwise have said nothing.
 
 5 is what `make doctor` enforces and it is a support statement rather than a measured
 requirement: nothing here uses a construct newer than `bash` 4 (`${x^^}`, `mapfile`,
@@ -246,7 +255,9 @@ runner. Run `plan-review skill` directly and it is fatal, which is what makes it
 Every failure prints the exact `npx` command to run by hand.
 
 What it installs is a snapshot taken at that moment, and nothing here reports an installed skill's
-revision, so run `npx skills update` when you update the checkout, or `plan-review skill` again.
+revision, so run `npx skills@1.5.18 update` when you update the checkout, or `plan-review skill`
+again. The pin is the same one `plan-review skill` passes and it is deliberate everywhere: an
+unpinned `npx` floats to whatever the registry serves that day and no doctor check watches it.
 
 On macOS, `agy` and `claude` cannot review yet (see Requirements), and `plan-review init` treats a
 reviewer that cannot review as a refusal rather than a silent omission. So name the roster — and

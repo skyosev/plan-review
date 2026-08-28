@@ -29,19 +29,21 @@ the 22 tests that branch added.
 
 The 457/~62s figure that stood here was stale in its count but not in its clock. Measured
 2026-08-27 on this host (32 cores, load ~0.5), two back-to-back `make test` runs per tree,
-a `git worktree` per revision:
+a `git worktree` per revision — every row but the last, which is 2026-08-28 in place:
 
 | tree | tests | run 1 | run 2 |
 | --- | --- | --- | --- |
 | `ea2b59e` (pre-`reviewer-isolation-hardening`) | 467 | 62.159s | 62.214s |
 | + tasks 1–2 of that branch | 485 | 85.243s | 85.359s |
 | + task 3, as first written | 490 | 93.993s | 94.060s |
-| **+ task 3 review fixes — the current cost** | **491** | **84.624s** | **84.460s** |
+| + task 3 review fixes (`reviewer-isolation-hardening`, as merged) | 491 | 84.624s | 84.460s |
+| **+ `backlog-clearing-3` — the current cost** | **518** | **81.964s** | **81.782s** |
 
-So ~62s was still right for `main`: the whole delta is this branch's, not host drift —
+So ~62s was still right for `main` at the time: the whole delta was
+`reviewer-isolation-hardening`'s, not host drift —
 worth stating, because "the host got slower" was the first explanation offered and it was
 wrong. Per-file timing of both trees found where it went, and one line of it was a **bug**:
-`tests/test-bootstrap.sh` had gone 6.156s → 26.707s, a file this branch never edited. It
+`tests/test-bootstrap.sh` had gone 6.156s → 26.707s, a file that branch never edited. It
 drives `plan-review doctor` as a subprocess ~20 times, and task 1 gave
 `_pr_doctor_bwrap_probe` a containment window the pass path always waits out — ~1.04s per
 doctor run at the operator default `PR_BWRAP_PROBE_TICKS=10`. `tests/test-doctor.sh` and
@@ -71,6 +73,21 @@ read, beside the `ps` it wraps — stays below this host's noise floor; run-to-r
 an identical tree is under 0.2s. Budget against the ~5.5s poll and the ~1s-per-doctor
 probe, not against test wall-clock that a missing knob export can explain; weigh the next
 per-adapter poll, and the next always-waited probe window, before adding either.
+
+**The last row is the one to budget against: 518 tests in ~81.9s**, measured 2026-08-28 on
+the same host (load ~0.7) by the same two back-to-back runs the rows above use. Both numbers
+moved and they moved in *opposite* directions, which is the fact worth carrying:
+`backlog-clearing-3` added 27 tests and the tree still came out ~2.6s cheaper than the 491
+it started from. The refund is Task 1's, and it is not a fixture trick — `stub_all_reviewer_clis`
+replaced **20 real reviewer-CLI `--version` spawns** in `tests/test-doctor.sh` (6 claude, 5
+agy, 5 agent, 4 codex, counted with recording wrappers) with stubs that leave every check
+intact and only change what answers, including the one genuinely expensive read: a live
+`agent about --format json`, ~1.5s on its own. `pr_doctor_check_versions` is
+roster-independent, which is why a case whose config named only codex was still reading four
+versions off the host. So the suite did not merely get faster; it stopped consulting live
+account state to assert a drift message. Read that the same way as the bootstrap saving
+above — it paid for this branch's 27 tests exactly once, there are no live spawns left to
+reclaim, and the next contributor budgets against 81.9s at 518 with no credit to spend.
 
 There is no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
 `test_*` function in the sourcing file. Anything that would break "offline and seconds"
@@ -329,7 +346,10 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   config dir that has not yet completed a `-p` run, so it runs under a
   `timeout --kill-after=1` whose deadline is derived from `PR_TIMEOUT_SECS` (half, capped
   at 30, floored at 1 — `0` disables a GNU timeout), and the adapter keeps the id it
-  printed (measured resumable after the kill). That derivation is *not* agy's strict
+  printed. That the killed `create-chat`'s chat still resumes is measured by the acceptance
+  matrix cited below and by nothing else: its agent leg ran from a fresh sandbox, so round 1
+  minted its chat through this very bound in a cold directory. Not by the containment probe's
+  leg 7, whose rc=0 the same branch retired as a non-discriminator. That derivation is *not* agy's strict
   inequality: at `PR_TIMEOUT_SECS=1` the inner bound equals the outer one and can overrun
   it by the kill grace, which the kernel's own `timeout` then reaps. The escalation is
   load-bearing for the same reason it is on the `ps` caps: `timeout N` signals at N and
