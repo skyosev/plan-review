@@ -711,17 +711,30 @@ pr_doctor_fetch_agy_models() {
 # `about` also returns the account's userEmail. It is never echoed here -- a
 # doctor's output gets pasted into issues -- which is the rule
 # pr_doctor_check_claude_auth already follows for the account address.
+# The pure half of the identity question, shared with libexec/plan-review-skill.sh:
+# no pr_d_* output, no counters. stdout is the Cursor cliVersion; rc 1 is "the
+# agent on PATH is not the Cursor CLI" (or never answered). The check below owns
+# the doctor-formatted reporting.
+pr_agent_identity_version() {
+  local out ver
+  out="$(pr_doctor_run 15 agent about --format json 2>&1)" || return 1
+  ver="$(jq -r '.cliVersion // ""' <<< "$out" 2>/dev/null)"
+  [[ -n "$ver" ]] || return 1
+  printf '%s\n' "$ver"
+}
+
 pr_doctor_check_agent_identity() {
   pr_doctor_have agent || return 0   # absence is already a FAIL in Tier A
-  local out rc ver
-  out="$(pr_doctor_run 15 agent about --format json 2>&1)"
-  rc=$?
-  ver="$(jq -r '.cliVersion // ""' <<< "$out" 2>/dev/null)"
-  if (( rc == 0 )) && [[ -n "$ver" ]]; then
+  local ver
+  if ver="$(pr_agent_identity_version)"; then
     pr_d_pass "agent is the Cursor CLI, version $ver"
     return 0
   fi
-  pr_d_fail "the agent on PATH does not answer 'agent about --format json' (exit $rc)"
+  # The `(exit N)` the message used to carry is gone with the split: the
+  # predicate collapses "never answered" and "answered without a cliVersion"
+  # into one rc, and re-exposing the inner status just to print it would put the
+  # doctor's formatting back inside the half libexec/plan-review-skill.sh reuses.
+  pr_d_fail "the agent on PATH does not answer 'agent about --format json'"
   pr_d_info "$(command -v agent) may be a different tool with the same name."
   pr_d_info "adapters/agent.sh would run it with Cursor's flags and fail mid-round."
   return 1

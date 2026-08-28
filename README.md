@@ -211,13 +211,13 @@ The skill is separate, because removing it is **global and by name** — it take
 `plan-review` skill is registered, whether this installer put it there or you did. Run it only if
 you let the installer install one, which the installer's own last line tells you:
 
-    npx skills remove -g plan-review
+    npx skills@1.5.18 remove -g plan-review
 
 **By hand instead**, if you want the checkout in your own source tree:
 
     git clone <this repo> ~/code/plan-review
     ~/code/plan-review/bin/plan-review install      # links ~/.local/bin/plan-review
-    npx skills add ~/code/plan-review -g -a claude-code -a codex
+    ~/code/plan-review/bin/plan-review skill        # installs the skill, then verifies it
 
 `install` makes one symlink and then runs `plan-review version` through that link to prove it works.
 `--bin-dir <dir>` puts it elsewhere. It refuses any destination that is already occupied rather than
@@ -228,9 +228,24 @@ checkout and the command breaks. Repair is `rm` on the stale link, then `install
 location. Installing is a convenience in any case — `~/code/plan-review/bin/plan-review doctor`
 works without it.
 
-Name whichever harnesses you use in `skills add`. What it installs is a snapshot taken at that
-moment, and nothing here reports an installed skill's revision, so run `npx skills update` when you
-update the checkout.
+`skill` is the same step the bootstrap runs, and the bootstrap now calls this rather than
+re-deriving it. It detects the harnesses on PATH itself (`claude`, `codex`, `agent`, `agy`), asks
+the `agent` on PATH whether it really is the Cursor CLI before claiming a Cursor install, then does
+**one** `skills add` for all of them and verifies the links with `skills ls -g --json`. Its exit
+status is the contract:
+
+| status | meaning |
+| --- | --- |
+| `0` | installed (or already present) and verified for every detected harness |
+| `1` | the install ran and failed, or the links could not be verified |
+| `2` | refused before doing anything: `npx`/`node` or `jq` missing, or no harness found |
+
+Under the bootstrap that status is a warning, never a failure — the bootstrap's promise is the
+runner. Run `plan-review skill` directly and it is fatal, which is what makes it usable in a script.
+Every failure prints the exact `npx` command to run by hand.
+
+What it installs is a snapshot taken at that moment, and nothing here reports an installed skill's
+revision, so run `npx skills update` when you update the checkout, or `plan-review skill` again.
 
 On macOS, `agy` and `claude` cannot review yet (see Requirements), and `plan-review init` treats a
 reviewer that cannot review as a refusal rather than a silent omission. So name the roster — and

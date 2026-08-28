@@ -23,6 +23,7 @@ usage: plan-review <command> [options]
   abort      mark a round aborted when nothing is working on it any more
 
   install    link this command into a directory on PATH
+  skill      install and verify the plan-review skill for every detected harness
   version    print this checkout's revision
   help       this text
 
@@ -38,7 +39,7 @@ subcommand="${1-help}"
 
 case "$subcommand" in
   help|-h|--help) usage; exit 0 ;;
-  round|doctor|init|complete|abort|install|version) ;;
+  round|doctor|init|complete|abort|install|skill|version) ;;
   *) echo "plan-review: unknown command: $subcommand" >&2; usage >&2; exit 2 ;;
 esac
 

@@ -354,7 +354,10 @@ exit 0"
 # case overrides it.
 stub_harness_clis() {
   local dir="$1" c
-  for c in claude codex agy; do pr_test_mkstub "$dir/$c" 'exit 0'; done
+  # `node` joins them: `plan-review skill` only `command -v`s node -- jq does
+  # the JSON parsing now -- so this suite must not need a real one, which is the
+  # property the comment two blocks down used to have to make an exception for.
+  for c in claude codex agy node; do pr_test_mkstub "$dir/$c" 'exit 0'; done
   pr_test_mkstub "$dir/agent" '[ "${1:-}" = about ] && { printf "{\"cliVersion\":\"test\"}\n"; exit 0; }
 exit 0'
 }
@@ -366,77 +369,14 @@ exit 0'
 # goes on passing against the old world. A case that wants a miss returns a subset.
 ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Antigravity CLI"]}]'
 
-# tests/helpers.sh has no skip. Six cases need a real `node`: four to exercise a
-# JSON parse, and two more because install_skill requires node before it will run
-# npx at all, so without it there is no add to make an assertion about. npx
-# implies node in production, but the suite must not fail on a machine that has
-# neither.
-test_one_add_covers_every_detected_harness() {
-  local d log checkout; d="$(mk_case)"
-  pr_test_requires node || return 0
-  stub_npx "$d/stub" "$ALL_LINKED"
-  run_bootstrap "$d" "$d/src" > /dev/null 2>&1
-  log="$(cat "$d/npx.log")"
-  checkout="$(checkout_of "$d")"
-  assert_contains "$log" \
-    "argv: -y skills add $checkout -g -a claude-code -a codex -a cursor -a antigravity-cli -y" \
-    "one add named every harness, and agy is antigravity-cli"
-  assert_eq "$(grep -c 'skills add' "$d/npx.log")" "1" "exactly one add process"
-  assert_eq "$(grep -c 'skills ls' "$d/npx.log")" "1" "exactly one ls process"
-  assert_not_contains "$log" "DISABLE_TELEMETRY=unset" "telemetry was off on BOTH calls"
-}
-
-test_cursor_is_skipped_when_the_identity_probe_returns_no_version() {
-  local d out log; d="$(mk_case)"
-  pr_test_requires node || return 0
-  # Exit 0, valid JSON, empty field: the case that an exit-status-only probe
-  # passes and lib/doctor.sh:408's non-empty .cliVersion test catches.
-  pr_test_mkstub "$d/stub/agent" 'printf "{\"cliVersion\":\"\"}\n"; exit 0'
-  stub_npx "$d/stub" "$ALL_LINKED"
-  out="$(run_bootstrap "$d" "$d/src")"
-  log="$(cat "$d/npx.log")"
-  assert_not_contains "$log" "-a cursor" "nothing was written into a Cursor directory"
-  assert_contains "$out" "agent about --format json" "the probe was named"
-  assert_contains "$log" "-a codex" "the other harnesses still got the skill"
-}
-
-# The confusion the probe exists to resolve is "some other tool is also called
-# agent". Its output is not JSON, and it may well mention the word it is being
-# searched for. A substring hunt -- the first draft -- passes both of these.
-test_a_non_cursor_agent_does_not_pass_the_identity_probe() {
-  local d log; d="$(mk_case)"
-  pr_test_requires node || return 0
-  pr_test_mkstub "$d/stub/agent" \
-    'printf "agent: unknown flag --format (try: agent --cliVersion \"1.2\")\n"; exit 0'
-  stub_npx "$d/stub" "$ALL_LINKED"
-  run_bootstrap "$d" "$d/src" > /dev/null 2>&1
-  log="$(cat "$d/npx.log")"
-  assert_not_contains "$log" "-a cursor" "a key-shaped substring is not an identity"
-  assert_contains "$log" "-a codex" "the other harnesses still got the skill"
-}
-
-test_a_missing_display_name_is_not_a_pass() {
-  local d out rc; d="$(mk_case)"
-  pr_test_requires node || return 0
-  # The false positive the previous design could not see: linked into Claude Code
-  # alone, while a per-harness `ls -a codex` query would still answer non-empty.
-  stub_npx "$d/stub" '[{"name":"plan-review","agents":["Claude Code"]}]'
-  out="$(run_bootstrap "$d" "$d/src")"; rc=$?
-  assert_exit_code "$rc" 0 "a partial link is not a failed install"
-  assert_contains "$out" "not linked into" "the missing harnesses were named"
-  assert_contains "$out" "Codex" "including this one"
-  assert_not_contains "$out" "verified: the skill" "and nothing was called verified"
-}
-
-test_unparseable_json_warns_rather_than_passing() {
-  local d out rc; d="$(mk_case)"
-  pr_test_requires node || return 0
-  stub_npx "$d/stub" 'this is not json'
-  out="$(run_bootstrap "$d" "$d/src")"; rc=$?
-  assert_exit_code "$rc" 0 "unreadable output is not a failed install"
-  assert_contains "$out" "unverified" "readiness was left unverified"
-  assert_not_contains "$out" "verified: the skill" "and nothing was called verified"
-}
+# Five cases that used to live here moved to tests/test-skill.sh with the
+# mechanism they exercise: one-add-for-every-harness, the two Cursor identity
+# cases, the partial link and the unparseable ls are now properties of
+# `plan-review skill`, and asserting them through the bootstrap would be
+# asserting them through a wrapper that is deliberately non-fatal. What stays
+# here is the WRAP: that the delegation happens, that a failure is survived, and
+# that the epilogue's removal hint is gated on a verified install. `node` went
+# with them -- no case in this file needs a real one any more.
 
 test_no_skill_takes_npm_out_of_the_install_path() {
   local d out rc; d="$(mk_case)"
@@ -449,13 +389,27 @@ test_no_skill_takes_npm_out_of_the_install_path() {
     "and no one was invited to delete a global skill this run never touched"
 }
 
+# No `pr_test_requires node` any more: the skill step is `plan-review skill`
+# now, and that needs jq -- which the suite already requires globally -- while
+# node it only `command -v`s, and stub_harness_clis supplies one.
 test_the_removal_line_appears_only_when_a_skill_was_installed() {
   local d out; d="$(mk_case)"
-  pr_test_requires node || return 0
   stub_npx "$d/stub" "$ALL_LINKED"
   out="$(run_bootstrap "$d" "$d/src")"
-  assert_contains "$out" "npx skills remove -g plan-review" "printed after a real install"
+  assert_contains "$out" "npx skills@1.5.18 remove -g plan-review" "printed after a real install"
   assert_contains "$out" "global" "and says that removal is global, by name"
+}
+
+# The wrap is non-fatal by contract: a failing skill subcommand must not turn a
+# good install into a failed one, and the warn must hand over the exact retry.
+test_a_failing_skill_step_is_warned_and_survived() {
+  local d out rc; d="$(mk_case)"
+  pr_test_mkstub "$d/stub/npx" 'case " $* " in *" add "*) exit 1 ;; esac; exit 0'
+  out="$(run_bootstrap "$d" "$d/src")"; rc=$?
+  assert_exit_code "$rc" 0 "the runner install still succeeded"
+  assert_contains "$out" "the skill step did not complete" "warned"
+  assert_contains "$out" "plan-review skill" "with the delegated retry command"
+  assert_not_contains "$out" "skills remove" "and no removal line for a skill never verified"
 }
 
 # `command -v npx` cannot be made to fail by adding something to PATH, so this is
@@ -479,7 +433,9 @@ test_a_missing_npx_warns_and_the_install_still_succeeds() {
              bash "$PR_ROOT/scripts/install.sh" 2>&1)"; rc=$?
   assert_exit_code "$rc" 0 "a missing npx is not a failed install"
   assert_contains "$out" "npx and node are needed" "and was named"
-  assert_contains "$out" "npx skills add" "with the command to run later"
+  # These two lines now come from the subcommand's exit-2 refusal, kept verbatim
+  # there for exactly this reason; the bootstrap adds its own warn around it.
+  assert_contains "$out" "npx skills@1.5.18 add" "with the command to run later"
   assert_contains "$out" "verified: plan-review" "the runner was still installed"
   assert_not_contains "$out" "skills remove" "and no removal line for a skill never installed"
 }
