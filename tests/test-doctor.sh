@@ -1061,7 +1061,23 @@ mkrepo_with_config() {  # mkrepo_with_config <dir> <config-json>
 test_a_codex_only_roster_does_not_check_the_bubblewrap_jail() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
-  out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
+  # codex is stubbed for the same reason the agent sibling stubs agent: the
+  # roster makes the doctor run pr_doctor_check_cli codex, and a doctor test
+  # naming a reviewer in the roster must stub it -- nothing in this suite may
+  # call a real CLI.
+  #
+  # Which check actually EXECUTES it is worth naming, because the rule above is
+  # not where the cost lives: pr_doctor_check_cli is `command -v` and spawns
+  # nothing. pr_doctor_check_versions is what runs `<cli> --version`, and it
+  # iterates docs/verified-versions.txt, NOT the roster -- so on a host with all
+  # four CLIs installed every full-doctor case in this file reads four real
+  # versions whatever its roster says. Measured 2026-08-28 with recording
+  # wrappers in front of the real binaries. The stub below closes that for codex
+  # here; the rest is a wider sweep than this item, and is recorded rather than
+  # silently half-done.
+  pr_test_mkstub "$d/bin/codex" 'echo "codex-cli 0.0.0-stub"'
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
+         bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "no reviewer here needs the bubblewrap jail" "skipped, and said so"
   assert_not_contains "$out" "bwrap jail contains" "the probe did not run"
 }
@@ -1077,6 +1093,9 @@ test_an_agent_roster_checks_the_pid_fence_instead_of_skipping() {
   pr_test_mkstub "$d/bin/agent" \
     '[[ "$1 $2" == "about --format" ]] && { echo "{\"cliVersion\":\"stub\"}"; exit 0; }
 exit 1'
+  # The sweep's second finding: this roster names codex as well, and only agent
+  # was stubbed. Same rule, same fix.
+  pr_test_mkstub "$d/bin/codex" 'echo "codex-cli 0.0.0-stub"'
   out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
          bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_not_contains "$out" "no reviewer here needs the bubblewrap jail" \
@@ -1087,7 +1106,11 @@ exit 1'
 test_an_agy_roster_does_check_the_bubblewrap_jail() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["agy"]}'
-  out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
+  # Same rule as the codex sibling above: a doctor test naming a reviewer in the
+  # roster stubs that reviewer's CLI.
+  pr_test_mkstub "$d/bin/agy" 'echo "1.0.0-stub"'
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
+         bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "bwrap" "agy has no other write barrier"
 }
 
@@ -1122,10 +1145,23 @@ test_a_preset_without_a_repo_is_a_usage_error() {
 # A doctor report is usually read somewhere other than the machine that produced
 # it, so it has to say which runner produced it.
 test_the_header_names_the_runner_s_revision() {
-  local out version
+  local d out version; d="$(pr_test_tmpdir)"
   source "$PR_ROOT/lib/version.sh"
   version="$(pr_version "$PR_ROOT")"
-  out="$(PR_ORCHESTRATOR=none bash "$DOCTOR" doctor --offline 2>&1)"
+  # No config, so PR_ORCHESTRATOR=none derives the roster as every shipped
+  # adapter -- which makes this the one case in the file that reaches
+  # pr_doctor_check_agent_identity and runs the real `agent about --format
+  # json`. Measured 2026-08-28 with a recording wrapper: ~1.5s and live account
+  # state, in a suite whose stated property is that it is offline. The
+  # mkrepo_with_config grep that found the two cases above cannot see this one,
+  # because a roster nobody wrote down is still a roster.
+  pr_test_mkstub "$d/bin/agent" \
+    '[[ "$1 $2" == "about --format" ]] && { echo "{\"cliVersion\":\"stub\"}"; exit 0; }
+echo "2026.01.01-stub"'
+  pr_test_mkstub "$d/bin/codex"  'echo "codex-cli 0.0.0-stub"'
+  pr_test_mkstub "$d/bin/agy"    'echo "1.0.0-stub"'
+  pr_test_mkstub "$d/bin/claude" 'echo "0.0.0-stub (Claude Code)"'
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none bash "$DOCTOR" doctor --offline 2>&1)"
   assert_contains "$out" "$version" "the header carries the same string as \`plan-review version\`"
 }
 
