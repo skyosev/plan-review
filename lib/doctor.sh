@@ -164,8 +164,12 @@ pr_doctor_check_bash() {
 # keeps the session lock. This is a PRESENCE check and presence is not
 # sufficiency: busybox `ps` exists and rejects `-eo`, which produces the same
 # silent degrade with the doctor still reporting the set present. Sufficiency
-# belongs to Tier E (`doctor --smoke`), which runs an adapter for real; this
-# tier stays a `command -v` over a stub PATH by design.
+# for ps now lives one check along, in pr_doctor_check_ps_forms, which runs both
+# shipped invocations for real -- the same Machine-tier precedent
+# pr_doctor_check_gnu_timeout set. pr_doctor_check_utils ITSELF stays a
+# `command -v` over a stub PATH by design: that is what lets tests/test-doctor.sh
+# point PATH at a stub directory alone, and it is the only reason this list can
+# be checked at all on a machine that has none of it.
 # This list does NOT reach a round: pr_doctor_preflight never calls
 # pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
 PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head"
@@ -247,6 +251,57 @@ pr_doctor_check_gnu_timeout() {
   pr_d_info "macOS: brew install coreutils, then put the GNU names first:"
   pr_d_info "  PATH=\"\$(brew --prefix)/opt/coreutils/libexec/gnubin:\$PATH\""
   return 1
+}
+
+# Presence is not sufficiency, the ps edition: PR_DOCTOR_UTILS proves ps EXISTS,
+# and the execution kernel's descendant sweep needs the two exact invocations it
+# ships (lib/adapter-exec.sh): `ps -eo pid=,ppid=` every tick for the descendant
+# table, `ps -o lstart= -p <pid>` per new descendant for the identity read.
+# busybox ps passes the presence check and rejects -eo; a ps that answers the
+# table but not lstart silently degrades the identity check instead -- the
+# survivor is then skipped, never unsafely killed, but the green doctor would be
+# claiming a sweep the host cannot deliver. Probed with live invocations rather
+# than a version match because the question is behavioural and both GNU and
+# Darwin shapes must pass.
+#
+# COUPLING RULE: if the kernel's per-tick reads are ever folded into one
+# `ps -eo pid=,ppid=,lstart=` (the fold parked for the next matrix cycle;
+# the Mac handoff's row 2 captures its Darwin fixture), this
+# probe and its fixtures change in the same commit as lib/adapter-exec.sh.
+pr_doctor_check_ps_forms() {
+  # Absence is already a FAIL in pr_doctor_check_utils; a second failure here
+  # would name the wrong thing, exactly like the gnu_timeout skip above.
+  pr_doctor_have ps || {
+    pr_d_skip "ps is absent entirely; the core-utilities failure above is the diagnosis"
+    return 0
+  }
+  local out pid ppid rest seen=""
+  out="$(pr_doctor_run 10 ps -eo pid=,ppid=)"
+  # Builtins-only parse, the file's own rule. The recognizable row is this
+  # process: $$ is alive by definition, so a table without it is not the table
+  # the sweep walks. `rest` must be empty -- three columns would mean ps ignored
+  # the format and dumped its default output while exiting 0.
+  while read -r pid ppid rest; do
+    [[ "$pid" == "$$" && "$ppid" =~ ^[0-9]+$ && -z "$rest" ]] && seen=1
+  done <<< "$out"
+  if [[ -z "$seen" ]]; then
+    pr_d_fail "ps -eo pid=,ppid= did not return this process in a two-column numeric table"
+    pr_d_info "the kernel's descendant sweep reads that exact form every tick; a ps that"
+    pr_d_info "rejects it (busybox does) degrades the sweep to group-only cleanup, silently."
+    pr_d_info "got: ${out%%$'\n'*}"
+    return 1
+  fi
+  local start
+  start="$(pr_doctor_run 10 ps -o lstart= -p "$$")"
+  if [[ -z "${start//[[:space:]]/}" ]]; then
+    pr_d_fail "ps -o lstart= -p returned no start time for a live pid"
+    pr_d_info "the sweep signals a remembered pid only when its lstart still matches;"
+    pr_d_info "with no start time every remembered descendant is skipped -- group-only"
+    pr_d_info "cleanup with the doctor still green, which is what this probe exists to catch."
+    return 1
+  fi
+  pr_d_pass "ps answers both sweep forms (-eo pid=,ppid= table, -o lstart= identity)"
+  return 0
 }
 
 # What to say when a reviewer CLI is absent. No install URLs: the three CLIs are

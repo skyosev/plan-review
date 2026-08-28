@@ -122,6 +122,45 @@ test_the_gnu_timeout_check_skips_when_timeout_is_absent_entirely() {
   assert_contains "$out" "counts 0 0 0" "and no counter moved"
 }
 
+# The kernel ships exactly two ps invocations (lib/adapter-exec.sh): the
+# descendant table and the lstart identity read. busybox ps passes `command -v`
+# and rejects -eo; a ps that answers the table but not lstart silently degrades
+# the identity check instead -- never an unsafe kill, but a green doctor
+# claiming a sweep the host cannot deliver.
+test_the_ps_probe_passes_on_a_real_ps() {
+  local out
+  out="$(doctor_run "$PATH" 'pr_doctor_check_ps_forms')"
+  assert_contains "$out" "ps answers both sweep forms" "both invocations probed live"
+  assert_contains "$out" "counts 1 0 0" "one pass, nothing else"
+}
+
+test_a_ps_that_rejects_eo_fails_the_probe() {
+  local d out; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/ps" 'echo "ps: invalid option -- eo" >&2; exit 1'
+  out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_ps_forms')"
+  assert_contains "$out" "did not return this process" "the table form failed"
+  assert_contains "$out" "group-only" "and the consequence is named"
+  assert_contains "$out" "counts 0 0 1" "a FAIL, not a warning"
+}
+
+test_a_ps_without_lstart_fails_the_probe() {
+  local d out real_ps; d="$(pr_test_tmpdir)"; real_ps="$(command -v ps)"
+  # The table form works (delegated to the real ps), the identity form answers
+  # nothing -- the half-broken shape that silently degrades the sweep.
+  pr_test_mkstub "$d/bin/ps" "[[ \"\$1\" == -eo ]] && exec '$real_ps' \"\$@\"
+exit 0"
+  out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_ps_forms')"
+  assert_contains "$out" "no start time" "the identity form failed"
+  assert_contains "$out" "counts 0 0 1" "a FAIL, not a warning"
+}
+
+test_the_ps_probe_skips_when_ps_is_absent_entirely() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  out="$(doctor_run "$d/bin" 'pr_doctor_check_ps_forms')"
+  assert_contains "$out" "SKIP" "check_utils already owns the absence diagnosis"
+  assert_contains "$out" "counts 0 0 0" "and no counter moved"
+}
+
 test_absent_reviewer_cli_points_at_the_roster_escape_hatch() {
   local d; d="$(pr_test_tmpdir)"
   mkdir -p "$d/bin"

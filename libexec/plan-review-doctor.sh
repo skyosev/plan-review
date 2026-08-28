@@ -160,6 +160,7 @@ pr_d_section "Machine"
 pr_doctor_check_bash
 pr_doctor_check_utils
 pr_doctor_check_gnu_timeout
+pr_doctor_check_ps_forms
 for cli in $PR_ROSTER_ADAPTERS; do
   if [[ " $shipped " != *" $cli "* ]]; then
     pr_d_skip "$cli is not in this round's roster"
