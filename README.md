@@ -63,11 +63,12 @@ that case as a warning rather than failing the machine. A project config naming 
 `"reviewers": ["codex"]` — needs no `bwrap` at all, and the doctor skips the check entirely.
 
 `bwrap` is Linux-only, and no macOS equivalent is wired up yet, so on macOS the roster is
-`codex` and `agent` — of which only `codex` confines itself. Cursor's write barrier was
-measured gone at `2026.08.25-3e8eec8` (see *What the sandbox is and is not* below), and with
-no `bwrap` it has no pid fence there either, so a macOS roster today is one self-confining
-reviewer and one confining nothing. All four CLIs still work there as
-orchestrators and as skill targets; only reviewing is affected.
+`codex` and `agent` — both of which confine their own writes, Cursor's barrier having been
+re-measured working at `2026.08.25-3e8eec8` once the adapter stopped reading the operator's
+`~/.cursor` (see *What the sandbox is and is not* below). What macOS loses is the pid fence:
+with no `bwrap` there, the runner's best-effort descendant sweep is the only bound on a
+reviewer's process tree. All four CLIs still work there as orchestrators and as skill
+targets; only reviewing is affected.
 
 **What has actually been run on macOS** is one manual pass, on 2026-08-20, on Darwin 25 with the
 packages above: `plan-review doctor`, and one real round in which `codex` and `agent` each
@@ -587,14 +588,24 @@ file and locks that, and both run at once.
 
 ## What the sandbox is and is not
 
-An accidental-dirtiness barrier, not a security boundary. Three of the four reviewers are
-write-confined, each by a different thing, and one currently is not:
+An accidental-dirtiness barrier, not a security boundary. All four reviewers are
+write-confined, each by a different thing:
 
-- **Cursor is not write-confined at `2026.08.25-3e8eec8`.** Its `--sandbox enabled` is
-  meant to be its barrier; re-measured 2026-08-27, a tool-call write to `/tmp` and to
-  `$HOME` both succeeded, wrapped and unwrapped alike. Treat it as unconfined for writes at
-  that version until a probe says otherwise — `adapters/agent.sh`'s bubblewrap is a pid
-  fence, and deliberately not a write barrier.
+- **Cursor** confines itself, via its own sandbox — but only once the adapter takes over
+  *whose configuration it reads*. `--sandbox enabled` is inert under
+  `approvalMode: "unrestricted"` in `~/.cursor/cli-config.json`, the Run Everything mode
+  whose own documentation says "Sandbox: No": measured 2026-08-28 at
+  `2026.08.25-3e8eec8`, the tool call then runs with `CURSOR_SANDBOX` unset and a write to
+  `$HOME` lands on the host. That, and not a vendor regression, is what the 2026-08-27
+  probe found. `adapters/agent.sh` therefore runs with a private `CURSOR_CONFIG_DIR`
+  beside the repo copy and pins the approval mode in it, and it deletes the target repo's
+  `.cursor/` before invoking the CLI: a repo-supplied `sandbox.json` granting
+  `additionalReadwritePaths` to the operator's `$HOME`, and a repo-supplied `cli.json`
+  allowlisting a shell command, were each measured putting the canary on the host — the
+  first by widening the jail, the second by switching it off. With both closed the `$HOME`
+  canary is denied and the sandbox reports itself `native`/`fully_enforced`. `/tmp` stays
+  writable, which is the sandbox's documented default. The bubblewrap remains a pid fence
+  and is deliberately not the write barrier.
 - **codex** confines itself, via its own OS sandbox. Writes land inside the disposable
   copy; writes outside it are denied.
 
@@ -674,7 +685,8 @@ round's session lock. On Linux every reviewer is now contained by a pid namespac
 `--as-pid-1`. `--die-with-parent` alone was not enough — measured 2026-08-27, a detached
 `setsid sleep` survived the jail's exit without `--unshare-pid` and was gone with it. For
 `agent` the bubblewrap is *only* a pid fence: `/` is bound read-write, the write barrier
-stays Cursor's own, and where the jail does not work — macOS has no `bwrap` at all, and
+stays Cursor's own (and was measured still holding *inside* the namespace — Landlock nests),
+and where the jail does not work — macOS has no `bwrap` at all, and
 some Linux hosts have it installed with user namespaces denied — the adapter runs
 unwrapped rather than refusing, because refusing would remove the reviewer for a barrier
 it never supplied. It decides by trying the flags once, not by looking for the binary,
@@ -685,6 +697,12 @@ descendant sweep is the only bound.
 Reads are unconfined for every reviewer. Codex has open network access; Cursor's is
 default-deny with a host allowlist; agy's is open. Point this only at repos you already
 trust these CLIs with.
+
+A reviewer's private state directory is also what keeps the *operator's* own configuration
+out of its reach — `~/.claude`, `~/.gemini`, `~/.codex` and now `~/.cursor`, each of which
+defines hooks, rules or skills that run in the operator's later interactive sessions.
+Cursor's is the cheapest of the four: an empty `CURSOR_CONFIG_DIR` is still authenticated,
+so nothing is copied or bound in.
 
 ## Tests
 

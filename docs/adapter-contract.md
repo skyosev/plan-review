@@ -106,13 +106,22 @@ Every adapter — real or fake — is invoked identically:
   prompt and fail with a clear message above the cap rather than let `execve`
   return a bare `E2BIG`. Do not "fix" this by moving the whole contract to argv.
 - **confinement is the adapter's job, and it is not uniform.** codex confines
-  its own writes via its sandbox flags. Cursor is *supposed* to, and no longer
-  does: re-measured 2026-08-27 against `2026.08.25-3e8eec8`, a tool-call write to
-  `/tmp` and to `$HOME` both succeeded, wrapped and unwrapped alike
-  (`docs/process/probes/2026-08-27-pid-namespace-adapters`, leg 4). Treat Cursor
-  as unconfined for writes at that version; `adapters/agent.sh`'s bwrap is a pid
-  fence and deliberately not a write barrier, and widening it needs its own probe
-  because Cursor's sandbox machinery runs inside it. `agy` never did: its
+  its own writes via its sandbox flags. Cursor does too, but only once the
+  adapter decides whose configuration it reads — measured 2026-08-28 against
+  `2026.08.25-3e8eec8` (`docs/process/probes/2026-08-28-cursor-containment`).
+  `--sandbox enabled` is *inert* under `approvalMode: "unrestricted"` in the
+  operator's `~/.cursor/cli-config.json`: the tool call runs with
+  `CURSOR_SANDBOX` unset and a write to `$HOME` lands on the host, which is what
+  the 2026-08-27 probe saw and misread as a vendor regression. So
+  `adapters/agent.sh` points `CURSOR_CONFIG_DIR` at a private directory beside
+  the repo copy and pins the approval mode there, and it deletes the target
+  repo's own `.cursor/` first — a repo-supplied `sandbox.json` granting
+  `additionalReadwritePaths` to `$HOME`, and a repo-supplied `cli.json`
+  allowlisting a shell command, were each measured putting the canary on the
+  host. With both closed the `$HOME` canary is denied and the sandbox reports
+  `native`/`fully_enforced`, inside the bwrap pid fence as well as outside it.
+  The bwrap stays a pid fence and is deliberately still not the write barrier.
+  `agy` never did: its
   `--sandbox` was measured to allow a write to `/tmp` while reporting itself
   enabled, so its adapter wraps the CLI in `bubblewrap` instead and **fails
   closed** when `bwrap` is unavailable. `claude` exposes no sandbox flag to ask
@@ -133,11 +142,16 @@ Every adapter — real or fake — is invoked identically:
   keeps its private `CLAUDE_CONFIG_DIR` at `<sandbox>/config` for that reason:
   the sessions that make carry-forward possible would otherwise be deleted by
   the next round's copy. `adapters/agy.sh` does the same at
-  `<sandbox>/gemini-state`, bound over `~/.gemini`, and `adapters/codex.sh` at
-  `<sandbox>/codex-home`, exported as `CODEX_HOME` — three private directories,
-  one per adapter that has durable state. codex's is not a bind at all: it is an
-  environment variable the CLI honours, which is the cheaper mechanism wherever a
-  CLI offers one. Isolating them also keeps the
+  `<sandbox>/gemini-state`, bound over `~/.gemini`, `adapters/codex.sh` at
+  `<sandbox>/codex-home`, exported as `CODEX_HOME`, and `adapters/agent.sh` at
+  `<sandbox>/cursor-config`, exported as `CURSOR_CONFIG_DIR` — four private
+  directories, one per adapter that has durable state. Two of them are not binds
+  at all: they are environment variables the CLI honours, which is the cheaper
+  mechanism wherever a CLI offers one, and Cursor's is cheaper still, since an
+  empty `CURSOR_CONFIG_DIR` is already authenticated and so needs no credential
+  copied or bound in at all. For Cursor the isolation is not only hygiene: the
+  approval mode that decides whether its sandbox applies lives in that file.
+  Isolating them also keeps the
   operator's own `~/.claude/settings.json` — which defines hooks that run in
   *their* interactive sessions — outside the reviewer's reach, and the same
   argument applies to `~/.gemini`, whose workspace hooks agy honours, and to

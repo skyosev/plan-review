@@ -6,9 +6,31 @@
 # storage), not network-off; an early probe against a host outside that
 # allowlist was misread as the sandbox blocking all traffic. Verified against
 # 2026.08.11-e8db854: github.com 200, api.github.com 200, write inside the
-# workdir OK, write outside denied with no file created -- but that last
-# clause is NO LONGER TRUE at 2026.08.25-3e8eec8, where a tool-call write to
-# both /tmp and $HOME succeeded; see the wrap comment below.
+# workdir OK, write outside denied with no file created.
+#
+# That last clause read "NO LONGER TRUE at 2026.08.25-3e8eec8" here until
+# 2026-08-28, when the probe that was supposed to confirm the regression found
+# a configuration one instead (docs/process/probes/2026-08-28-cursor-containment,
+# same binary, 2026.08.25-3e8eec8, unchanged by `agent update`):
+#
+#   ~/.cursor/cli-config.json      flags                     $HOME canary  CURSOR_SANDBOX
+#   approvalMode "unrestricted"    --sandbox enabled --trust ON THE HOST    unset
+#   approvalMode "auto-review"     --sandbox enabled --trust absent         native
+#   a fresh, empty config dir      --sandbox enabled --trust absent         native
+#
+# `approvalMode: "unrestricted"` -- Run Everything, which the docs' own mode
+# table gives as "Sandbox: No" -- makes `--sandbox enabled` INERT: the tool call
+# runs with CURSOR_SANDBOX unset and the write to $HOME lands on the host. It is
+# a *user-level* setting, so the reviewer inherits whatever the operator last
+# clicked, and this host had clicked it. `--sandbox enabled` does still override
+# `sandbox.mode: "disabled"` in the same file (measured separately), so the flag
+# is not broken; only Run Everything outranks it.
+#
+# So the 2026-08-27 finding was real and its cause was not. `--trust` was named
+# as the obvious suspect there and is innocent: every confining run below passes
+# it. The fix is to stop reading the operator's config at all -- see
+# CURSOR_CONFIG_DIR below -- and with that the header's original claim holds
+# again at the current version.
 #
 # Cursor exits 2 when a tool call is denied while still producing a correct
 # review, so the adapter normalises that to 0 when output exists.
@@ -46,6 +68,101 @@ if [[ -z "$PR_AGENT_MODEL" ]]; then
   exit 1
 fi
 
+# Guard before the two paths below are composed. An empty or missing <workdir>
+# would make them "/.cursor" and "./cursor-config" -- one an `rm -rf` aimed at
+# the root of the filesystem, the other a private config directory dropped in
+# whatever the current directory happens to be. `cd "$workdir" || exit 1` used
+# to be the check that caught a bad workdir, and it no longer runs first.
+# lib/sandbox.sh refuses an empty directory for the same reason.
+[[ -d "$workdir" ]] || {
+  echo "agent adapter: no such workdir: $workdir" >&2
+  pr_reason "The review workdir does not exist; nothing was run"
+  exit 1
+}
+
+# The write barrier, in two parts. Both are about *whose* configuration Cursor
+# reads: the sandbox itself works, and every measured escape came from a policy
+# file written by somebody the reviewer should not be taking orders from.
+#
+# Part one -- the operator's. A private config directory, sited beside the repo
+# copy like codex's CODEX_HOME and claude's CLAUDE_CONFIG_DIR, so it survives
+# pr_sandbox_refresh's per-round wipe of <sandbox>/repo: Cursor keeps its chats
+# there, and `--resume` needs them. Unlike those two it costs no credential
+# dance -- `agent status` in an EMPTY CURSOR_CONFIG_DIR still reports the
+# operator logged in (measured 2026-08-28), so the auth material lives outside
+# the directory entirely and nothing has to be copied or bound in. Isolating it
+# is therefore free, and it buys the same thing it buys for claude and codex:
+# the operator's own ~/.cursor -- hooks.json, plugins/, rules/, skills-cursor/,
+# and the approvalMode that made --sandbox enabled inert above -- is out of the
+# reviewer's reach.
+cursor_config="$(dirname "$workdir")/cursor-config"
+if ! mkdir -p "$cursor_config" 2>/dev/null; then
+  echo "agent adapter: cannot create $cursor_config" >&2
+  pr_reason "Could not create Cursor's private config directory; refusing to run unconfined"
+  exit 1
+fi
+export CURSOR_CONFIG_DIR="$cursor_config"
+
+# Pin the settings the measurement turned on rather than inheriting a fresh
+# install's defaults. They happen to agree today -- a fresh directory comes up
+# `allowlist` with the sandbox off, and `--sandbox enabled` supplies the rest,
+# measured confining -- but "the default is safe" is a claim about a version,
+# and this is the one setting that decides whether the barrier exists at all.
+#
+# The allowlist is EMPTY on purpose, and that is the counter-intuitive half: an
+# allowlisted command is exempted FROM the sandbox, not merely from the prompt.
+# Leg 3b measured exactly that -- allowlisting `Shell(sh)` took CURSOR_SANDBOX
+# from `native` to unset and put the $HOME canary on the host. Every entry here
+# would be a hole; a reviewer needs none.
+#
+# Rewritten every round, not seeded once: the file is CLI-managed and the CLI
+# rewrites it, so a one-shot seed would be a pin that drifts. This write is
+# checked because an unchecked one fails silently into exactly the unconfined
+# state the whole change exists to close. Even the failure mode is bounded --
+# the CLI backs a malformed config up as .bad and recreates it from defaults,
+# which are `allowlist` too.
+if ! printf '%s\n' \
+  '{"version":1,"approvalMode":"allowlist","permissions":{"allow":[],"deny":[]},"sandbox":{"mode":"enabled","networkAccess":"user_config_with_defaults"}}' \
+  > "$cursor_config/cli-config.json"; then
+  echo "agent adapter: cannot write $cursor_config/cli-config.json" >&2
+  pr_reason "Could not pin Cursor's approval mode; refusing to run unconfined"
+  exit 1
+fi
+
+# Part two -- the target repo's. Deleted, not merged. Same probe, and two of the
+# three surfaces escaped:
+#
+#   <repo>/.cursor/sandbox.json  {"type": "insecure_none"}                  ignored
+#   <repo>/.cursor/sandbox.json  additionalReadwritePaths: ["<the $HOME>"]  CANARY ON THE HOST
+#   <repo>/.cursor/cli.json      permissions.allow: ["Shell(sh)", ...]      CANARY ON THE HOST
+#
+# The path grant is the documented union merge working exactly as documented and
+# against us: the sandbox still reported itself `native`/`fully_enforced` while
+# writing into the operator's home. The cli.json allowlist did not widen the
+# jail, it switched it off. Only the blunt `insecure_none` was refused -- which
+# is the least useful of the three to an attacker, and refusing one of three is
+# not a boundary.
+#
+# Directory replacement rather than per-file surgery: it closes cli.json,
+# permissions.json (the Auto-review policy file), rules/, skills/, commands/ and
+# whatever policy file the next CLI version puts there, by construction and with
+# no per-file probe to keep current. Nothing is written back in its place, which
+# is where this departs from the plan that asked for it: `type` from a per-repo
+# sandbox.json was measured INERT in *both* directions -- `insecure_none` and
+# `workspace_readonly` were each ignored -- so a replacement file would be a
+# policy that demonstrably decides nothing. The deletion is the whole counter.
+#
+# Accepted cost, and it cuts both ways: a repo's legitimate deny rules and extra
+# read paths go too. An untrusted target gets no say either way. What this does
+# NOT reach is the repo-root surfaces that live outside .cursor/ -- .cursorignore
+# can still hide files from the reviewer, and AGENTS.md is still read; neither
+# was measured widening the sandbox, and hiding a file from a reviewer is a
+# weaker attack than writing to the operator's home.
+#
+# Safe because <workdir> is a disposable per-round copy, never the operator's
+# checkout (lib/sandbox.sh; docs/adapter-contract.md says the same).
+rm -rf "$workdir/.cursor"
+
 cd "$workdir" || exit 1
 
 # Cursor's --sandbox enabled is meant to supply write confinement and the host
@@ -64,15 +181,16 @@ cd "$workdir" || exit 1
 # namespace, and containment measured against an unwrapped control that DID
 # leave a survivor on the host.
 #
-# The same probe measured something the header above still claims is false:
-# at Cursor 2026.08.25-3e8eec8, invoked exactly as below, a tool-call write to
-# /tmp and to $HOME both SUCCEEDED -- wrapped and unwrapped alike, so it is
-# not something this jail did. Treat "Cursor confines its own writes" as
-# unverified at the current version; the missing write barrier is a bigger
-# hole than the one this wrap closes and is filed in the backlog. Widening
-# this bwrap into a write barrier is the obvious fix and is deliberately NOT
-# done here: it needs its own probe, because Cursor's own sandbox machinery
-# runs inside it.
+# That probe also measured a tool-call write to /tmp and to $HOME succeeding
+# wrapped and unwrapped alike, and this comment used to conclude from it that
+# Cursor had no write barrier. It had one; this host's ~/.cursor had turned it
+# off. See the header, and CURSOR_CONFIG_DIR above, which is where the barrier
+# actually comes from. The jail stays a pid fence only: / is still bound
+# read-write, deliberately, because widening it would put Cursor's own Landlock
+# sandbox inside a second jail for no measured gain. Landlock nesting was
+# checked rather than assumed -- with the wrap in place the $HOME canary is
+# still denied and CURSOR_SANDBOX still reads `native` (2026-08-28, same probe
+# directory).
 #
 # No bwrap is NOT fail-closed here, unlike agy and claude: for them bwrap is
 # the write barrier, for this adapter it is only the pid fence, and macOS
@@ -101,9 +219,28 @@ wrap=(bwrap --bind / / --dev /dev --proc /proc
       --die-with-parent --unshare-uts --unshare-ipc --unshare-pid)
 "${wrap[@]}" true > /dev/null 2>&1 || wrap=()
 
+# `agent create-chat` prints the new chat id and then, in a CURSOR_CONFIG_DIR
+# that has never completed a `-p` run, NEVER EXITS -- measured 2026-08-28, the
+# private directory above is cold on its first round and this hung a 420s round
+# to a dead stop before the bound went in. A directory that has completed one
+# `-p` run exits immediately, which is why nothing saw this while the adapter
+# read the operator's long-warm ~/.cursor. Root cause unidentified: it is some
+# piece of first-run state the review run persists and `agent status` does not,
+# and the config content is not it (an exact copy of a warm directory's
+# cli-config.json in a fresh directory still hangs).
+#
+# So bound it and keep what it printed. The id is on stdout within a second or
+# two, long before the hang, and a chat created by a create-chat that was then
+# KILLED resumes normally -- measured, not assumed, because "the id exists" and
+# "the chat is usable" are different claims. Cost is one 30s stall per sandbox
+# lifetime: the first round pays it, every later round either passes a session
+# id or finds the directory warm. GNU `timeout` is already a hard requirement
+# of this project (pr_doctor_check_gnu_timeout FAILS without it) -- this is the
+# one adapter that reaches for it directly, and it is stated here rather than
+# shared because adapters source nothing.
 session="$session_in"
 if [[ -z "$session" ]]; then
-  session="$("${wrap[@]}" agent create-chat 2>/dev/null | tail -1 | tr -d '[:space:]')"
+  session="$(timeout 30 "${wrap[@]}" agent create-chat 2>/dev/null | tail -1 | tr -d '[:space:]')"
   if [[ -z "$session" ]]; then
     echo "agent adapter: create-chat produced no id" >&2
     pr_reason "Cursor's create-chat produced no session id; nothing was run"

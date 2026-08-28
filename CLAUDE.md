@@ -308,21 +308,43 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   no scratch name of its own, so a rename inside the module cannot silently
   break the round. Every `round.json` and session-map mutation stays serial, in
   the parent.
-- **Confinement is per-adapter and not uniform**: codex confines its own *writes*, and
-  Cursor is supposed to but was re-measured not doing so at `2026.08.25-3e8eec8` (leg 4 of
-  the pid-namespace probe: a tool-call write reached `/tmp` and `$HOME`, wrapped and
-  unwrapped alike), which is why the macOS roster is one self-confining reviewer and one
-  confining nothing; `agy` and `claude` are wrapped in bubblewrap by their adapters and
+- **Confinement is per-adapter and not uniform**: codex confines its own *writes*, and so
+  does Cursor — but only once the adapter takes the *user-level* config away from it.
+  `--sandbox enabled` is **inert** under `approvalMode: "unrestricted"` in
+  `~/.cursor/cli-config.json` (Run Everything; the vendor's own mode table says
+  "Sandbox: No"): the tool call runs with `CURSOR_SANDBOX` unset and the `$HOME` canary
+  lands on the host. That is what leg 4 of the pid-namespace probe measured and read as a
+  vendor regression — the binary was innocent and so was `--trust`, which every confining
+  run since passes (`docs/process/probes/2026-08-28-cursor-containment`, same version,
+  2026-08-28). So `adapters/agent.sh` exports a private `CURSOR_CONFIG_DIR` and rewrites
+  its `cli-config.json` every round, and it `rm -rf`s the target repo's `.cursor/` first:
+  **two of the three repo-supplied surfaces escaped** — `additionalReadwritePaths: ["$HOME"]`
+  in `sandbox.json` widened the jail with the sandbox still reporting `native`, and
+  `permissions.allow: ["Shell(sh)"]` in `cli.json` switched it off outright; only
+  `type: "insecure_none"` was refused. Nothing is written back in `.cursor`'s place,
+  because `type` from a per-repo `sandbox.json` was measured inert in *both* directions.
+  The empty allowlist in the pinned config is not cosmetic: an allowlisted command is
+  exempted **from the sandbox**, not merely from the prompt. One cost came with the
+  private directory: `agent create-chat` prints the new id and then **never exits** in a
+  config dir that has not yet completed a `-p` run, so it runs under `timeout 30` and the
+  adapter keeps the id it printed (measured resumable after the kill). `agy` and `claude`
+  are wrapped in bubblewrap by their adapters and
   **fail closed** when `bwrap` is missing. `claude` additionally rebuilds the environment from a
   whitelist (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail)
   and runs `--safe-mode`. Never add an unconfined fallback — for those two.
   `adapters/agent.sh` is the exception and is deliberately **not** fail-closed: its bwrap
-  supplies the pid namespace and nothing else (`/` is bound read-write on purpose), so
+  supplies the pid namespace and nothing else (`/` is bound read-write on purpose — and
+  Cursor's own Landlock sandbox was measured still enforcing *inside* that namespace, so
+  the fence costs the barrier nothing), so
   where the jail does not *work* it runs unwrapped and the kernel's sweep is the bound,
   exactly as `docs/adapter-contract.md`'s containment clause says — and that gate is a
   trial run of the flags, not `command -v`, because a host with bwrap installed and its
   userns denied would otherwise lose the reviewer outright. Both fail-closed adapters also
-  keep a **private state directory** beside the repo copy — `<sandbox>/config` for claude,
+  keep a **private state directory** beside the repo copy — as does `adapters/agent.sh`,
+  at `<sandbox>/cursor-config`, which is the cheapest of the four because an *empty*
+  `CURSOR_CONFIG_DIR` is still authenticated: no credential is copied or bound in, and the
+  operator's `~/.cursor` hooks, plugins, rules and skills fall out of scope for free.
+  `<sandbox>/config` for claude,
   `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
   *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
   because agy cannot be told to look elsewhere, while claude's is bound at its own path
