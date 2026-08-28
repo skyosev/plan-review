@@ -202,6 +202,14 @@ pr_doctor_check_utils() {
 # project's own stated baseline. Bash-builtin match on purpose: this file
 # parses with builtins only, so the stub-PATH doctor tests stay green.
 pr_doctor_check_gnu_timeout() {
+  # A host with no timeout at all already failed pr_doctor_check_utils for the
+  # right reason. Failing here too printed "not GNU coreutils" with an empty
+  # got: line and a brew hint -- two failures, one cause, the louder one naming
+  # the wrong thing (BACKLOG, 2026-08-27). Skip, and say where the diagnosis is.
+  pr_doctor_have timeout || {
+    pr_d_skip "timeout is absent entirely; the core-utilities failure above is the diagnosis"
+    return 0
+  }
   local v
   # Through pr_doctor_run like every other version read in this file, not a bare
   # command substitution: a substitution is held open by any descendant that

@@ -110,6 +110,18 @@ test_doctor_passes_gnu_timeout() {
   assert_contains "$out" "counts 1 0 0" "GNU coreutils timeout passes, cleanly"
 }
 
+# BACKLOG 2026-08-27: with no timeout at all, check_utils already fails for the
+# right reason; a second failure here prints "not GNU coreutils" with an empty
+# got: line and sends the operator hunting the wrong problem.
+test_the_gnu_timeout_check_skips_when_timeout_is_absent_entirely() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  out="$(doctor_run "$d/bin" 'pr_doctor_check_gnu_timeout')"
+  assert_contains "$out" "SKIP" "skipped, not failed a second time"
+  assert_contains "$out" "core-utilities" "points at the check that owns the diagnosis"
+  assert_not_contains "$out" "not GNU coreutils" "no misdiagnosis"
+  assert_contains "$out" "counts 0 0 0" "and no counter moved"
+}
+
 test_absent_reviewer_cli_points_at_the_roster_escape_hatch() {
   local d; d="$(pr_test_tmpdir)"
   mkdir -p "$d/bin"
