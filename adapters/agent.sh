@@ -108,15 +108,24 @@ fi
 # comes back rc=0 with a normal answer. So rc=0 distinguishes nothing, and no
 # claim can be made in either direction from it.
 #
-# Nothing measured here says whether `--resume` attaches to a prior conversation
-# at all in `-p` mode. Asked about the content of an earlier turn, a resumed chat
-# disclaimed knowledge of it identically from the directory that minted it and
-# from a foreign one -- consistent with "the handle carries nothing", and equally
-# consistent with a chat that never held that turn, since the record proving what
-# was in it was overwritten. It is a hypothesis, not a finding. The acceptance
-# matrix exercises multi-round resume for real and is where it gets settled; a
-# probe that wants to settle it needs a discriminator that is not rc, because rc
-# is now known not to be one.
+# Whether `--resume` attaches to a prior conversation at all in `-p` mode WAS the
+# open question here, and it is now SETTLED, in the affirmative
+# (docs/process/probes/2026-08-28-acceptance-matrix/, 2026-08-28). Two rounds
+# through this adapter: round 2 reproduced a token round 1 had been told to hold
+# and not to write down -- a token absent from round 1's published review and
+# from round 2's prompt, so the chat carried it and the prompt did not.
+#
+# The probe that settled it needed a discriminator that is not rc, which is the
+# whole reason the earlier reading failed. Asked an OPEN question about an
+# earlier turn, a resumed chat disclaims knowledge of it -- identically from the
+# directory that minted it and from a foreign one, which is what made that
+# reading look like "the handle carries nothing". A disclaimer is a behaviour,
+# not an absence of state, and a nonce it was told to hold beats it.
+#
+# What is still unmeasured is the TRANSITION only: a handle minted under the
+# operator's ~/.cursor and resumed under this private directory. Every round the
+# runner starts mints and resumes inside CURSOR_CONFIG_DIR, so that case is the
+# migration and nothing else.
 cursor_config="$(dirname "$workdir")/cursor-config"
 if ! mkdir -p "$cursor_config" 2>/dev/null; then
   echo "agent adapter: cannot create $cursor_config" >&2
