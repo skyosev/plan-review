@@ -326,8 +326,14 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   The empty allowlist in the pinned config is not cosmetic: an allowlisted command is
   exempted **from the sandbox**, not merely from the prompt. One cost came with the
   private directory: `agent create-chat` prints the new id and then **never exits** in a
-  config dir that has not yet completed a `-p` run, so it runs under `timeout 30` and the
-  adapter keeps the id it printed (measured resumable after the kill). `agy` and `claude`
+  config dir that has not yet completed a `-p` run, so it runs under a
+  `timeout --kill-after=1` whose deadline is derived from `PR_TIMEOUT_SECS` (half, capped
+  at 30, floored at 1 — `0` disables a GNU timeout), and the adapter keeps the id it
+  printed (measured resumable after the kill). The escalation is load-bearing for the same
+  reason it is on the `ps` caps: `timeout N` signals at N and then *waits*, and never
+  exiting is the only thing this process is known to do. Moving Cursor's config home costs
+  **no** transition round, unlike codex's: a handle minted before the move still resumes
+  (measured), because the chats are server-side. `agy` and `claude`
   are wrapped in bubblewrap by their adapters and
   **fail closed** when `bwrap` is missing. `claude` additionally rebuilds the environment from a
   whitelist (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail)

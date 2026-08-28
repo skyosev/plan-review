@@ -306,6 +306,12 @@ meant.
   a config error, the file to look in is `<sandbox>/codex-home/config.toml`, which codex
   writes itself; the adapter's own message names it. Their `~/.codex` is not the cause
   any more, and telling them to edit it would waste their time.
+- **`agent` failing is not a stale-handle problem — do not recommend `--fresh` for it.**
+  Cursor's config home moved to `<sandbox>/cursor-config` the same way codex's did, but
+  its chats are server-side, so a handle minted before the move still resumes (measured
+  2026-08-28). If `agent` reports "exited N without writing a review", the log names the
+  causes that remain — authentication and the model pin. Say that instead of spending a
+  `--fresh`, which would drop every other reviewer's handle for nothing.
 - **A plan that was mid-loop when the private home landed loses one codex round.** Its
   stored handle names a rollout in the user's `~/.codex/sessions/`, which the private home
   does not have, so the resume fails before the banner and codex is recorded as failed for

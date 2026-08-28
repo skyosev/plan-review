@@ -606,6 +606,12 @@ write-confined, each by a different thing:
   canary is denied and the sandbox reports itself `native`/`fully_enforced`. `/tmp` stays
   writable, which is the sandbox's documented default. The bubblewrap remains a pid fence
   and is deliberately not the write barrier.
+
+  **No round is lost for a plan that was mid-loop when this landed**, which is where
+  Cursor differs from codex below. A stored Cursor handle names a chat held server-side,
+  not a local file, so it resumes under the private directory exactly as it did before —
+  measured 2026-08-28, an id minted under the operator's `~/.cursor` answered normally
+  from an empty private one. Nothing is required of you, and `--fresh` buys nothing here.
 - **codex** confines itself, via its own OS sandbox. Writes land inside the disposable
   copy; writes outside it are denied.
 

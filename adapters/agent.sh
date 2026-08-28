@@ -95,6 +95,24 @@ fi
 # the operator's own ~/.cursor -- hooks.json, plugins/, rules/, skills-cursor/,
 # and the approvalMode that made --sandbox enabled inert above -- is out of the
 # reviewer's reach.
+#
+# And unlike codex's private CODEX_HOME, this one costs NO transition round.
+# That is the price BACKLOG.md pre-registered for moving a CLI's state home and
+# codex really paid: a handle minted before the move names a rollout file the
+# new home does not have, and the first resume after it fails with `no rollout
+# found for thread id`. Measured here 2026-08-28 and the answer is different: a
+# chat id minted under the operator's ~/.cursor resumes under an EMPTY private
+# directory with rc=0 and a normal answer, because Cursor's chats are held
+# server-side and `chats/` is a local cache, not the authority. No round is lost
+# and no operator note is needed beyond saying so.
+#
+# The same pair of runs turned up something that is NOT about this change and is
+# recorded because it looks like it: asked about the content of an earlier turn,
+# a resumed chat disclaimed all knowledge of it -- identically from the directory
+# that MINTED the chat and from a foreign one. So whatever `--resume` carries in
+# `-p` mode, it is not the model's recall of a previous turn, and it behaves the
+# same either side of this change. Pre-existing, out of scope here, and left for
+# the acceptance matrix, which exercises multi-round resume for real.
 cursor_config="$(dirname "$workdir")/cursor-config"
 if ! mkdir -p "$cursor_config" 2>/dev/null; then
   echo "agent adapter: cannot create $cursor_config" >&2
@@ -121,8 +139,15 @@ export CURSOR_CONFIG_DIR="$cursor_config"
 # state the whole change exists to close. Even the failure mode is bounded --
 # the CLI backs a malformed config up as .bad and recreates it from defaults,
 # which are `allowlist` too.
+#
+# Only fields the probe actually exercised are written. `sandbox.networkAccess`
+# was in the first draft of this line, copied out of the fresh install's own
+# file; it appears in none of the four vendor pages the probe fetched and in no
+# transcript, so it is gone. In a file whose whole job is pinning what was
+# measured, an unmeasured field is the one thing that must not be in it. The
+# CLI self-repairs whatever it needs.
 if ! printf '%s\n' \
-  '{"version":1,"approvalMode":"allowlist","permissions":{"allow":[],"deny":[]},"sandbox":{"mode":"enabled","networkAccess":"user_config_with_defaults"}}' \
+  '{"version":1,"approvalMode":"allowlist","permissions":{"allow":[],"deny":[]},"sandbox":{"mode":"enabled"}}' \
   > "$cursor_config/cli-config.json"; then
   echo "agent adapter: cannot write $cursor_config/cli-config.json" >&2
   pr_reason "Could not pin Cursor's approval mode; refusing to run unconfined"
@@ -161,7 +186,24 @@ fi
 #
 # Safe because <workdir> is a disposable per-round copy, never the operator's
 # checkout (lib/sandbox.sh; docs/adapter-contract.md says the same).
+#
+# chmod first, and CHECKED after, for the same reason its two siblings above are
+# checked: this is the half that closes the two measured escapes, and a silent
+# failure here leaves cli.json in place and runs the review anyway. The failure
+# is not hypothetical -- lib/sandbox.sh:70 records it: `rsync -a` preserves the
+# target's permissions and `rm -rf` cannot descend a mode-555 directory, which
+# vendored dependencies really do ship. A repo that wanted its policy to survive
+# would only have to ship `.cursor` mode 555. The `[[ -e ]]` is the evidence, not
+# rm's exit status: what matters is whether the directory is gone.
+chmod -R u+w "$workdir/.cursor" 2>/dev/null
 rm -rf "$workdir/.cursor"
+if [[ -e "$workdir/.cursor" ]]; then
+  echo "agent adapter: could not remove $workdir/.cursor" >&2
+  echo "That directory can widen or switch off Cursor's sandbox (measured" >&2
+  echo "2026-08-28), so the review is refused rather than run with it in place." >&2
+  pr_reason "The target repo's .cursor policy directory could not be removed; refusing to run unconfined"
+  exit 1
+fi
 
 cd "$workdir" || exit 1
 
@@ -232,15 +274,41 @@ wrap=(bwrap --bind / / --dev /dev --proc /proc
 # So bound it and keep what it printed. The id is on stdout within a second or
 # two, long before the hang, and a chat created by a create-chat that was then
 # KILLED resumes normally -- measured, not assumed, because "the id exists" and
-# "the chat is usable" are different claims. Cost is one 30s stall per sandbox
-# lifetime: the first round pays it, every later round either passes a session
-# id or finds the directory warm. GNU `timeout` is already a hard requirement
-# of this project (pr_doctor_check_gnu_timeout FAILS without it) -- this is the
-# one adapter that reaches for it directly, and it is stated here rather than
-# shared because adapters source nothing.
+# "the chat is usable" are different claims. GNU `timeout` is already a hard
+# requirement of this project (pr_doctor_check_gnu_timeout FAILS without it) --
+# this is the one adapter that reaches for it directly, and the reasoning is
+# restated here rather than shared because adapters source nothing.
+#
+# `--kill-after` is not optional, and least of all here. `timeout N` does not
+# RETURN at N: it signals and then waits for its child, so against a process
+# that ignores or blocks SIGTERM the bound is not a bound at all -- measured
+# 2026-08-27 for the kernel's `ps` caps, 5.003s against 2.002s, and every other
+# timeout in this project carries the escalation for that reason
+# (lib/adapter-exec.sh). The thing being bounded here is a process whose
+# defining observed property is that it never exits and whose root cause was
+# NOT identified. Assuming it dies politely is exactly the assumption the
+# measurement forbids, and without the escalation the "one stall per sandbox
+# lifetime" below silently becomes the round's whole deadline.
+#
+# The deadline is derived, not fixed. 30s was the first draft and it can exceed
+# the deadline it sits inside: `doctor --smoke` hands the adapter a
+# PR_SMOKE_TIMEOUT_SECS that may be a few seconds, and adapters/agy.sh already
+# derives its inner timeout from PR_TIMEOUT_SECS precisely so the inner bound
+# stays strictly below the outer one. Half the round deadline, capped at 30 and
+# floored at 1: the floor matters because GNU timeout reads 0 as *disabling*
+# the timeout, which is the opposite of what this line is for. Cost in the
+# normal case is one such stall per sandbox lifetime -- the first round pays it,
+# every later round either passes a session id or finds the directory warm.
+_pr_agent_deadline="${PR_TIMEOUT_SECS:-900}"
+[[ "$_pr_agent_deadline" =~ ^[1-9][0-9]*$ ]] || _pr_agent_deadline=900
+_pr_agent_create_secs=$(( _pr_agent_deadline / 2 ))
+(( _pr_agent_create_secs > 30 )) && _pr_agent_create_secs=30
+(( _pr_agent_create_secs < 1 )) && _pr_agent_create_secs=1
+
 session="$session_in"
 if [[ -z "$session" ]]; then
-  session="$(timeout 30 "${wrap[@]}" agent create-chat 2>/dev/null | tail -1 | tr -d '[:space:]')"
+  session="$(timeout --kill-after=1 "$_pr_agent_create_secs" \
+               "${wrap[@]}" agent create-chat 2>/dev/null | tail -1 | tr -d '[:space:]')"
   if [[ -z "$session" ]]; then
     echo "agent adapter: create-chat produced no id" >&2
     pr_reason "Cursor's create-chat produced no session id; nothing was run"
@@ -298,6 +366,27 @@ printf '%s\n%s\n%s\n%s\n' \
 if [[ -s "$review_out" ]]; then
   exit 0
 fi
+# Said twice, once for the log and once for the round summary, the way
+# adapters/codex.sh's Q8 diagnostics are -- adapters source nothing, so there is
+# no shared constant, and lib/reviewer-runner.sh clips the reason at 200
+# characters, so the long form stays here where nothing clips it.
+#
+# The first line names what a reader coming from codex will otherwise assume,
+# and names it as a NON-cause: this adapter moved Cursor's state home too, but a
+# handle minted before the move was measured resuming cleanly (2026-08-28), so
+# unlike codex there is no one-round transition and `--fresh` buys nothing here.
+# The rest names the causes the probe did leave standing. `--mode plan` is on the
+# list because it was measured returning EMPTY output for a prompt that asks for
+# a tool call, twice, while answering a plain question fine -- this adapter never
+# passes it, but a config or a future flag change that did would land exactly
+# here.
 echo "agent adapter: exit $rc with no output" >&2
-pr_reason "Cursor exited $rc without writing a review"
+echo "  The private CURSOR_CONFIG_DIR is NOT the likely cause: a session handle" >&2
+echo "  minted before it existed still resumes (measured 2026-08-28), so unlike" >&2
+echo "  codex there is no transition round to lose and --fresh buys nothing." >&2
+echo "  Likelier: authentication ($cursor_config holds no credential -- check" >&2
+echo "  \`agent status\`), a model pin this account cannot use, or a run mode that" >&2
+echo "  returns nothing for a prompt asking for a tool call, as --mode plan was" >&2
+echo "  measured doing." >&2
+pr_reason "Cursor exited $rc without writing a review (not a stale session handle: those still resume; check auth and the model pin in the log)"
 exit 1

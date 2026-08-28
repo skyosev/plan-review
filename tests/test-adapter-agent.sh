@@ -290,11 +290,13 @@ test_the_cli_reads_a_private_config_dir_beside_the_workdir() {
     bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
   assert_not_contains "$(cat "$d/bin/env.txt")" "/the/operators/own" \
     "an inherited CURSOR_CONFIG_DIR is overridden, not respected"
+  # The exact path is the assertion, and it is what makes this "beside the
+  # workdir" rather than inside it: pr_sandbox_refresh wipes <sandbox>/repo
+  # every round and Cursor keeps the chats --resume needs in there. Asserting
+  # instead that "$d/work/cursor-config" is absent would pass for a path the
+  # adapter never composes at all.
   assert_eq "$(sort -u "$d/bin/env.txt")" "$d/cursor-config" \
     "every invocation reads the private directory beside the workdir"
-  # Beside the workdir, not inside it: pr_sandbox_refresh wipes <sandbox>/repo
-  # every round and Cursor keeps the chats --resume needs in there.
-  assert_file_missing "$d/work/cursor-config" "not inside the disposable copy"
 }
 
 test_the_private_config_pins_the_approval_mode_that_keeps_the_sandbox_on() {
@@ -343,18 +345,50 @@ test_the_adapter_replaces_the_repo_supplied_cursor_policy_dir() {
 # `agent create-chat` prints the id and then never exits in a config directory
 # that has not yet completed a `-p` run -- which the private directory above is,
 # on its first round. Measured 2026-08-28: it hung a 400s round to a dead stop.
-# What is pinned here is only that the call is bounded; that the id printed
-# before the kill still resumes was measured live, since no stub can show it.
+# What is pinned here is only that the call is bounded and that the escalation
+# is on it; that the id printed before the kill still resumes was measured live,
+# since no stub can show it.
+install_timeout_stub() {
+  # Skips timeout's own flags and its duration, then execs the command -- so the
+  # adapter runs unchanged while every argument it passed is on record.
+  pr_test_mkstub "$1/timeout" \
+    "printf '%s\\n' \"\$@\" >> '$1/timeout-argv.txt'
+while [[ \"\${1:-}\" == -* ]]; do shift; done
+shift
+exec \"\$@\""
+}
+
 test_create_chat_is_bounded_because_it_can_hang_forever() {
   local d; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0; mkdir -p "$d/work"
-  pr_test_mkstub "$d/bin/timeout" \
-    "printf '%s\\n' \"\$@\" >> '$d/bin/timeout-argv.txt'; exec \"\${@:2}\""
+  install_timeout_stub "$d/bin"
   echo "prompt" | PATH="$d/bin:$PATH" \
     bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
   local argv; argv="$(cat "$d/bin/timeout-argv.txt")"
   assert_contains "$argv" "create-chat" "session creation runs under a deadline"
-  assert_eq "$(sed -n 1p "$d/bin/timeout-argv.txt")" "30" "and the deadline is a number of seconds"
+  # `timeout N` signals at N and then WAITS for its child, so without the
+  # escalation the bound is not a bound against a process that ignores SIGTERM
+  # -- and never exiting is the only thing this one is known to do.
+  assert_contains "$argv" "--kill-after=1" "and the deadline escalates"
   assert_eq "$(sed -n 1p "$d/m.txt")" "chat-uuid-123" "the id it printed is still used"
+}
+
+# Derived from the round deadline, not fixed, so the inner bound stays below the
+# outer one under `doctor --smoke`'s short PR_SMOKE_TIMEOUT_SECS. Both ends of
+# the clamp are pinned: 0 would DISABLE the timeout, which is the opposite of
+# what the line is for.
+test_the_create_chat_deadline_is_derived_from_the_round_deadline() {
+  local base case deadline expected d
+  base="$(pr_test_tmpdir)"
+  # <round deadline>:<expected create-chat bound>. 900 is the runner's default.
+  for case in 4:2 1:1 900:30; do
+    deadline="${case%%:*}"; expected="${case##*:}"
+    d="$base/$deadline"; install_stub "$d/bin" 0; mkdir -p "$d/work"
+    install_timeout_stub "$d/bin"
+    echo "prompt" | PR_TIMEOUT_SECS="$deadline" PATH="$d/bin:$PATH" \
+      bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+    assert_eq "$(grep -m1 -xE '[0-9]+' "$d/bin/timeout-argv.txt")" "$expected" \
+      "PR_TIMEOUT_SECS=$deadline bounds create-chat at ${expected}s"
+  done
 }
 
 # The adapter composes "$workdir/.cursor" for an `rm -rf` and
@@ -370,6 +404,31 @@ test_a_missing_workdir_is_refused_before_any_path_is_composed() {
   assert_exit_code "$rc" 1 "refuses an empty workdir"
   assert_file_missing "$d/bin/argv.txt" "the CLI was never invoked"
   assert_contains "$(cat "$d/reason.txt")" "workdir" "and the round is told why"
+}
+
+# The removal is the half that closes the two measured escapes, so it is checked
+# like its two siblings (the private config dir, the pinned cli-config.json) and
+# not left to fail open in silence. lib/sandbox.sh:70 records the failure it is
+# exposed to: rsync preserves the target's permissions and `rm -rf` cannot
+# descend a mode-555 directory, which vendored dependencies really do ship -- and
+# which a repo that wanted its policy to survive would only have to imitate. The
+# adapter chmods first, so what is left un-removable is a directory whose PARENT
+# refuses the unlink, which is what this builds.
+test_an_unremovable_cursor_policy_dir_refuses_the_run() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0
+  # root ignores the write bit, so the failure this test needs cannot be built.
+  if [[ "$(id -u)" == 0 ]]; then pr_test_skip "root can unlink from a read-only directory"; return 0; fi
+  mkdir -p "$d/work/.cursor"
+  echo '{"type": "insecure_none"}' > "$d/work/.cursor/sandbox.json"
+  chmod 555 "$d/work"
+  echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" \
+    > /dev/null 2>&1
+  rc=$?
+  chmod 755 "$d/work"
+  assert_exit_code "$rc" 1 "refuses rather than reviewing with the repo's policy in force"
+  assert_file_missing "$d/bin/argv.txt" "the CLI was never invoked"
+  assert_contains "$(cat "$d/reason.txt")" "unconfined" "and the round is told why"
 }
 
 pr_run_tests
