@@ -150,7 +150,13 @@ trap 'rm -f "$stream"' EXIT
 # with this process's EXIT trap, and before this change log-claude.txt carried
 # stderr only, so a failed round's stream-json was deleted with the evidence.
 # Accepted cost (decision 5, brainstorm 2026-08-27-backlog-clearing-3): the log
-# interleaves stream-json with stderr. jq below still reads $stream, the FILE --
+# interleaves stream-json with stderr -- and the volume is the half the first
+# draft of this comment left out. What lands in log-claude.txt is the WHOLE
+# stream, every tool call and the full review text, on every round, where before
+# the tee that file carried stderr alone. That is the point (a failed round's
+# stream is now recoverable) and the cost (nothing prefixes either writer, so a
+# reader cannot attribute a line -- BACKLOG.md carries that as a watch item).
+# jq below still reads $stream, the FILE --
 # never the pipe. PIPESTATUS[0], because $? is now tee's exit, and rc must keep
 # meaning what the messages below say it means.
 "${jail[@]}" "${env_clean[@]}" "${args[@]}" | tee "$stream"
