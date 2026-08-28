@@ -1083,6 +1083,37 @@ test_preflight_probes_the_jail_for_claude_too() {
 
 DOCTOR="$PR_ROOT/bin/plan-review"
 
+# THE RULE for every case below: a `plan-review doctor` driven on the real PATH
+# stubs every reviewer CLI, on a $bindir prefixed onto it. Nothing in this suite
+# may invoke a real one.
+#
+# Which check spawns them is the part worth naming, because it is not the one it
+# looks like. pr_doctor_check_cli is `command -v` and spawns nothing. The
+# executor is pr_doctor_check_versions, which iterates docs/verified-versions.txt
+# and is ROSTER-INDEPENDENT -- so a case whose config names only codex still read
+# four real versions off this host, whatever its roster said. Measured with
+# recording wrappers 2026-08-28: 20 real `--version` spawns across this file
+# (6 claude, 5 agy, 5 agent, 4 codex) after the roster-shaped stubs alone.
+# `agent` is the second executor, via pr_doctor_check_agent_identity, and the
+# only one that was ever expensive (~1.5s, live account state).
+#
+# Not a fixture in PR_DOCTOR_VERSIONS_FILE: pointing that at an empty file would
+# silence the spawns by removing the drift check these cases run THROUGH, which
+# changes what they exercise. Stubbing the CLIs leaves every check intact and
+# only replaces what answers.
+#
+# codex and agy self-update, so their `--version` is not even a hermetic read.
+stub_all_reviewer_clis() {
+  local b="$1"
+  pr_test_mkstub "$b/codex"  'echo "codex-cli 0.0.0-stub"'
+  pr_test_mkstub "$b/agy"    'echo "1.0.0-stub"'
+  pr_test_mkstub "$b/claude" 'echo "0.0.0-stub (Claude Code)"'
+  # agent answers two questions: the identity probe parses .cliVersion, and the
+  # drift check reads the first digit-leading token of --version.
+  pr_test_mkstub "$b/agent" '[[ "$1 $2" == "about --format" ]] && { echo "{\"cliVersion\":\"stub\"}"; exit 0; }
+echo "2026.01.01-stub"'
+}
+
 mkrepo_with_config() {  # mkrepo_with_config <dir> <config-json>
   local d="$1"
   mkdir -p "$d"
@@ -1100,21 +1131,7 @@ mkrepo_with_config() {  # mkrepo_with_config <dir> <config-json>
 test_a_codex_only_roster_does_not_check_the_bubblewrap_jail() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
-  # codex is stubbed for the same reason the agent sibling stubs agent: the
-  # roster makes the doctor run pr_doctor_check_cli codex, and a doctor test
-  # naming a reviewer in the roster must stub it -- nothing in this suite may
-  # call a real CLI.
-  #
-  # Which check actually EXECUTES it is worth naming, because the rule above is
-  # not where the cost lives: pr_doctor_check_cli is `command -v` and spawns
-  # nothing. pr_doctor_check_versions is what runs `<cli> --version`, and it
-  # iterates docs/verified-versions.txt, NOT the roster -- so on a host with all
-  # four CLIs installed every full-doctor case in this file reads four real
-  # versions whatever its roster says. Measured 2026-08-28 with recording
-  # wrappers in front of the real binaries. The stub below closes that for codex
-  # here; the rest is a wider sweep than this item, and is recorded rather than
-  # silently half-done.
-  pr_test_mkstub "$d/bin/codex" 'echo "codex-cli 0.0.0-stub"'
+  stub_all_reviewer_clis "$d/bin"
   out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
          bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "no reviewer here needs the bubblewrap jail" "skipped, and said so"
@@ -1126,15 +1143,7 @@ test_a_codex_only_roster_does_not_check_the_bubblewrap_jail() {
 test_an_agent_roster_checks_the_pid_fence_instead_of_skipping() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex", "agent"]}'
-  # `agent` is stubbed even though this case runs on the real PATH: the roster
-  # makes the doctor run pr_doctor_check_agent_identity, and that invokes the
-  # real Cursor CLI. Nothing in this suite may call a real CLI.
-  pr_test_mkstub "$d/bin/agent" \
-    '[[ "$1 $2" == "about --format" ]] && { echo "{\"cliVersion\":\"stub\"}"; exit 0; }
-exit 1'
-  # The sweep's second finding: this roster names codex as well, and only agent
-  # was stubbed. Same rule, same fix.
-  pr_test_mkstub "$d/bin/codex" 'echo "codex-cli 0.0.0-stub"'
+  stub_all_reviewer_clis "$d/bin"
   out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
          bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_not_contains "$out" "no reviewer here needs the bubblewrap jail" \
@@ -1145,9 +1154,7 @@ exit 1'
 test_an_agy_roster_does_check_the_bubblewrap_jail() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["agy"]}'
-  # Same rule as the codex sibling above: a doctor test naming a reviewer in the
-  # roster stubs that reviewer's CLI.
-  pr_test_mkstub "$d/bin/agy" 'echo "1.0.0-stub"'
+  stub_all_reviewer_clis "$d/bin"
   out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
          bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "bwrap" "agy has no other write barrier"
@@ -1158,7 +1165,11 @@ test_an_agy_roster_does_check_the_bubblewrap_jail() {
 test_a_fake_adapter_under_a_real_name_demands_no_vendor_login() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
-  out="$(PR_ORCHESTRATOR=none PR_ADAPTER_MAP="agy=/tmp/fake-ok.sh" \
+  # $shipped is empty here, so no pr_doctor_check_cli runs at all -- and the
+  # drift check spawns four CLIs anyway. That gap is why the rule above names
+  # pr_doctor_check_versions rather than the roster.
+  stub_all_reviewer_clis "$d/bin"
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none PR_ADAPTER_MAP="agy=/tmp/fake-ok.sh" \
          bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "does not ship" "named as unknown to this repo"
   assert_contains "$out" "no reviewer here needs the bubblewrap jail" "and carries no requirement"
@@ -1192,14 +1203,9 @@ test_the_header_names_the_runner_s_revision() {
   # pr_doctor_check_agent_identity and runs the real `agent about --format
   # json`. Measured 2026-08-28 with a recording wrapper: ~1.5s and live account
   # state, in a suite whose stated property is that it is offline. The
-  # mkrepo_with_config grep that found the two cases above cannot see this one,
-  # because a roster nobody wrote down is still a roster.
-  pr_test_mkstub "$d/bin/agent" \
-    '[[ "$1 $2" == "about --format" ]] && { echo "{\"cliVersion\":\"stub\"}"; exit 0; }
-echo "2026.01.01-stub"'
-  pr_test_mkstub "$d/bin/codex"  'echo "codex-cli 0.0.0-stub"'
-  pr_test_mkstub "$d/bin/agy"    'echo "1.0.0-stub"'
-  pr_test_mkstub "$d/bin/claude" 'echo "0.0.0-stub (Claude Code)"'
+  # mkrepo_with_config grep that found the roster cases above cannot see this
+  # one, because a roster nobody wrote down is still a roster.
+  stub_all_reviewer_clis "$d/bin"
   out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none bash "$DOCTOR" doctor --offline 2>&1)"
   assert_contains "$out" "$version" "the header carries the same string as \`plan-review version\`"
 }
@@ -1314,7 +1320,8 @@ mk_smoke_probe() {
 test_doctor_smoke_is_opt_in() {
   local d out; d="$(pr_test_tmpdir)"
   mk_smoke_probe "$d/probe.sh"
-  out="$(PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
+  stub_all_reviewer_clis "$d/bin"
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
          PR_CACHE_ROOT="$d/cache" PR_TEST_SMOKE_MARKER="$d/marker" \
          bash "$DOCTOR" doctor --offline 2>&1)"
   assert_not_contains "$out" "Smoke" "no smoke section without --smoke"
@@ -1328,7 +1335,8 @@ test_doctor_smoke_is_opt_in() {
 test_doctor_smoke_invokes_the_roster_end_to_end() {
   local d out rc; d="$(pr_test_tmpdir)"
   mk_smoke_probe "$d/probe.sh"
-  out="$(PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
+  stub_all_reviewer_clis "$d/bin"
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
          PR_CACHE_ROOT="$d/cache" PR_TEST_SMOKE_MARKER="$d/marker" \
          PR_AGENT_MODEL= PR_AGY_MODEL= \
          bash "$DOCTOR" doctor --smoke 2>&1)"; rc=$?
