@@ -61,5 +61,12 @@ if [[ "${#missing[@]}" -gt 0 ]]; then
   exit 1
 fi
 
-pr_round_set_state "$round_dir" complete
+# Checked like every store-scoped write (see libexec/plan-review-round.sh):
+# "Round complete" printed over a state that never persisted is the lie the
+# guard exists to stop. No writability preflight above, unlike abort's -- that
+# one exists only to improve the diagnosis, and here the raw jq error plus this
+# sentence is diagnosis enough; a preflight would also leave this guard
+# unreachable by any test that makes the directory unwritable.
+pr_round_set_state "$round_dir" complete \
+  || { echo "cannot record the completion at $round_dir; aborting" >&2; exit 2; }
 echo "Round complete: $round_dir"
