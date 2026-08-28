@@ -607,11 +607,13 @@ write-confined, each by a different thing:
   writable, which is the sandbox's documented default. The bubblewrap remains a pid fence
   and is deliberately not the write barrier.
 
-  **No round is lost for a plan that was mid-loop when this landed**, which is where
-  Cursor differs from codex below. A stored Cursor handle names a chat held server-side,
-  not a local file, so it resumes under the private directory exactly as it did before —
-  measured 2026-08-28, an id minted under the operator's `~/.cursor` answered normally
-  from an empty private one. Nothing is required of you, and `--fresh` buys nothing here.
+  **Whether a plan that was mid-loop when this landed loses a round is unknown** — unlike
+  codex below, where it is measured and certain. The obvious check said no: an id minted
+  under the operator's `~/.cursor` resumed under an empty private directory and answered
+  normally. Then the control said that proves nothing — `--resume` with a UUID that was
+  never a chat id answers just as normally, so its exit status distinguishes nothing
+  (measured 2026-08-28). If `agent` fails on the first round after this lands, `--fresh`
+  is worth one try; it is not known to be needed and not known to be useless.
 - **codex** confines itself, via its own OS sandbox. Writes land inside the disposable
   copy; writes outside it are denied.
 
@@ -691,7 +693,8 @@ round's session lock. On Linux every reviewer is now contained by a pid namespac
 `--as-pid-1`. `--die-with-parent` alone was not enough — measured 2026-08-27, a detached
 `setsid sleep` survived the jail's exit without `--unshare-pid` and was gone with it. For
 `agent` the bubblewrap is *only* a pid fence: `/` is bound read-write, the write barrier
-stays Cursor's own (and was measured still holding *inside* the namespace — Landlock nests),
+stays Cursor's own (and the two coexist: run through the adapter, the `$HOME` canary is
+still denied and Cursor still reports its sandbox `native`),
 and where the jail does not work — macOS has no `bwrap` at all, and
 some Linux hosts have it installed with user namespaces denied — the adapter runs
 unwrapped rather than refusing, because refusing would remove the reviewer for a barrier

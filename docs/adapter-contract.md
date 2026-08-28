@@ -119,7 +119,8 @@ Every adapter — real or fake — is invoked identically:
   `additionalReadwritePaths` to `$HOME`, and a repo-supplied `cli.json`
   allowlisting a shell command, were each measured putting the canary on the
   host. With both closed the `$HOME` canary is denied and the sandbox reports
-  `native`/`fully_enforced`, inside the bwrap pid fence as well as outside it.
+  `native`/`fully_enforced` — measured through the adapter, so with its bwrap gate
+  in play, though nothing in that run witnesses which namespace the command was in.
   The bwrap stays a pid fence and is deliberately still not the write barrier.
   `agy` never did: its
   `--sandbox` was measured to allow a write to `/tmp` while reporting itself

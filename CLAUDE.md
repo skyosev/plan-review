@@ -329,19 +329,24 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   config dir that has not yet completed a `-p` run, so it runs under a
   `timeout --kill-after=1` whose deadline is derived from `PR_TIMEOUT_SECS` (half, capped
   at 30, floored at 1 — `0` disables a GNU timeout), and the adapter keeps the id it
-  printed (measured resumable after the kill). The escalation is load-bearing for the same
-  reason it is on the `ps` caps: `timeout N` signals at N and then *waits*, and never
-  exiting is the only thing this process is known to do. Moving Cursor's config home costs
-  **no** transition round, unlike codex's: a handle minted before the move still resumes
-  (measured), because the chats are server-side. `agy` and `claude`
+  printed (measured resumable after the kill). That derivation is *not* agy's strict
+  inequality: at `PR_TIMEOUT_SECS=1` the inner bound equals the outer one and can overrun
+  it by the kill grace, which the kernel's own `timeout` then reaps. The escalation is
+  load-bearing for the same reason it is on the `ps` caps: `timeout N` signals at N and
+  then *waits*, and never exiting is the only thing this process is known to do. What
+  moving Cursor's config home costs in transition rounds is **unknown**, unlike codex's
+  measured one: a stale handle resumes at rc=0, but so does a UUID that was never a chat
+  id, so rc discriminates nothing and neither claim can be made. `agy` and `claude`
   are wrapped in bubblewrap by their adapters and
   **fail closed** when `bwrap` is missing. `claude` additionally rebuilds the environment from a
   whitelist (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail)
   and runs `--safe-mode`. Never add an unconfined fallback — for those two.
   `adapters/agent.sh` is the exception and is deliberately **not** fail-closed: its bwrap
   supplies the pid namespace and nothing else (`/` is bound read-write on purpose — and
-  Cursor's own Landlock sandbox was measured still enforcing *inside* that namespace, so
-  the fence costs the barrier nothing), so
+  Cursor's own sandbox still reports `native`/`fully_enforced` and still denies the `$HOME`
+  canary when the adapter runs on a host where the wrap gate passes — the two coexist, which
+  is weaker than "Landlock nests" and is all the transcripts witness, since the gate is a
+  silent trial and the probe command echoed nothing naming its namespace), so
   where the jail does not *work* it runs unwrapped and the kernel's sweep is the bound,
   exactly as `docs/adapter-contract.md`'s containment clause says — and that gate is a
   trial run of the flags, not `command -v`, because a host with bwrap installed and its

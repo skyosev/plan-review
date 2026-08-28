@@ -96,23 +96,27 @@ fi
 # and the approvalMode that made --sandbox enabled inert above -- is out of the
 # reviewer's reach.
 #
-# And unlike codex's private CODEX_HOME, this one costs NO transition round.
-# That is the price BACKLOG.md pre-registered for moving a CLI's state home and
-# codex really paid: a handle minted before the move names a rollout file the
-# new home does not have, and the first resume after it fails with `no rollout
-# found for thread id`. Measured here 2026-08-28 and the answer is different: a
-# chat id minted under the operator's ~/.cursor resumes under an EMPTY private
-# directory with rc=0 and a normal answer, because Cursor's chats are held
-# server-side and `chats/` is a local cache, not the authority. No round is lost
-# and no operator note is needed beyond saying so.
+# What this costs in transition rounds is UNKNOWN, and the attempt to measure it
+# is worth recording because it failed in an instructive way. BACKLOG.md
+# pre-registered the price of moving a CLI's state home, and codex really paid
+# it: a handle minted before the move names a rollout file the new home does not
+# have, and the first resume fails with `no rollout found for thread id`. The
+# obvious analogue was tried here on 2026-08-28 -- a chat id minted under the
+# operator's ~/.cursor, resumed under an empty private directory -- and it came
+# back rc=0 with a normal answer. That looked like "no cost". Then the negative
+# control was run: `--resume` with a UUID that had NEVER been a chat id also
+# comes back rc=0 with a normal answer. So rc=0 distinguishes nothing, and no
+# claim can be made in either direction from it.
 #
-# The same pair of runs turned up something that is NOT about this change and is
-# recorded because it looks like it: asked about the content of an earlier turn,
-# a resumed chat disclaimed all knowledge of it -- identically from the directory
-# that MINTED the chat and from a foreign one. So whatever `--resume` carries in
-# `-p` mode, it is not the model's recall of a previous turn, and it behaves the
-# same either side of this change. Pre-existing, out of scope here, and left for
-# the acceptance matrix, which exercises multi-round resume for real.
+# Nothing measured here says whether `--resume` attaches to a prior conversation
+# at all in `-p` mode. Asked about the content of an earlier turn, a resumed chat
+# disclaimed knowledge of it identically from the directory that minted it and
+# from a foreign one -- consistent with "the handle carries nothing", and equally
+# consistent with a chat that never held that turn, since the record proving what
+# was in it was overwritten. It is a hypothesis, not a finding. The acceptance
+# matrix exercises multi-round resume for real and is where it gets settled; a
+# probe that wants to settle it needs a discriminator that is not rc, because rc
+# is now known not to be one.
 cursor_config="$(dirname "$workdir")/cursor-config"
 if ! mkdir -p "$cursor_config" 2>/dev/null; then
   echo "agent adapter: cannot create $cursor_config" >&2
@@ -193,15 +197,40 @@ fi
 # is not hypothetical -- lib/sandbox.sh:70 records it: `rsync -a` preserves the
 # target's permissions and `rm -rf` cannot descend a mode-555 directory, which
 # vendored dependencies really do ship. A repo that wanted its policy to survive
-# would only have to ship `.cursor` mode 555. The `[[ -e ]]` is the evidence, not
-# rm's exit status: what matters is whether the directory is gone.
-chmod -R u+w "$workdir/.cursor" 2>/dev/null
-rm -rf "$workdir/.cursor"
-if [[ -e "$workdir/.cursor" ]]; then
+# would only have to ship one mode 555 inside `.cursor`. The `[[ -e ]]` is the
+# evidence, not rm's exit status: what matters is whether the path is gone.
+#
+# The -L branch is not tidiness, it is the whole reason the chmod is guarded.
+# GNU `chmod -R` DEREFERENCES the symlink named on its command line (it does not
+# follow links found during the walk, only the argument). `rsync -a` copies
+# symlinks as symlinks (lib/sandbox.sh:25), so a target repo shipping
+# `.cursor -> /home/<operator>` arrives in the workdir as exactly that, and an
+# unguarded `chmod -R u+w` would then add owner-write across the operator's home
+# -- measured on this host 2026-08-28: a 444 file under a symlinked tree came
+# back 644, and a 555 directory came back 755. `rm -rf` would then remove only
+# the link, `[[ -e ]]` would be false, and the round would proceed as though the
+# policy directory had been cleaned. This is where the adapter differs from
+# lib/sandbox.sh:67, which runs the same line against a path plan-review created
+# itself; here the path is named by an untrusted repo.
+#
+# A symlink is removed, never followed: unlinking it IS the clean outcome, since
+# what the CLI would have read is gone from the workdir either way. Only the link
+# is touched; the target is not. `-L` is tested again below because `-e` is false
+# for a DANGLING symlink, and a `.cursor` link left in place is still a policy
+# path the CLI could resolve later.
+if [[ -L "$workdir/.cursor" ]]; then
+  rm -f "$workdir/.cursor"
+elif [[ -d "$workdir/.cursor" ]]; then
+  chmod -R u+w "$workdir/.cursor" 2>/dev/null
+  rm -rf "$workdir/.cursor"
+else
+  rm -f "$workdir/.cursor"
+fi
+if [[ -e "$workdir/.cursor" || -L "$workdir/.cursor" ]]; then
   echo "agent adapter: could not remove $workdir/.cursor" >&2
-  echo "That directory can widen or switch off Cursor's sandbox (measured" >&2
+  echo "That path can widen or switch off Cursor's sandbox (measured" >&2
   echo "2026-08-28), so the review is refused rather than run with it in place." >&2
-  pr_reason "The target repo's .cursor policy directory could not be removed; refusing to run unconfined"
+  pr_reason "The target repo's .cursor policy path could not be removed; refusing to run unconfined"
   exit 1
 fi
 
@@ -229,10 +258,13 @@ cd "$workdir" || exit 1
 # off. See the header, and CURSOR_CONFIG_DIR above, which is where the barrier
 # actually comes from. The jail stays a pid fence only: / is still bound
 # read-write, deliberately, because widening it would put Cursor's own Landlock
-# sandbox inside a second jail for no measured gain. Landlock nesting was
-# checked rather than assumed -- with the wrap in place the $HOME canary is
-# still denied and CURSOR_SANDBOX still reads `native` (2026-08-28, same probe
-# directory).
+# sandbox inside a second jail for no measured gain. The two do coexist: run
+# through this adapter on a host where the wrap gate passes, the $HOME canary is
+# still denied and CURSOR_SANDBOX still reads `native`/`fully_enforced`
+# (2026-08-28, same probe directory). Read that as "the fence did not break the
+# barrier", not as a measurement of nesting: the wrap gate is a silent trial and
+# the probe command echoed nothing that would witness which namespace it ran in.
+# One `echo "pid=$$"` in that command would close the gap next time.
 #
 # No bwrap is NOT fail-closed here, unlike agy and claude: for them bwrap is
 # the write barrier, for this adapter it is only the pid fence, and macOS
@@ -292,13 +324,18 @@ wrap=(bwrap --bind / / --dev /dev --proc /proc
 #
 # The deadline is derived, not fixed. 30s was the first draft and it can exceed
 # the deadline it sits inside: `doctor --smoke` hands the adapter a
-# PR_SMOKE_TIMEOUT_SECS that may be a few seconds, and adapters/agy.sh already
-# derives its inner timeout from PR_TIMEOUT_SECS precisely so the inner bound
-# stays strictly below the outer one. Half the round deadline, capped at 30 and
-# floored at 1: the floor matters because GNU timeout reads 0 as *disabling*
-# the timeout, which is the opposite of what this line is for. Cost in the
-# normal case is one such stall per sandbox lifetime -- the first round pays it,
-# every later round either passes a session id or finds the directory warm.
+# PR_SMOKE_TIMEOUT_SECS that may be a few seconds. Half the round deadline,
+# capped at 30 and floored at 1; the floor matters because GNU timeout reads 0 as
+# *disabling* the timeout, which is the opposite of what this line is for.
+#
+# NOT the strict inequality adapters/agy.sh buys with its 900-per-mille
+# derivation, and it should not be read as one: at PR_TIMEOUT_SECS=1 the derived
+# value is also 1, and with --kill-after=1 this call can run about 2s inside a 1s
+# round. That is harmless -- the execution kernel's own `timeout` bounds this
+# whole adapter and reaps it -- but the property is "scales down with the round
+# deadline", not "finishes before it". Cost in the normal case is one such stall
+# per sandbox lifetime: the first round pays it, every later round either passes
+# a session id or finds the directory warm.
 _pr_agent_deadline="${PR_TIMEOUT_SECS:-900}"
 [[ "$_pr_agent_deadline" =~ ^[1-9][0-9]*$ ]] || _pr_agent_deadline=900
 _pr_agent_create_secs=$(( _pr_agent_deadline / 2 ))
@@ -371,22 +408,26 @@ fi
 # no shared constant, and lib/reviewer-runner.sh clips the reason at 200
 # characters, so the long form stays here where nothing clips it.
 #
-# The first line names what a reader coming from codex will otherwise assume,
-# and names it as a NON-cause: this adapter moved Cursor's state home too, but a
-# handle minted before the move was measured resuming cleanly (2026-08-28), so
-# unlike codex there is no one-round transition and `--fresh` buys nothing here.
+# Said twice on purpose, the way adapters/codex.sh's Q8 diagnostics are. The
+# first line names the possibility a reader coming from codex will otherwise
+# assume they can rule in or out -- this adapter moved Cursor's state home too --
+# and names it as UNRESOLVED rather than as a cause or a non-cause, because that
+# is what the probe found: the resume of a stale handle and the resume of a UUID
+# that was never a chat id are indistinguishable, both rc=0 with a normal answer.
 # The rest names the causes the probe did leave standing. `--mode plan` is on the
 # list because it was measured returning EMPTY output for a prompt that asks for
 # a tool call, twice, while answering a plain question fine -- this adapter never
 # passes it, but a config or a future flag change that did would land exactly
 # here.
 echo "agent adapter: exit $rc with no output" >&2
-echo "  The private CURSOR_CONFIG_DIR is NOT the likely cause: a session handle" >&2
-echo "  minted before it existed still resumes (measured 2026-08-28), so unlike" >&2
-echo "  codex there is no transition round to lose and --fresh buys nothing." >&2
+echo "  Cursor's config home is private to this round ($cursor_config), and" >&2
+echo "  whether a handle minted before that move still resumes is UNVERIFIED:" >&2
+echo "  --resume returns rc=0 even for an id that was never a chat (measured" >&2
+echo "  2026-08-28), so its exit status rules nothing in or out. If this round" >&2
+echo "  passed a stored handle, --fresh is worth one try." >&2
 echo "  Likelier: authentication ($cursor_config holds no credential -- check" >&2
 echo "  \`agent status\`), a model pin this account cannot use, or a run mode that" >&2
 echo "  returns nothing for a prompt asking for a tool call, as --mode plan was" >&2
 echo "  measured doing." >&2
-pr_reason "Cursor exited $rc without writing a review (not a stale session handle: those still resume; check auth and the model pin in the log)"
+pr_reason "Cursor exited $rc without writing a review (check auth and the model pin in the log; a stale session handle is unverified as a cause either way)"
 exit 1
