@@ -39,8 +39,11 @@
 #                           the reviewer reporting the refusal is what makes it a
 #                           measurement.
 #   codex-fail-closed       with PR_EXPECTED_SANDBOX mismatched the adapter exited
-#                           1, wrote no review, and the reason named the
-#                           unexpected sandbox. The Q8 refusal fires end to end.
+#                           1 and wrote no review. The reason states the CLASS
+#                           ("codex ran under an unexpected sandbox; the review
+#                           was discarded"); the offending VALUE is in the log,
+#                           beside the expectation it failed. The Q8 refusal
+#                           fires end to end.
 #   codex-group-snapshot    the one path P6 could not reach -- codex through its
 #                           own adapter. Every process below the round's
 #                           `timeout --kill-after` (adapter bash, the node

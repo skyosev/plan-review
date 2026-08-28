@@ -333,10 +333,19 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   inequality: at `PR_TIMEOUT_SECS=1` the inner bound equals the outer one and can overrun
   it by the kill grace, which the kernel's own `timeout` then reaps. The escalation is
   load-bearing for the same reason it is on the `ps` caps: `timeout N` signals at N and
-  then *waits*, and never exiting is the only thing this process is known to do. What
-  moving Cursor's config home costs in transition rounds is **unknown**, unlike codex's
-  measured one: a stale handle resumes at rc=0, but so does a UUID that was never a chat
-  id, so rc discriminates nothing and neither claim can be made. `agy` and `claude`
+  then *waits*, and never exiting is the only thing this process is known to do. Resume under that
+  private directory **works**, and is the one half of this that is now measured: the
+  acceptance matrix ran two rounds through the shipped adapter and round 2 reproduced a
+  token round 1 had been told to hold and never to write down — a token absent from round
+  1's published review and from round 2's prompt, so a cold chat could not have emitted it
+  (`docs/process/probes/2026-08-28-acceptance-matrix/`, 2026-08-28). That discriminator is
+  the point: `agent --resume` returns rc=0 for a UUID that was never a chat id, so **rc
+  discriminates nothing** and every claim here has to rest on content. What stays
+  **unknown** is the *transition*: what moving Cursor's config home costs a handle minted
+  under the operator's `~/.cursor`, which is codex's measured one-cold-round tax and has
+  no counterpart measurement here. Rounds that mint and resume inside the private
+  directory — every round the runner actually starts — are covered; the one migration is
+  not. `agy` and `claude`
   are wrapped in bubblewrap by their adapters and
   **fail closed** when `bwrap` is missing. `claude` additionally rebuilds the environment from a
   whitelist (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail)
