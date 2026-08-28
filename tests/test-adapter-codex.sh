@@ -281,4 +281,32 @@ test_uncreatable_codex_home_fails_before_spawning() {
   assert_file_missing "$d/bin/argv.txt" "the CLI was never invoked"
 }
 
+# Host-independent by construction: HOME exists and has no .codex, so "nothing
+# to copy" is a property of the test, not of the host's filesystem root.
+test_a_missing_operator_auth_json_copies_nothing() {
+  local d; d="$(pr_test_tmpdir)"
+  install_stub "$d/bin" "sandbox: workspace-write [workdir]"
+  mkdir -p "$d/sandbox/repo" "$d/home"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/codex.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  assert_file_missing "$d/sandbox/codex-home/auth.json" "nothing to copy, nothing copied"
+}
+
+# copy-once: codex maintains a last_refresh field, and a refresh that lands in
+# the private copy must survive round N+1 (adapters/codex.sh:83-92). The guard
+# is `! -f` on the destination; this is the test that notices it disappearing.
+test_an_existing_private_auth_json_is_never_clobbered() {
+  local d; d="$(pr_test_tmpdir)"
+  install_stub "$d/bin" "sandbox: workspace-write [workdir]"
+  mkdir -p "$d/sandbox/repo" "$d/sandbox/codex-home" "$d/home/.codex"
+  echo '{"tokens": "refreshed-by-the-reviewer"}' > "$d/sandbox/codex-home/auth.json"
+  echo '{"tokens": "operator"}' > "$d/home/.codex/auth.json"
+  echo "prompt" | HOME="$d/home" PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/codex.sh" "$d/sandbox/repo" "" "$d/r.md" "$d/m.txt" \
+    > /dev/null 2>&1
+  assert_eq "$(< "$d/sandbox/codex-home/auth.json")" '{"tokens": "refreshed-by-the-reviewer"}' \
+    "round N+1 does not clobber a refresh"
+}
+
 pr_run_tests
