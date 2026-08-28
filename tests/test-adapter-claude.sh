@@ -329,10 +329,18 @@ test_denied_tool_calls_warn_but_keep_the_review() {
   assert_contains "$(cat "$d/out.txt")" "denied" "but the operator is told"
 }
 
-test_the_review_is_written_to_the_review_file_never_to_stdout() {
+# Decision 5 (brainstorm 2026-08-27-backlog-clearing-3): stdout now carries the
+# stream-json, so the kernel's `>> log-claude.txt 2>&1` makes it durable -- it
+# used to die with $stream's EXIT trap, leaving log-claude.txt empty and the
+# only record of a failed round deleted. The review artifact is still only the
+# extracted .result: the verdict parser must never see JSON framing.
+test_the_stream_json_is_teed_to_stdout_for_the_kernel_log() {
   local d; d="$(setup)"; run_adapter "$d"
-  assert_contains "$(cat "$d/r.md")" "VERDICT: MINOR" "review in the review file"
-  assert_not_contains "$(cat "$d/out.txt")" "VERDICT: MINOR" "diagnostics only on stdout"
+  assert_contains "$(cat "$d/out.txt")" '"subtype":"init"' \
+    "the init line reached stdout, where the kernel's log redirect catches it"
+  assert_contains "$(cat "$d/r.md")" "<!-- VERDICT: MINOR -->" "the review is intact"
+  assert_not_contains "$(cat "$d/r.md")" '"type":"result"' \
+    "and no JSON framing leaked into the artifact the verdict parser reads"
 }
 
 # --- terminal_reason (U3, probe P4) -----------------------------------------

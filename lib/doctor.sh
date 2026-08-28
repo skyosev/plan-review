@@ -170,9 +170,14 @@ pr_doctor_check_bash() {
 # `command -v` over a stub PATH by design: that is what lets tests/test-doctor.sh
 # point PATH at a stub directory alone, and it is the only reason this list can
 # be checked at all on a machine that has none of it.
+# `tee` is adapters/claude.sh: the CLI's stream-json is piped through it so the
+# same bytes reach both the file jq parses and this adapter's stdout, which the
+# kernel appends to log-claude.txt. Named here for the same reason `ps` is --
+# without it the doctor passes and every claude review dies on
+# `tee: command not found`.
 # This list does NOT reach a round: pr_doctor_preflight never calls
 # pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
-PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head"
+PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head tee"
 
 pr_doctor_check_utils() {
   local u missing=()

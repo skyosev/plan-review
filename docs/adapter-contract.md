@@ -22,7 +22,13 @@ Every adapter — real or fake — is invoked identically:
   is capped at 128 KiB (`MAX_ARG_STRLEN`), which a plan plus diff plus rationale
   can exceed.
 - **stdout / stderr** — diagnostics only, captured to a log. The review must never
-  arrive on stdout.
+  arrive on stdout. One shipped exception, and it is about the *artifact*, not the
+  stream: `adapters/claude.sh` tees the CLI's `stream-json` to stdout so the
+  kernel's `>> log-<reviewer>.txt 2>&1` records it, and the result frame in that
+  stream carries the review text inside its JSON. What the clause protects is
+  `<review_out>` — no framing, no duplicate — and that still holds: the adapter
+  extracts `.result` from the FILE it also wrote. Read the clause as "nothing
+  downstream may read the review off stdout", which nothing does.
 - **`<review_out>`** — the Markdown review, written by the adapter. Write the review
   to exactly the path you are given and to no other: the round hands adapters a
   scratch path and publishes a copy of it under its own name once the adapter has

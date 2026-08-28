@@ -145,8 +145,16 @@ trap 'rm -f "$stream"' EXIT
 # claiming "the envelope has changed" -- misdiagnosing the very failure this
 # stderr exists to explain. Verified 2026-08-27. Deleting the redirect is the
 # fix; duplicating fd 2 onto fd 1 is its opposite.
-"${jail[@]}" "${env_clean[@]}" "${args[@]}" > "$stream"
-rc=$?
+# tee, not a redirect: stdout flows on to the kernel's `>> log-claude.txt 2>&1`
+# (lib/adapter-exec.sh), which is what makes the stream durable -- $stream dies
+# with this process's EXIT trap, and before this change log-claude.txt carried
+# stderr only, so a failed round's stream-json was deleted with the evidence.
+# Accepted cost (decision 5, brainstorm 2026-08-27-backlog-clearing-3): the log
+# interleaves stream-json with stderr. jq below still reads $stream, the FILE --
+# never the pipe. PIPESTATUS[0], because $? is now tee's exit, and rc must keep
+# meaning what the messages below say it means.
+"${jail[@]}" "${env_clean[@]}" "${args[@]}" | tee "$stream"
+rc=${PIPESTATUS[0]}
 
 # The init line is this adapter's version tripwire, the way the banner is
 # codex.sh's. Its absence means the stream format moved under us, and every
