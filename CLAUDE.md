@@ -90,8 +90,8 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
 - `scripts/install.sh` — the curl-pipe bootstrap, and the only file outside `bin/` that
   users run directly. **The one file that must run under bash 3.2**, because it is what
   tells a macOS user their bash is too old. It clones and then **calls** `plan-review
-  install` and `plan-review doctor --offline`; it re-derives none of their rules, because
-  the second derivation is the one that goes stale. It checks `readlink -f` and bash 5
+  install`, `plan-review skill` and `plan-review doctor --offline`; it re-derives none of
+  their rules, because the second derivation is the one that goes stale. It checks `readlink -f` and bash 5
   before cloning — without those the doctor cannot start, so there is nothing to delegate
   to. Its skill step is non-fatal by design: the promise is the runner. Covered by
   `tests/test-bootstrap.sh`, which drives it against a throwaway local git repo via
@@ -101,8 +101,15 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
 - `adapters/<reviewer>.sh` — one per reviewer CLI. **Standalone**: they source nothing,
   by contract, so shared constants (e.g. `PR_MAX_ARG_BYTES`) are deliberately stated
   twice, with cross-referencing comments.
-- `skills/plan-review/SKILL.md` — the Integrator-side workflow, installed separately via
-  `npx skills add`. Behaviour changes usually need edits in three places: the code,
+- `libexec/plan-review-skill.sh` — installs and verifies the skill below into every harness
+  detected on PATH, via the third-party `skills` CLI pinned at `@1.5.18`. It owns the
+  harness id/name tables and the Cursor identity gate, which `scripts/install.sh` used to
+  carry; it may require `jq`, which the bootstrap may not, and that is what let the
+  bootstrap's node JSON parser retire with them (2026-08-28). Fatal on every failure —
+  0 verified, 1 installed-but-unverified or failed, 2 refused before acting — because the
+  bootstrap wraps it non-fatally and something has to own the strict version.
+- `skills/plan-review/SKILL.md` — the Integrator-side workflow, installed by
+  `plan-review skill`. Behaviour changes usually need edits in three places: the code,
   `README.md`, and this file.
 
 ## Architecture notes that span files
@@ -194,8 +201,18 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   change what the round recorded. A survivor the poller misses keeps the
   inherited session lock, and later operations on that session fail closed until
   it exits — the accepted availability cost. Nothing in the poller closes a
-  descriptor. `ps` is therefore a core utility (`PR_DOCTOR_UTILS`), though that
-  is a presence check and busybox's `ps` rejects `-eo`, which degrades silently.
+  descriptor. `ps` is therefore a core utility (`PR_DOCTOR_UTILS`) — but that
+  list is a presence check, and presence is not sufficiency: busybox's `ps` exists
+  and rejects `-eo`. Sufficiency is `pr_doctor_check_ps_forms` (2026-08-28), a
+  Machine-tier probe on `pr_doctor_check_gnu_timeout`'s precedent that *runs* both
+  invocations the kernel ships and **fails** on either. It is behavioural rather
+  than a version match because both the GNU and Darwin shapes must pass. The two
+  degrades it catches are not the same: a `ps` that rejects `-eo` loses the whole
+  descendant table, while one that answers the table but not `lstart` loses only
+  the identity read — every remembered pid then fails its check and is skipped,
+  which is safe but is group-only cleanup under a green doctor. **Coupling rule**:
+  fold the per-tick reads into one `ps -eo pid=,ppid=,lstart=` and that probe and
+  its fixtures change in the same commit as `lib/adapter-exec.sh`.
   **Every one of those three `ps` calls is wrapped in
   `timeout --kill-after=1`**, and the post-`wait` sweep additionally carries a
   30s deadline stamped before it starts: `timeout(1)` bounds the *adapter*,
@@ -273,9 +290,14 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   instead of jq's tmpfile error; the check promises nothing beyond that, since a
   writable directory does not guarantee the write succeeds — hence the `|| exit 2`
   behind it. The all-failed path warns instead of escalating: it already exits non-zero
-  and makes no success claim. **`libexec/plan-review-complete.sh` is the one store-scoped
-  transition still unchecked** — it prints "Round complete" over a `pr_round_set_state`
-  whose status it never reads (backlogged, 2026-08-27).
+  and makes no success claim. `libexec/plan-review-complete.sh` was the last store-scoped
+  transition still unchecked and is now guarded like the rest (2026-08-28): its
+  `pr_round_set_state ... complete` carries `|| exit 2` with `aborting` on stderr, because
+  "Round complete" printed over a state that never persisted is exactly the lie the rule
+  exists to stop. It takes **no** writability preflight, unlike `abort`'s — that one exists
+  only to beat jq's tmpfile error to the diagnosis, and here the raw error plus one sentence
+  is diagnosis enough, while a preflight would also put the guard out of reach of the test
+  that makes the round directory unwritable. Every store-scoped write now checks.
 - **The reviewer runner** (`lib/reviewer-runner.sh`) owns the fan-out:
   `pr_reviewer_run_all` is the only public entry to the fan-out and validates
   the module's variable contract (fourteen caller variables, listed in the
