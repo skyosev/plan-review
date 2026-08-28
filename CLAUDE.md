@@ -347,19 +347,22 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `timeout --kill-after=1` whose deadline is derived from `PR_TIMEOUT_SECS` (half, capped
   at 30, floored at 1 — `0` disables a GNU timeout), and the adapter keeps the id it
   printed. That the killed `create-chat`'s chat still resumes is measured by the acceptance
-  matrix cited below and by nothing else: its agent leg ran from a fresh sandbox, so round 1
-  minted its chat through this very bound in a cold directory. Not by the containment probe's
-  leg 7, whose rc=0 the same branch retired as a non-discriminator. That derivation is *not* agy's strict
+  matrix cited below and by nothing else — not by the containment probe's leg 7, whose rc=0
+  the same branch retired as a non-discriminator. That derivation is *not* agy's strict
   inequality: at `PR_TIMEOUT_SECS=1` the inner bound equals the outer one and can overrun
   it by the kill grace, which the kernel's own `timeout` then reaps. The escalation is
   load-bearing for the same reason it is on the `ps` caps: `timeout N` signals at N and
-  then *waits*, and never exiting is the only thing this process is known to do. Resume under that
-  private directory **works**, and is the one half of this that is now measured: the
-  acceptance matrix ran two rounds through the shipped adapter and round 2 reproduced a
-  token round 1 had been told to hold and never to write down — a token absent from round
-  1's published review and from round 2's prompt, so a cold chat could not have emitted it
-  (`docs/process/probes/2026-08-28-acceptance-matrix/`, 2026-08-28). That discriminator is
-  the point: `agent --resume` returns rc=0 for a UUID that was never a chat id, so **rc
+  then *waits*, and never exiting is the only thing this process is known to do. What the
+  matrix establishes is that an id minted under this bound is usable: its agent leg ran two
+  rounds through the shipped adapter from a fresh throwaway repo, so round 1 minted its chat
+  in a cold config dir — through this very bound — and round 2 reproduced a token round 1 had
+  been told to hold and never to write down, a token absent from round 1's published review
+  and from round 2's prompt, so a cold chat could not have emitted it
+  (`docs/process/probes/2026-08-28-acceptance-matrix/`, 2026-08-28). What it does **not**
+  record is the kill: no rc and no duration of that `create-chat` was captured, so the
+  *killed* half follows from the cold-directory hang measured above, not from the matrix.
+  That discriminator is the point: `agent --resume` returns rc=0 for a UUID that was never
+  a chat id, so **rc
   discriminates nothing** and every claim here has to rest on content. What stays
   **unknown** is the *transition*: what moving Cursor's config home costs a handle minted
   under the operator's `~/.cursor`, which is codex's measured one-cold-round tax and has
