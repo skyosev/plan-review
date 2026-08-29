@@ -37,7 +37,7 @@ a `git worktree` per revision — every row but the last, which is 2026-08-28 in
 | + tasks 1–2 of that branch | 485 | 85.243s | 85.359s |
 | + task 3, as first written | 490 | 93.993s | 94.060s |
 | + task 3 review fixes (`reviewer-isolation-hardening`, as merged) | 491 | 84.624s | 84.460s |
-| **+ `backlog-clearing-3` — the current cost** | **518** | **81.964s** | **81.782s** |
+| **+ `backlog-clearing-3` — the current cost** | **519** | **81.060s** | **83.451s** |
 
 So ~62s was still right for `main` at the time: the whole delta was
 `reviewer-isolation-hardening`'s, not host drift —
@@ -74,10 +74,12 @@ an identical tree is under 0.2s. Budget against the ~5.5s poll and the ~1s-per-d
 probe, not against test wall-clock that a missing knob export can explain; weigh the next
 per-adapter poll, and the next always-waited probe window, before adding either.
 
-**The last row is the one to budget against: 518 tests in ~81.9s**, measured 2026-08-28 on
-the same host (load ~0.7) by the same two back-to-back runs the rows above use. Both numbers
+**The last row is the one to budget against: 519 tests in ~82s**, measured 2026-08-28 on
+the same host (load ~0.7) by the same two back-to-back runs the rows above use. Read the
+spread, not the midpoint: 81.1s and 83.5s on an identical tree is the widest gap any row
+here has shown, so a change under ~2.5s is not visible to this method. Both numbers
 moved and they moved in *opposite* directions, which is the fact worth carrying:
-`backlog-clearing-3` added 27 tests and the tree still came out ~2.6s cheaper than the 491
+`backlog-clearing-3` added 28 tests and the tree still came out ~2s cheaper than the 491
 it started from. The refund is Task 1's, and it is not a fixture trick — `stub_all_reviewer_clis`
 replaced **20 real reviewer-CLI `--version` spawns** in `tests/test-doctor.sh` (6 claude, 5
 agy, 5 agent, 4 codex, counted with recording wrappers) with stubs that leave every check
@@ -86,8 +88,8 @@ intact and only change what answers, including the one genuinely expensive read:
 roster-independent, which is why a case whose config named only codex was still reading four
 versions off the host. So the suite did not merely get faster; it stopped consulting live
 account state to assert a drift message. Read that the same way as the bootstrap saving
-above — it paid for this branch's 27 tests exactly once, there are no live spawns left to
-reclaim, and the next contributor budgets against 81.9s at 518 with no credit to spend.
+above — it paid for this branch's 28 tests exactly once, there are no live spawns left to
+reclaim, and the next contributor budgets against ~82s at 519 with no credit to spend.
 
 There is no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
 `test_*` function in the sourcing file. Anything that would break "offline and seconds"
@@ -429,8 +431,12 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
 
 - **`PR_TIMEOUT_SECS` must be a positive integer**, enforced in
   `libexec/plan-review-round.sh` before preflight (which `PR_SKIP_PREFLIGHT=1` can
-  skip) and again in `adapters/agy.sh`, which derives its own deadline from it with
-  integer arithmetic. Two copies, because adapters are standalone. `doctor --smoke`
+  skip) and again in `adapters/agy.sh` and `adapters/agent.sh`, which each derive their
+  own deadline from it with integer arithmetic. Three copies, because adapters are
+  standalone — and identical copies, deliberately: `docs/adapter-contract.md` names
+  `adapters/agy.sh` as *the* reference spelling for an adapter that derives an inner
+  deadline, so an adapter that quietly substituted a default instead would leave the
+  contract pointing at the minority. `doctor --smoke`
   enforces the same rule on `PR_SMOKE_TIMEOUT_SECS`, which the smoke hands to the
   adapters *as* their `PR_TIMEOUT_SECS`.
 

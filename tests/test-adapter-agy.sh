@@ -218,16 +218,10 @@ test_the_gemini_mountpoint_is_created_when_the_host_has_none() {
   # built and the root bind must precede the state bind that mounts over it.
   # Assert the TUPLES, not first-token positions: keying on the first --ro-bind
   # alone stays green when the root bind is gone and some other ro-bind (the
-  # creds file) stands in for it.
-  local -a argv=(); mapfile -t argv < "$d/bin/bwrap-argv.txt"
-  local i root_at='' state_at=''
-  for ((i = 0; i + 2 < ${#argv[@]}; i++)); do
-    [[ -z "$root_at" && "${argv[i]}" == "--ro-bind" \
-       && "${argv[i+1]}" == "/" && "${argv[i+2]}" == "/" ]] && root_at=$i
-    [[ -z "$state_at" && "${argv[i]}" == "--bind" \
-       && "${argv[i+1]}" == "$d/sandbox/gemini-state" ]] && state_at=$i
-  done
-  [[ -n "$root_at" && -n "$state_at" && "$root_at" -lt "$state_at" ]] \
+  # creds file) stands in for it. Order is then substring order in the joined
+  # argv, the same shape the two cases above assert on.
+  local argv; argv="$(tr '\n' ' ' < "$d/bin/bwrap-argv.txt")"
+  [[ "$argv" == *"--ro-bind / / "*"--bind $d/sandbox/gemini-state "* ]] \
     || pr_fail "the --ro-bind / / triple precedes the --bind of gemini-state over ~/.gemini"
 }
 

@@ -391,6 +391,20 @@ test_the_create_chat_deadline_is_derived_from_the_round_deadline() {
   done
 }
 
+# A malformed deadline is REFUSED, not defaulted away. docs/adapter-contract.md
+# names adapters/agy.sh as the reference for an adapter that derives an inner
+# deadline, and this is the third copy of that one rule -- adapters source
+# nothing, so the copies drift unless each is pinned where it lives.
+test_a_malformed_round_deadline_is_refused_not_defaulted() {
+  local d out rc; d="$(pr_test_tmpdir)"
+  install_stub "$d/bin" 0; mkdir -p "$d/work"
+  out="$(echo prompt | PR_TIMEOUT_SECS=0 PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" 2>&1)"; rc=$?
+  assert_exit_code "$rc" 1 "0 disables a GNU timeout, so it is not a deadline"
+  assert_contains "$out" "positive whole number" "and says which value was wrong"
+  assert_file_missing "$d/r.md" "nothing was run"
+}
+
 # The adapter composes "$workdir/.cursor" for an `rm -rf` and
 # "$(dirname "$workdir")/cursor-config" for a private config directory, both
 # before the `cd` that used to be the only check on the argument. An empty

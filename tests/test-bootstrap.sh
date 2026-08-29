@@ -333,41 +333,10 @@ test_a_directory_that_is_not_a_checkout_is_refused_with_the_recovery() {
 
 # --- the skill step --------------------------------------------------------
 
-# Records the argv and the telemetry variable of every npx call, and answers
-# `skills ls --json` with whatever the case wants. Anything else exits 0 quietly,
-# which is what `skills add` succeeding looks like.
-stub_npx() {
-  local dir="$1" ls_json="$2"
-  pr_test_mkstub "$dir/npx" "
-{ printf 'DISABLE_TELEMETRY=%s argv:' \"\${DISABLE_TELEMETRY:-unset}\"
-  printf ' %s' \"\$@\"
-  printf '\\n'
-} >> \"\$NPX_LOG\"
-case \" \$* \" in
-  *' ls '*) printf '%s\\n' '$ls_json' ;;
-esac
-exit 0"
-}
-
-# All four harness CLIs, so detection does not depend on what is installed here.
-# `agent` answers the Cursor identity probe with a non-empty cliVersion unless a
-# case overrides it.
-stub_harness_clis() {
-  local dir="$1" c
-  # `node` joins them: `plan-review skill` only `command -v`s node -- jq does
-  # the JSON parsing now -- so this suite must not need a real one, which is the
-  # property the comment two blocks down used to have to make an exception for.
-  for c in claude codex agy node; do pr_test_mkstub "$dir/$c" 'exit 0'; done
-  pr_test_mkstub "$dir/agent" '[ "${1:-}" = about ] && { printf "{\"cliVersion\":\"test\"}\n"; exit 0; }
-exit 0'
-}
-
-# What a fully linked install looks like. The display names are the ones
-# skill_name_for claims -- confirmed against a real `skills ls -g --json` at
-# 1.5.18 on macOS 2026-08-20, all four exact -- and they are hard-coded here, so
-# a correction to that table needs this string corrected with it or the suite
-# goes on passing against the old world. A case that wants a miss returns a subset.
-ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Antigravity CLI"]}]'
+# stub_npx, stub_harness_clis and PR_TEST_SKILLS_ALL_LINKED live in
+# tests/helpers.sh: tests/test-skill.sh needs the same three, and this file's
+# non-hoisting rationale below covers only the min-PATH list, which really does
+# run where helpers.sh is unavailable.
 
 # Five cases that used to live here moved to tests/test-skill.sh with the
 # mechanism they exercise: one-add-for-every-harness, the two Cursor identity
@@ -380,7 +349,7 @@ ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Ant
 
 test_no_skill_takes_npm_out_of_the_install_path() {
   local d out rc; d="$(mk_case)"
-  stub_npx "$d/stub" "$ALL_LINKED"
+  stub_npx "$d/stub" "$PR_TEST_SKILLS_ALL_LINKED"
   out="$(run_bootstrap "$d" "$d/src" --no-skill)"; rc=$?
   assert_exit_code "$rc" 0 "--no-skill succeeded"
   assert_eq "$(cat "$d/npx.log")" "" "npx was never invoked"
@@ -394,7 +363,7 @@ test_no_skill_takes_npm_out_of_the_install_path() {
 # node it only `command -v`s, and stub_harness_clis supplies one.
 test_the_removal_line_appears_only_when_a_skill_was_installed() {
   local d out; d="$(mk_case)"
-  stub_npx "$d/stub" "$ALL_LINKED"
+  stub_npx "$d/stub" "$PR_TEST_SKILLS_ALL_LINKED"
   out="$(run_bootstrap "$d" "$d/src")"
   assert_contains "$out" "npx skills@1.5.18 remove -g plan-review" "printed after a real install"
   assert_contains "$out" "global" "and says that removal is global, by name"

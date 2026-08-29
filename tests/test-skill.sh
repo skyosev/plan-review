@@ -4,34 +4,13 @@ PR_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$PR_ROOT/tests/helpers.sh"
 
 SKILL="$PR_ROOT/bin/plan-review"
-ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Antigravity CLI"]}]'
-
-# Records the argv and telemetry variable of every npx call, and answers
-# `skills ls --json` with whatever the case wants. Same shape as
-# tests/test-bootstrap.sh's stub_npx -- stated twice on purpose (see header).
-stub_npx() {
-  local dir="$1" ls_json="$2"
-  pr_test_mkstub "$dir/npx" "
-{ printf 'DISABLE_TELEMETRY=%s argv:' \"\${DISABLE_TELEMETRY:-unset}\"
-  printf ' %s' \"\$@\"
-  printf '\\n'
-} >> \"\$NPX_LOG\"
-case \" \$* \" in
-  *' ls '*) printf '%s\\n' '$ls_json' ;;
-esac
-exit 0"
-}
-
-stub_harness_clis() {
-  local dir="$1" c
-  for c in claude codex agy node; do pr_test_mkstub "$dir/$c" 'exit 0'; done
-  pr_test_mkstub "$dir/agent" '[ "${1:-}" = about ] && { printf "{\"cliVersion\":\"test\"}\n"; exit 0; }
-exit 0'
-}
-
+# mk_case [ls-json] -- a stubbed PATH answering `skills ls` with a fully linked
+# install unless the case wants something else. stub_npx, stub_harness_clis and
+# PR_TEST_SKILLS_ALL_LINKED come from tests/helpers.sh; test-bootstrap.sh reads
+# the same three.
 mk_case() {
   local d; d="$(pr_test_tmpdir)"
-  stub_npx "$d/stub" "$ALL_LINKED"
+  stub_npx "$d/stub" "${1:-$PR_TEST_SKILLS_ALL_LINKED}"
   stub_harness_clis "$d/stub"
   : > "$d/npx.log"
   printf '%s' "$d"
@@ -70,10 +49,7 @@ test_a_non_cursor_agent_does_not_pass_the_identity_probe() {
 }
 
 test_a_partial_link_is_nonzero_when_invoked_directly() {
-  local d out rc; d="$(pr_test_tmpdir)"
-  stub_npx "$d/stub" '[{"name":"plan-review","agents":["Claude Code"]}]'
-  stub_harness_clis "$d/stub"
-  : > "$d/npx.log"
+  local d out rc; d="$(mk_case '[{"name":"plan-review","agents":["Claude Code"]}]')"
   out="$(run_skill "$d")"; rc=$?
   assert_exit_code "$rc" 1 "an unverifiable link is a failure, not a shrug"
   assert_contains "$out" "not linked into:" "and the misses are named"
@@ -87,11 +63,8 @@ test_a_partial_link_is_nonzero_when_invoked_directly() {
 # identically whether skills said `Antigravity` or said nothing. scripts/install.sh's
 # deleted verify_skill printed both halves; this is what pins the restoration.
 test_a_near_miss_display_name_shows_what_came_back() {
-  local d out rc; d="$(pr_test_tmpdir)"
-  stub_npx "$d/stub" \
-    '[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Antigravity"]}]'
-  stub_harness_clis "$d/stub"
-  : > "$d/npx.log"
+  local d out rc
+  d="$(mk_case '[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Antigravity"]}]')"
   out="$(run_skill "$d")"; rc=$?
   assert_exit_code "$rc" 1 "a near miss is still a miss"
   assert_contains "$out" "not linked into: Antigravity CLI" "what was wanted"
@@ -105,29 +78,22 @@ test_a_near_miss_display_name_shows_what_came_back() {
 # wording, because it is the line that separates "linked somewhere else" from
 # "this install did nothing".
 test_a_skill_attributed_to_no_agent_says_so() {
-  local d out; d="$(pr_test_tmpdir)"
-  stub_npx "$d/stub" '[{"name":"plan-review","agents":[]}]'
-  stub_harness_clis "$d/stub"
-  : > "$d/npx.log"
+  local d out; d="$(mk_case '[{"name":"plan-review","agents":[]}]')"
   out="$(run_skill "$d")"
   assert_contains "$out" "skills reports: no agent at all" "an empty array is not a blank line"
 }
 
 test_an_unparseable_ls_is_nonzero() {
-  local d out rc; d="$(pr_test_tmpdir)"
-  stub_npx "$d/stub" 'this is not json'
-  stub_harness_clis "$d/stub"
-  : > "$d/npx.log"
+  local d out rc; d="$(mk_case 'this is not json')"
   out="$(run_skill "$d")"; rc=$?
   assert_exit_code "$rc" 1 "unverified is nonzero when invoked directly"
   assert_contains "$out" "unverified" "and says so"
 }
 
 test_a_failed_add_is_nonzero_with_the_retry_line() {
-  local d out rc; d="$(pr_test_tmpdir)"
+  local d out rc; d="$(mk_case)"
+  # The add fails; the harness stubs mk_case installed are what this replaces.
   pr_test_mkstub "$d/stub/npx" 'case " $* " in *" add "*) exit 1 ;; esac; exit 0'
-  stub_harness_clis "$d/stub"
-  : > "$d/npx.log"
   out="$(run_skill "$d")"; rc=$?
   assert_exit_code "$rc" 1 "a failed install is a failure"
   assert_contains "$out" "retry with:" "with the exact command to run by hand"

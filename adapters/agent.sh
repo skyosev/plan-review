@@ -224,17 +224,13 @@ fi
 #
 # A symlink is removed, never followed: unlinking it IS the clean outcome, since
 # what the CLI would have read is gone from the workdir either way. Only the link
-# is touched; the target is not. `-L` is tested again below because `-e` is false
-# for a DANGLING symlink, and a `.cursor` link left in place is still a policy
-# path the CLI could resolve later.
-if [[ -L "$workdir/.cursor" ]]; then
-  rm -f "$workdir/.cursor"
-elif [[ -d "$workdir/.cursor" ]]; then
-  chmod -R u+w "$workdir/.cursor" 2>/dev/null
-  rm -rf "$workdir/.cursor"
-else
-  rm -f "$workdir/.cursor"
-fi
+# is touched; the target is not -- `rm -rf` unlinks a link without descending it,
+# so the chmod is the only line a symlink must be kept away from, and it is the
+# only one guarded. `-L` is tested again below because `-e` is false for a
+# DANGLING symlink, and a `.cursor` link left in place is still a policy path the
+# CLI could resolve later.
+[[ -L "$workdir/.cursor" ]] || chmod -R u+w "$workdir/.cursor" 2>/dev/null
+rm -rf "$workdir/.cursor"
 if [[ -e "$workdir/.cursor" || -L "$workdir/.cursor" ]]; then
   echo "agent adapter: could not remove $workdir/.cursor" >&2
   echo "That path can widen or switch off Cursor's sandbox (measured" >&2
@@ -355,8 +351,18 @@ wrap=(bwrap --bind / / --dev /dev --proc /proc
 # deadline", not "finishes before it". Cost in the normal case is one such stall
 # per sandbox lifetime: the first round pays it, every later round either passes
 # a session id or finds the directory warm.
+#
+# A malformed value is REFUSED, not defaulted away, and the refusal is a copy of
+# adapters/agy.sh's: docs/adapter-contract.md names that adapter as the reference
+# for exactly this, so an adapter deriving an inner deadline that quietly
+# substituted 900 would leave the contract pointing at the minority spelling.
+# Adapters source nothing, so this is the third copy of one rule, on purpose --
+# libexec/plan-review-round.sh holds the runner's.
 _pr_agent_deadline="${PR_TIMEOUT_SECS:-900}"
-[[ "$_pr_agent_deadline" =~ ^[1-9][0-9]*$ ]] || _pr_agent_deadline=900
+if [[ ! "$_pr_agent_deadline" =~ ^[1-9][0-9]*$ ]]; then
+  echo "agent adapter: PR_TIMEOUT_SECS must be a positive whole number, got: $_pr_agent_deadline" >&2
+  exit 1
+fi
 _pr_agent_create_secs=$(( _pr_agent_deadline / 2 ))
 (( _pr_agent_create_secs > 30 )) && _pr_agent_create_secs=30
 (( _pr_agent_create_secs < 1 )) && _pr_agent_create_secs=1
@@ -427,8 +433,7 @@ fi
 # no shared constant, and lib/reviewer-runner.sh clips the reason at 200
 # characters, so the long form stays here where nothing clips it.
 #
-# Said twice on purpose, the way adapters/codex.sh's Q8 diagnostics are. The
-# first line names the possibility a reader coming from codex will otherwise
+# The first line names the possibility a reader coming from codex will otherwise
 # assume they can rule in or out -- this adapter moved Cursor's state home too --
 # and names it as UNRESOLVED rather than as a cause or a non-cause, because that
 # is what the probe found: the resume of a stale handle and the resume of a UUID
