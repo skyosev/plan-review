@@ -178,7 +178,8 @@ test_the_clis_stderr_is_inherited_not_redirected() {
   # Line 2 is straight after the shebang, so every stub invocation writes it. The
   # adapter's own create-chat and --version calls drop stderr with 2>/dev/null,
   # so what reaches the capture is the review run's stderr and nothing else.
-  sed -i '2i echo "CURSOR CLI FATAL: could not authenticate" >&2' "$d/bin/agent"
+  pr_test_insert_after_shebang "$d/bin/agent" \
+    'echo "CURSOR CLI FATAL: could not authenticate" >&2'
   out="$(echo "prompt" | PATH="$d/bin:$PATH" \
     bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" 2>&1 >/dev/null)"
   assert_contains "$out" "CURSOR CLI FATAL" \
@@ -285,7 +286,8 @@ test_the_cli_reads_a_private_config_dir_beside_the_workdir() {
   local d; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0; mkdir -p "$d/work"
   # Line 2 is straight after the shebang, so every stub invocation records what
   # it inherited -- create-chat and --version as well as the review run.
-  sed -i "2i echo \"\${CURSOR_CONFIG_DIR:-unset}\" >> '$d/bin/env.txt'" "$d/bin/agent"
+  pr_test_insert_after_shebang "$d/bin/agent" \
+    "echo \"\${CURSOR_CONFIG_DIR:-unset}\" >> '$d/bin/env.txt'"
   echo "prompt" | CURSOR_CONFIG_DIR=/the/operators/own PATH="$d/bin:$PATH" \
     bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
   assert_not_contains "$(cat "$d/bin/env.txt")" "/the/operators/own" \

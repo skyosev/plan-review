@@ -417,7 +417,8 @@ test_the_clis_stderr_is_inherited_not_redirected() {
   # Line 2 is straight after the shebang, so the stub writes this on the single
   # claude invocation the adapter makes (the version comes off the init line, so
   # there is no second call).
-  sed -i '2i echo "CLAUDE CLI FATAL: could not authenticate" >&2' "$d/bin/claude"
+  pr_test_insert_after_shebang "$d/bin/claude" \
+    'echo "CLAUDE CLI FATAL: could not authenticate" >&2'
   run_adapter "$d"
   # run_adapter merges both streams into out.txt, which is what the execution
   # kernel does into <round>/log-claude.txt (`>> "$log" 2>&1`).

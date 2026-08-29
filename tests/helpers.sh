@@ -99,6 +99,33 @@ pr_test_mkstub() {
   chmod +x "$path"
 }
 
+# pr_test_insert_after_shebang <file> <line>
+#
+# Insert one literal line directly after the shebang, so a stub records or emits
+# something on EVERY invocation the adapter makes -- create-chat and --version as
+# well as the review run, which is the property the three call sites turn on.
+#
+# This was spelled `sed -i '2i <line>' "$file"` until 2026-08-29, and that is two
+# GNU-isms in one command: BSD sed's `-i` REQUIRES a backup suffix, so it eats the
+# script argument and reads the filename as the script (macOS prints
+# `sed: 1: "/private/var/...": invalid command code v` and edits nothing, exit 1),
+# and BSD `i` wants a backslash-newline rather than a same-line argument. There is
+# no spelling of `sed -i` that both accept, so the fix is to not need one. The
+# three tests then FAILED rather than erroring, because the stub was left intact
+# and simply never emitted what the assertion looked for -- the first Darwin run
+# of the suite, 2026-08-29, is what found them.
+#
+# The command substitutions finish before the redirect truncates, so reading and
+# writing the same path in one statement is safe. `$(...)` strips trailing
+# newlines from the tail; a shell script does not care, and the callers all pass
+# executable stubs.
+pr_test_insert_after_shebang() {
+  local file="$1" line="$2" head_line rest
+  head_line="$(head -n 1 "$file")"
+  rest="$(tail -n +2 "$file")"
+  printf '%s\n%s\n%s\n' "$head_line" "$line" "$rest" > "$file"
+}
+
 # install_containing_bwrap_stub <bindir>
 #
 # A bwrap stub that stands in for a jail which CONTAINS: it writes the probe's
