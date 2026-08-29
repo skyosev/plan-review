@@ -193,7 +193,9 @@ test_the_clis_stderr_is_inherited_not_redirected() {
 
 # Cursor confines its own WRITES (--sandbox enabled) but nothing contains its
 # process tree: P6 measured its tool layer taking its own process group AND
-# session, out of reach of the kernel's group kill. bwrap here supplies ONLY
+# session on LINUX, out of reach of the kernel's group kill -- on Darwin it was
+# measured staying in the group (2026-08-29), which is why the fence is not
+# contingent on either answer. bwrap here supplies ONLY
 # the pid namespace — and EVERY agent invocation goes through it, create-chat
 # and --version included, because "short-lived, nothing to contain" is an
 # assumption nobody measured.
@@ -493,6 +495,34 @@ test_a_cursor_symlink_is_unlinked_and_never_followed() {
   assert_file_missing "$d/work/.cursor" "while the link itself is gone"
   assert_file_exists "$d/bin/argv.txt" "the review still ran"
   chmod -R u+w "$d/victim" 2>/dev/null
+}
+
+# The version on meta line 4 must name the binary that WROTE the review.
+# docs/adapter-contract.md states the rule; 2026-08-29 is why it does. Cursor
+# self-updates in place and was measured doing it MID-ROUND, so a post-run
+# `--version` recorded a binary that had not answered. This stub is that shape:
+# it answers one version until the review run happens and a different one
+# afterwards, so a read moved back after the run fails here rather than passing
+# quietly on a host that happens not to be upgrading.
+test_the_version_names_the_binary_that_ran_not_a_mid_round_upgrade() {
+  local d; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0; mkdir -p "$d/work"
+  cat > "$d/bin/agent" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1" == "create-chat" ]]; then echo "chat-uuid-123"; exit 0; fi
+if [[ "\$1" == "--version" ]]; then
+  if [[ -f "$d/ran" ]]; then echo "9999.99.99-upgraded"; else echo "2026.08.11-e8db854"; fi
+  exit 0
+fi
+cat > /dev/null
+: > "$d/ran"
+printf '# Cursor review\n<!-- VERDICT: MINOR -->\n'
+exit 0
+STUB
+  chmod +x "$d/bin/agent"
+  echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  assert_eq "$(sed -n '4p' "$d/m.txt")" "2026.08.11-e8db854" \
+    "line 4 names the binary that answered, not the one installed after it"
 }
 
 pr_run_tests

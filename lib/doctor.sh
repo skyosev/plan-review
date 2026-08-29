@@ -539,11 +539,13 @@ pr_doctor_check_agent_pid_fence() {
   local out rc
   if ! pr_doctor_have bwrap; then
     pr_d_warn "no bwrap: agent runs without a pid namespace"
-    pr_d_info "Cursor's tool layer takes its own process group AND session, so a"
-    pr_d_info "background process it spawns can outlive the round and keep holding"
-    pr_d_info "the session lock. bwrap --unshare-pid is what disposes of it."
+    pr_d_info "On Linux, Cursor's tool layer takes its own process group AND"
+    pr_d_info "session, so a background process it spawns can outlive the round and"
+    pr_d_info "keep holding the session lock. bwrap --unshare-pid disposes of it."
     pr_d_info "Debian/Ubuntu: sudo apt install bubblewrap. Expected on macOS, which"
-    pr_d_info "has neither bubblewrap nor pid namespaces."
+    pr_d_info "has neither bubblewrap nor pid namespaces -- and where that same tool"
+    pr_d_info "layer was measured staying in the adapter's group (2026-08-29), so the"
+    pr_d_info "kernel's descendant sweep is the bound and this WARN is not a gap."
     return 0
   fi
   # --bind, not the default --ro-bind: adapters/agent.sh binds / READ-WRITE,

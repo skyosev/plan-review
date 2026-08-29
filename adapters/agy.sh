@@ -203,6 +203,22 @@ out_file="${TMPDIR:-/tmp}/pr-agy-out.$$"
 err_file="${TMPDIR:-/tmp}/pr-agy-err.$$"
 trap 'rm -f "$out_file" "$err_file"' EXIT
 
+# The CLI version is read BEFORE the review run, not after it. Cursor and agy
+# both self-update in place, and on 2026-08-29 one did it MID-ROUND: the `agent`
+# process that produced round 1's review carried 2026.08.11-e8db854 in its argv,
+# 2026.08.25-3e8eec8 was installed while the round ran, and the post-run
+# `--version` put the binary that had NOT written the review into round.json
+# (docs/process/probes/2026-08-29-macos-row3-sweep/). No review is wrong when
+# that happens; what breaks, silently and unfalsifiably after the fact, is every
+# "measured at version X" claim -- including the drift warning in
+# docs/verified-versions.txt. adapters/codex.sh and adapters/claude.sh are immune
+# because they take the version off the run's OWN output (the banner and the init
+# frame); agy's JSON envelope carries no such field, so reading it while the binary
+# about to answer is still the one on disk is the nearest equivalent. It narrows
+# the window from the whole review to the gap between two adjacent commands; it
+# does not close it, and nothing here detects the remainder.
+version="$(agy --version 2>/dev/null | head -1 | tr -d '[:space:]')"
+
 "${jail[@]}" "${args[@]}" > "$out_file" 2> "$err_file"
 rc=$?
 cat "$err_file" >&2
@@ -221,7 +237,7 @@ printf '%s\n%s\n%s\n%s\n' \
   "$session" \
   "$PR_AGY_MODEL" \
   "" \
-  "$(agy --version 2>/dev/null | head -1 | tr -d '[:space:]')" \
+  "$version" \
   > "$meta_out"
 
 if [[ -z "$response" ]]; then

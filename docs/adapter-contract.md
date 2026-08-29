@@ -54,6 +54,17 @@ Every adapter — real or fake — is invoked identically:
   The adapter reports the *effective* values because a pin the CLI silently
   ignored would make `round.json` claim a model that never ran (Q2, R11).
 
+  Line 4 has the same rule and it is not free: **the version must name the
+  binary that wrote the review**, so take it from the run's own output where the
+  CLI offers one (`codex`'s banner, `claude`'s `init` frame) and otherwise read
+  it *before* the run rather than after. Measured 2026-08-29: Cursor
+  self-updated mid-round, and a post-run `agent --version` recorded a binary
+  that had not written the review
+  (`docs/process/probes/2026-08-29-macos-row3-sweep/`). Reading first does not
+  close the window, it only narrows it to the gap between two adjacent commands
+  — but a version read after the run is wrong for the whole duration of every
+  round a self-updating CLI happens to overlap, and nothing detects it.
+
   Line 3 is empty for Cursor and agy by design, not by omission: both fold effort
   into the model id (`claude-opus-5-medium`, `gemini-3.1-pro-high`), so line 2
   already carries it. Codex is the only CLI that fills line 3.

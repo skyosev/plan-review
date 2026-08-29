@@ -244,9 +244,23 @@ cd "$workdir" || exit 1
 # Cursor's --sandbox enabled is meant to supply write confinement and the host
 # allowlist; what nothing supplied until now is process-TREE containment. P6
 # (probes 2026-08-26) measured the tool layer taking its own process group
-# and session, so neither the kernel's group kill nor a session sweep can
-# address a survivor -- one real 90s round left `sleep 900` holding the
-# session lock. bwrap here adds ONLY the pid namespace: / is bound
+# and session ON LINUX, so neither the kernel's group kill nor a session sweep
+# can address a survivor -- one real 90s round left `sleep 900` holding the
+# session lock.
+#
+# That scoping is not pedantry, and it was added after the fact. On Darwin the
+# same tool layer was measured NOT regrouping: a detached escaper stayed in the
+# adapter's timeout(1) process group for all 81 frames it lived, and the
+# ordinary group kill got it (probes/2026-08-29-macos-row3-sweep, two live
+# rounds). So the regrouping is a vendor behaviour that differs by PLATFORM,
+# which is the strongest available evidence that it can differ by version too.
+# The fence below is deliberately not contingent on it: a pid namespace
+# disposes of the tree whichever group the vendor picks, so the flag needs no
+# re-measurement when that pick changes. There is no Darwin question to answer
+# either way -- macOS has no bwrap, and the kernel's descendant sweep is the
+# bound there.
+#
+# bwrap here adds ONLY the pid namespace: / is bound
 # read-write on purpose, because the write barrier is meant to stay Cursor's
 # own. Every vendor invocation goes through it -- create-chat and --version
 # included, because "short-lived, nothing to contain" is an assumption, and
@@ -380,6 +394,22 @@ fi
 args=(-p --trust --sandbox enabled --resume "$session" --output-format text
       --model "$PR_AGENT_MODEL")
 
+# The CLI version is read BEFORE the review run, not after it. Cursor and agy
+# both self-update in place, and on 2026-08-29 one did it MID-ROUND: the `agent`
+# process that produced round 1's review carried 2026.08.11-e8db854 in its argv,
+# 2026.08.25-3e8eec8 was installed while the round ran, and the post-run
+# `--version` put the binary that had NOT written the review into round.json
+# (docs/process/probes/2026-08-29-macos-row3-sweep/). No review is wrong when
+# that happens; what breaks, silently and unfalsifiably after the fact, is every
+# "measured at version X" claim -- including the drift warning in
+# docs/verified-versions.txt. adapters/codex.sh and adapters/claude.sh are immune
+# because they take the version off the run's OWN output (the banner and the init
+# frame); Cursor's text mode carries no such field, so reading it while the binary
+# about to answer is still the one on disk is the nearest equivalent. It narrows
+# the window from the whole review to the gap between two adjacent commands; it
+# does not close it, and nothing here detects the remainder.
+version="$("${wrap[@]}" agent --version 2>/dev/null | head -1 | tr -d '[:space:]')"
+
 # stderr is NOT redirected: it is inherited, so it lands on this adapter's own
 # stderr, which the execution kernel points at <round>/log-agent.txt
 # (lib/adapter-exec.sh runs every adapter as `>> "$log" 2>&1`). That is where an
@@ -422,7 +452,7 @@ printf '%s\n%s\n%s\n%s\n' \
   "$session" \
   "$model_effective" \
   "" \
-  "$("${wrap[@]}" agent --version 2>/dev/null | head -1 | tr -d '[:space:]')" \
+  "$version" \
   > "$meta_out"
 
 if [[ -s "$review_out" ]]; then

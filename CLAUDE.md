@@ -37,7 +37,8 @@ a `git worktree` per revision — every row but the last, which is 2026-08-28 in
 | + tasks 1–2 of that branch | 485 | 85.243s | 85.359s |
 | + task 3, as first written | 490 | 93.993s | 94.060s |
 | + task 3 review fixes (`reviewer-isolation-hardening`, as merged) | 491 | 84.624s | 84.460s |
-| **+ `backlog-clearing-3` — the current cost** | **519** | **81.060s** | **83.451s** |
+| + `backlog-clearing-3` | 519 | 81.060s | 83.451s |
+| **+ the macOS pass's return — the current cost** | **521** | **80.885s** | **80.610s** |
 
 So ~62s was still right for `main` at the time: the whole delta was
 `reviewer-isolation-hardening`'s, not host drift —
@@ -74,8 +75,15 @@ an identical tree is under 0.2s. Budget against the ~5.5s poll and the ~1s-per-d
 probe, not against test wall-clock that a missing knob export can explain; weigh the next
 per-adapter poll, and the next always-waited probe window, before adding either.
 
-**The last row is the one to budget against: 519 tests in ~82s**, measured 2026-08-28 on
-the same host (load ~0.7) by the same two back-to-back runs the rows above use. Read the
+**The last row is the one to budget against: 521 tests in ~81s**, measured 2026-08-29;
+its two tests are the `cli_version` pair and they cost nothing this method can see — the
+two runs came in 0.27s apart, an order of magnitude inside the ~2.5s the row below it
+establishes as this method's floor. Read the two rows together and the conclusion is
+that a stub-only test is free here; that is not a licence, it is why the *next*
+per-adapter fork is still worth pricing before it lands.
+
+The `backlog-clearing-3` row is the one that explains the shape: 519 tests in ~82s,
+measured 2026-08-28 on the same host (load ~0.7) by the same two back-to-back runs the rows above use. Read the
 spread, not the midpoint: 81.1s and 83.5s on an identical tree is the widest gap any row
 here has shown, so a change under ~2.5s is not visible to this method. Both numbers
 moved and they moved in *opposite* directions, which is the fact worth carrying:
@@ -92,7 +100,7 @@ above — it paid for this branch's 28 tests exactly once, there are no live spa
 reclaim, and the next contributor budgets against ~82s at 519 with no credit to spend.
 
 **Every number above is Linux.** The suite first ran on **Darwin on 2026-08-29** and cost
-**4m36.6s** for the same 519 — ~3.4x, spread evenly across files rather than concentrated
+**4m36.6s** for the 519 of the `backlog-clearing-3` row — ~3.4x, spread evenly across files rather than concentrated
 in one, which is what rules out the missing-`PR_BWRAP_PROBE_TICKS` shape and leaves fork
 cost. Two things came out of that first run and both are load-bearing here. **BSD sed
 rejects `sed -i` without a suffix and rejects a same-line `2i`**, which is how three tests
@@ -152,6 +160,19 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   **stdin**, review only into `<review_out>`, four fixed lines into `<meta_out>`. Adding
   a reviewer = a new adapter plus its key in `PR_ROSTER_ADAPTERS` (`lib/roster.sh`);
   nothing else derives the roster.
+- **The version on meta line 4 must name the binary that wrote the review.** Take it
+  from the run's own output where the CLI offers one — `codex` off its banner,
+  `claude` off the `init` frame — and otherwise read it **before** the run.
+  `agent` and `agy` have no such field and so read first; they used to read after,
+  and on 2026-08-29 Cursor self-updated *mid-round* and `round.json` recorded a
+  binary that had not answered
+  (`docs/process/probes/2026-08-29-macos-row3-sweep/`, and `agy` moved versions the
+  same day, so it is not one vendor). Nothing is *wrong* when that happens — no
+  review changes — which is exactly why it went unnoticed: what it quietly breaks is
+  `docs/verified-versions.txt`'s drift warning and every "measured at version X"
+  claim in the probe records. Reading first narrows the window from the whole review
+  to the gap between two adjacent commands; it does not close it, and nothing
+  detects the remainder.
 - **Roster precedence**: `PR_ADAPTER_MAP` > config `reviewers` > shipped adapters minus
   the orchestrator. A stated roster is obeyed exactly, including one naming the
   orchestrator's own CLI — that check was removed on purpose (see `lib/roster.sh`).
@@ -206,7 +227,13 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   spawned command of **no shipped reviewer**
   (P6, `docs/process/probes/2026-08-26-roster-sweep-reach/`):
   `codex` is contained by its own `--as-pid-1`, and `agent`'s tool layer takes
-  its own process group *and* session. P6's other claim — that `agy`/`claude`
+  its own process group *and* session — **on Linux**, which is the only place P6
+  ran. On **Darwin** the two swap: `agent`'s escaper stays in the adapter's group
+  and the group kill gets it, while `codex`'s tool layer regroups and codex reaps
+  its own (`docs/process/probes/2026-08-29-macos-row3-sweep/`, 2026-08-29, two
+  live rounds). Which reviewer escapes the group kill is therefore a per-platform
+  vendor choice, and neither `--unshare-pid` nor the sweep is contingent on it —
+  that is the point of both. P6's other claim — that `agy`/`claude`
   were already contained by their adapters' bwrap — was inference, and false:
   `--die-with-parent` without `--unshare-pid` is `PR_SET_PDEATHSIG` on the
   immediate command, so a detached grandchild survives. Measured both ways

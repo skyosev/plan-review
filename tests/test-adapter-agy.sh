@@ -417,6 +417,30 @@ test_a_missing_reason_argument_is_not_an_error() {
   assert_exit_code "$rc" 1 "still reports the empty response, and nothing else"
 }
 
+# The counterpart of test-adapter-agent.sh's version case, and it is a separate
+# copy for the usual reason: adapters are standalone, so the rule has to hold in
+# each of them on its own. agy moved 1.1.16 -> 1.1.22 on the same day Cursor
+# self-updated mid-round (2026-08-29), which is what took this out of the
+# one-vendor-quirk category.
+test_the_version_names_the_binary_that_ran_not_a_mid_round_upgrade() {
+  local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  cat > "$d/bin/agy" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then
+  if [[ -f "$d/ran" ]]; then echo "1.1.22"; else echo "1.1.16"; fi
+  exit 0
+fi
+: > "$d/ran"
+jq -nc '{conversation_id: "conv-abc-123", status: "SUCCESS", response: "# agy review", duration_seconds: 1, num_turns: 1}'
+exit 0
+STUB
+  chmod +x "$d/bin/agy"
+  PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" \
+    < /dev/null > /dev/null 2>&1
+  assert_eq "$(sed -n '4p' "$d/m.txt")" "1.1.16" \
+    "line 4 names the binary that answered, not the one installed after it"
+}
+
 pr_run_tests
 pr_test_rc=$?
 rm -rf "$HOME"
