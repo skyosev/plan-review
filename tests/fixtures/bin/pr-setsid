@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# pr-setsid <cmd> [args...] -- run <cmd> in a new SESSION, without forking.
+#
+# Row 7 of the macOS handoff. `setsid` is util-linux and macOS does not ship it,
+# so three cases in tests/test-adapter-exec.sh skipped on Darwin -- the three
+# that cover the descendant sweep, on the one platform where the sweep is the
+# ONLY cleanup bound. The decision recorded for the whole group was a shim
+# rather than a skip or a rewrite; this is it.
+#
+# Not forking is the load-bearing property, not an optimisation. The caller
+# spells it `pr-setsid ... & echo $! > escaper.pid`, so $! must BE the escaper.
+# GNU setsid(1) has the same property (it only forks when it is already a
+# process-group leader), which is why the fixture could be written that way in
+# the first place, and it is why `setsid -w` is wrong here: -w waits, and then
+# $! names the waiter, which is still in the caller's group and would be swept
+# by the group kill -- the sweep under test would look like it worked.
+#
+# Darwin has setsid(2), just not setsid(1). Perl is in the macOS base system
+# (/usr/bin/perl, not the Command Line Tools), which python3 is not, so perl is
+# what the fallback is written against. `POSIX::setsid()` fails with EPERM when
+# the caller is already a process-group leader; the fixture's `&` guarantees it
+# is not, and the `or die` says so out loud rather than exec-ing anyway and
+# leaving a "sweep reached it" pass that proves nothing.
+#
+# Real setsid first where it exists, so Linux keeps measuring the tool it always
+# measured and this file changes nothing there.
+set -uo pipefail
+if command -v setsid > /dev/null 2>&1; then
+  exec setsid "$@"
+fi
+exec perl -MPOSIX -e '
+  POSIX::setsid() or die "pr-setsid: setsid failed: $!\n";
+  exec @ARGV or die "pr-setsid: exec failed: $!\n";
+' -- "$@"

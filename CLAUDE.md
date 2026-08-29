@@ -91,6 +91,20 @@ account state to assert a drift message. Read that the same way as the bootstrap
 above — it paid for this branch's 28 tests exactly once, there are no live spawns left to
 reclaim, and the next contributor budgets against ~82s at 519 with no credit to spend.
 
+**Every number above is Linux.** The suite first ran on **Darwin on 2026-08-29** and cost
+**4m36.6s** for the same 519 — ~3.4x, spread evenly across files rather than concentrated
+in one, which is what rules out the missing-`PR_BWRAP_PROBE_TICKS` shape and leaves fork
+cost. Two things came out of that first run and both are load-bearing here. **BSD sed
+rejects `sed -i` without a suffix and rejects a same-line `2i`**, which is how three tests
+were silently asserting against unmodified stubs — use `pr_test_insert_after_shebang`, and
+assume nothing about GNU flags in a test. And **`setsid` is util-linux**: Darwin has
+`setsid(2)` but no `setsid(1)`, so the escaper fixture goes through
+`tests/fixtures/bin/pr-setsid`, which prefers the real tool and falls back to perl's
+`POSIX::setsid`. Four cases skip on a Mac — three need `/dev/full`, one is
+`PR_TEST_BASH32` — and none of them is the descendant sweep any more. Run-to-run spread on
+this Mac is ~7s, so nothing smaller than that is measurable there
+(`docs/process/probes/2026-08-29-macos-row1-suite/`).
+
 There is no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
 `test_*` function in the sourcing file. Anything that would break "offline and seconds"
 is opt-in behind a flag and skips by default — `PR_TEST_BASH32=1` is the only one, and it

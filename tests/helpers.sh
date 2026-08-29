@@ -42,6 +42,24 @@ pr_test_requires() {
   return 1
 }
 
+# pr_test_requires_setsid -- the gate for the escaper fixture's session escape.
+#
+# The dependency is not `setsid`. tests/fixtures/bin/pr-setsid uses setsid(1)
+# where it exists and perl's POSIX::setsid(2) where it does not, so the gate is
+# "either". Row 7 of the macOS handoff is what changed it: on Darwin the three
+# cases that cover the DESCENDANT sweep were the three that skipped, on the one
+# platform where that sweep is the only cleanup bound -- so the suite reported
+# `0 failed` over exactly the surface a Mac most needs checked.
+#
+# It stays a gate rather than becoming an assumption: a host with neither must
+# still SKIP, loudly, rather than fail on a missing shim.
+pr_test_requires_setsid() {
+  command -v setsid > /dev/null 2>&1 && return 0
+  command -v perl   > /dev/null 2>&1 && return 0
+  pr_test_skip "needs setsid(1) or perl, for tests/fixtures/bin/pr-setsid"
+  return 1
+}
+
 pr_fail() {
   PR_TESTS_FAILED=$((PR_TESTS_FAILED + 1))
   printf '  FAIL %s: %s\n' "$PR_CURRENT_TEST" "$1" >&2

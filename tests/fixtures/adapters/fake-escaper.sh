@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Adapter-shaped escaper: writes a normal review, then leaves a grandchild that
-# has taken its own SESSION (a real setsid, not merely setpgid) -- the shape P6
+# has taken its own SESSION (a real setsid(2), not merely setpgid) -- the shape P6
 # measured agent's tool layer producing
 # (docs/process/probes/2026-08-26-roster-sweep-reach/). The group sweep cannot
 # address it; only the descendant sweep can. The trailing sleep keeps this
@@ -20,7 +20,12 @@ workdir="$1"; review="$3"; meta="$4"
 cat > /dev/null
 printf 'sess-esc\nmodel-esc\neffort-esc\ncli-esc\n' > "$meta"
 echo "review from escaper" > "$review"
-setsid bash -c 'trap "" TERM; exec sleep 300' &
+# ../bin/pr-setsid, not `setsid`: util-linux's is absent on macOS and the shim
+# falls back to POSIX::setsid(2), which Darwin does have. Resolved from $0
+# because adapter fixtures are standalone by contract and get no PR_ROOT. It
+# must not fork -- $! below has to name the escaper itself; the shim's header
+# says why.
+"$(cd "$(dirname "$0")/../bin" && pwd)/pr-setsid" bash -c 'trap "" TERM; exec sleep 300' &
 echo $! > "$workdir/escaper.pid"
 sleep 1
 # LAST, deliberately: everything above must have run under a working ps.
