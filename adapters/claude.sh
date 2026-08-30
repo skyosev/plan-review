@@ -413,6 +413,13 @@ fi
 # On the builtin half, `cd` rather than bwrap's --chdir: nothing else puts the
 # CLI in the workdir there, and S2 measured that claude respects the invocation
 # cwd. A subshell, so this script's own cwd is untouched.
+#
+# The subshell costs the BWRAP half no extra process, which is checked rather
+# than assumed because two things depend on it: bwrap's --die-with-parent is
+# PDEATHSIG relative to bwrap's PARENT, and the kernel's group kill walks a
+# tree. Bash merges an explicit `( ... )` on the left of a pipe with the fork
+# the pipeline needs anyway -- measured 2026-08-30, `cmd | tee` and
+# `( cd?; cmd ) | tee` both leave the jail's ppid as this script's own pid.
 (
   [[ "$confinement" == builtin ]] && { cd "$workdir" || exit 1; }
   "${jail[@]}" "${env_clean[@]}" "${args[@]}"
