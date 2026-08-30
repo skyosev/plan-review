@@ -527,6 +527,28 @@ test_denied_tool_calls_warn_but_keep_the_review() {
 # used to die with $stream's EXIT trap, leaving log-claude.txt empty and the
 # only record of a failed round deleted. The review artifact is still only the
 # extracted .result: the verdict parser must never see JSON framing.
+# The rewrite of 2026-08-30 nearly shipped two silent changes to the measured
+# bwrap path: the stream file left behind (its EXIT trap having been moved into
+# the builtin branch) and, with TMPDIR unset, sited under $workdir/.pr-tmp --
+# INSIDE the repo copy, where the reviewer's own tool calls could rewrite the
+# stream this adapter parses for the model, the version and the review.
+test_the_bwrap_half_leaves_no_stream_file_behind() {
+  local d; d="$(setup)"; run_adapter "$d"
+  local leftovers; leftovers="$(find "$d" -name 'pr-claude-stream.*' 2>/dev/null)"
+  assert_eq "$leftovers" "" "the stream file is removed on exit"
+}
+
+test_the_stream_file_is_never_written_inside_the_repo_copy() {
+  local d; d="$(setup)"
+  # TMPDIR unset is the case that used to resolve to $workdir/.pr-tmp.
+  echo "prompt" | env -u TMPDIR PATH="$d/bin:$PATH" HOME="$d/home" \
+    "$BASH" "$PR_ROOT/adapters/claude.sh" "$d/work" "" "$d/r.md" "$d/m.txt" \
+    > "$d/out.txt" 2>&1
+  assert_eq "$(find "$d/work" -name 'pr-claude-stream.*' 2>/dev/null)" "" \
+    "nothing the reviewer can reach holds the stream"
+  assert_file_exists "$d/r.md" "and the round still worked"
+}
+
 test_the_stream_json_is_teed_to_stdout_for_the_kernel_log() {
   local d; d="$(setup)"; run_adapter "$d"
   assert_contains "$(cat "$d/out.txt")" '"subtype":"init"' \

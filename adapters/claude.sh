@@ -356,8 +356,26 @@ args=(
 [[ -n "${PR_CLAUDE_EFFORT:-}" ]] && args+=(--effort "$PR_CLAUDE_EFFORT")
 [[ -n "$session_in" ]]           && args+=(--resume "$session_in")
 
-stream="$cli_tmpdir/pr-claude-stream.$$"
-[[ -d "$cli_tmpdir" ]] || stream="${TMPDIR:-/tmp}/pr-claude-stream.$$"
+# Where the stream lands, and its cleanup, differ by half -- deliberately, and
+# the bwrap line is the one that shipped, unchanged.
+#
+# On the bwrap half: ${TMPDIR:-/tmp}, exactly as before, with its own EXIT trap.
+# Siting it under $cli_tmpdir instead would have been a silent behaviour change
+# on the measured path -- with TMPDIR unset that variable is $workdir/.pr-tmp,
+# which is INSIDE the repo copy, so the reviewer's own tool calls could read or
+# rewrite the stream this adapter is about to parse for the model, the version
+# and the review.
+#
+# On the builtin half: inside the private $cli_tmpdir, whose trap was armed at
+# creation and removes the whole directory -- so the stream goes with it and a
+# second trap would only fight the first. Armed there rather than here because
+# the settings write between the two can exit.
+if [[ "$confinement" == builtin ]]; then
+  stream="$cli_tmpdir/pr-claude-stream.$$"
+else
+  stream="${TMPDIR:-/tmp}/pr-claude-stream.$$"
+  trap 'rm -f "$stream"' EXIT
+fi
 
 # stderr is NOT redirected: it is inherited, so it lands on this adapter's own
 # stderr, which the execution kernel points at <round>/log-claude.txt
@@ -378,7 +396,8 @@ stream="$cli_tmpdir/pr-claude-stream.$$"
 # fix; duplicating fd 2 onto fd 1 is its opposite.
 # tee, not a redirect: stdout flows on to the kernel's `>> log-claude.txt 2>&1`
 # (lib/adapter-exec.sh), which is what makes the stream durable -- $stream dies
-# with this process's EXIT trap, and before this change log-claude.txt carried
+# with this process's EXIT trap (its own on the bwrap half, the private TMPDIR's
+# on the other), and before this change log-claude.txt carried
 # stderr only, so a failed round's stream-json was deleted with the evidence.
 # Accepted cost (decision 5, brainstorm 2026-08-27-backlog-clearing-3): the log
 # interleaves stream-json with stderr -- and the volume is the half the first
