@@ -104,9 +104,10 @@ and spends real tokens. If checking a claim seems to need one of those three, sa
 your review instead of running it. Your only task is the review this prompt asks for.
 
 You are running inside a disposable full copy of the target repository. You have
-write access and a network connection. Open files, run builds, and write throwaway
-scripts to check whether the plan's claims about the code are true. Do not commit,
-and do not push.
+write access INSIDE THAT COPY and a network connection. Open files, run builds, and
+write throwaway scripts to check whether the plan's claims about the code are true.
+Writes outside the copy are confined away and will fail; that is expected, and a
+review should not spend turns working around it. Do not commit, and do not push.
 
 Report concretely: what is wrong, what is missing, what is over-engineered. Prefer
 a small number of well-evidenced objections over a long list of impressions. When

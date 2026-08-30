@@ -161,6 +161,73 @@ test_the_ps_probe_skips_when_ps_is_absent_entirely() {
   assert_contains "$out" "counts 0 0 0" "and no counter moved"
 }
 
+# --- which half of adapters/claude.sh's confinement branch a host takes -----
+#
+# Two mechanisms in one adapter can drift, and this check is one of the two
+# bounds on that (the other is the single $confinement variable the adapter
+# assembles at the top). It uses the adapter's predicate verbatim --
+# `command -v bwrap` -- so the cases below are just that predicate's two answers
+# plus each half's prerequisites. $OSTYPE is overridden where the case is about
+# a platform this suite may not be running on.
+
+test_claude_confinement_names_bubblewrap_when_bwrap_is_there() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/bwrap"
+  out="$(doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "confinement: bubblewrap" "names the half"
+  assert_contains "$out" "bypassPermissions" "and the mode that half asserts"
+  assert_contains "$out" "counts 1 0 0" "a pass, and it does not re-probe the jail"
+}
+
+test_claude_confinement_names_the_builtin_sandbox_when_bwrap_is_absent() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin/.claude"
+  # A credentials FILE, the Linux route, with socat present so the only variable
+  # left is the absence of bwrap.
+  mkdir -p "$d/home/.claude"; : > "$d/home/.claude/.credentials.json"
+  mkpresent "$d/bin/socat"
+  out="$(HOME="$d/home" doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "built-in sandbox" "names the other half"
+  assert_contains "$out" "permissionMode 'default'" "and the mode THAT half asserts"
+  assert_contains "$out" "counts 2 0 0" "credentials and confinement, both clean"
+}
+
+# The two prerequisites fail in different places, so they are reported
+# separately -- an operator with neither should be told about both.
+test_claude_confinement_fails_with_no_credential_route() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  mkpresent "$d/bin/socat"
+  out="$(HOME="$d/nohome" doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "no credentials this host can materialise" "names what is missing"
+  assert_contains "$out" "claude auth login" "and how to fix it"
+  assert_contains "$out" "counts 1 0 1" "the sandbox half still passes; only credentials failed"
+}
+
+# On macOS there is no ~/.claude/.credentials.json at all: the OAuth item lives
+# in the login Keychain, and security(1) is the route. The check does NOT read
+# it -- a locked keychain BLOCKS the read rather than failing it (D5), which
+# would hang the doctor exactly as it would hang the adapter.
+test_claude_confinement_accepts_the_keychain_as_the_credential_route() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  mkpresent "$d/bin/security"
+  out="$(HOME="$d/nohome" OSTYPE=darwin24 doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "login Keychain item" "names the route"
+  assert_contains "$out" "KEEP THE LOGIN KEYCHAIN UNLOCKED" "and the trap that costs a round"
+  assert_contains "$out" "none needed" "Seatbelt needs no socat"
+  assert_contains "$out" "counts 2 0 0" "clean on a Mac with no bwrap and no socat"
+}
+
+# A7 measured the CLI exiting 1 with socat hidden from PATH on Linux. With
+# failIfUnavailable that is a refusal rather than the observed fail-open -- safe,
+# and also a reviewer that never runs, so it FAILS rather than warning.
+test_claude_confinement_fails_without_socat_on_linux() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/home/.claude"
+  : > "$d/home/.claude/.credentials.json"
+  out="$(HOME="$d/home" OSTYPE=linux-gnu doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "socat is missing" "names the missing dependency"
+  assert_contains "$out" "install bubblewrap instead" "and the other way out"
+  assert_contains "$out" "counts 1 0 1" "credentials fine, the sandbox is not"
+}
+
 test_absent_reviewer_cli_points_at_the_roster_escape_hatch() {
   local d; d="$(pr_test_tmpdir)"
   mkdir -p "$d/bin"
@@ -1063,14 +1130,43 @@ test_preflight_refuses_a_claude_roster_without_the_cli() {
   assert_contains "$out" "rc=1" "a refusal"
 }
 
-# claude has no sandbox flag of its own, so it needs the jail exactly as agy does.
-test_preflight_probes_the_jail_for_claude_too() {
+# claude stopped needing the jail on 2026-08-30: with no bwrap it switches to
+# Claude Code's own sandbox rather than refusing, so it is no longer in
+# $jail_for and a missing bwrap alone is not a refusal.
+test_preflight_does_not_demand_the_jail_for_claude_any_more() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/claude"
+  # A credential route, so the ONE thing this half does still require is met and
+  # cannot be what any refusal below is about.
+  mkpresent "$d/bin/security"
+  local out
+  out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  assert_not_contains "$out" "refuse to run without it" "no bwrap is not a refusal for claude"
+  assert_contains "$out" "rc=0" "the round may start"
+}
+
+# What it DOES require on that half is a credential route -- there is no bwrap
+# to --ro-bind ~/.claude/.credentials.json with, and on macOS that file does not
+# exist at all. Checked, never exercised: reading the Keychain here would hang
+# preflight on a locked one exactly as it would hang the adapter (D5).
+test_preflight_refuses_claude_with_no_credential_route() {
   local d; d="$(pr_test_tmpdir)"
   mkpresent "$d/bin/claude"
   local out
-  out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  out="$(HOME="$d/nohome" preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  assert_contains "$out" "no credentials this host can materialise" "names what is missing"
+  assert_contains "$out" "claude auth login" "and how to fix it"
+  assert_contains "$out" "rc=1" "a refusal"
+}
+
+# agy is the last reviewer that REQUIRES bubblewrap, and its refusal is intact.
+test_preflight_still_demands_the_jail_for_agy() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/agy"
+  local out
+  out="$(PR_AGY_MODEL=m preflight_run "$d/bin" '' "agy=$PR_ROOT/adapters/agy.sh")"
   assert_contains "$out" "refuse to run without it" "fails closed without bwrap"
-  assert_contains "$out" "claude" "names which reviewer needs it"
+  assert_contains "$out" "agy" "names which reviewer needs it"
   assert_contains "$out" "rc=1" "a refusal"
 }
 

@@ -495,12 +495,13 @@ pr_doctor_check_bwrap_jail() {
   if ! pr_doctor_have bwrap; then
     pr_d_fail "bwrap (bubblewrap) not on PATH"
     pr_d_info "Debian/Ubuntu: sudo apt install bubblewrap"
-    pr_d_info "agy's own --sandbox was measured NOT confining writes, and Claude Code"
-    pr_d_info "exposes no sandbox flag at all, so bubblewrap is the only write barrier"
-    pr_d_info "either reviewer has. Both adapters refuse to run without it. Dropping"
+    pr_d_info "agy's own --sandbox was measured NOT confining writes, so bubblewrap is"
+    pr_d_info "the only write barrier it has, and its adapter refuses without it."
+    pr_d_info "claude prefers the jail where it exists but does not need it. Dropping"
     pr_d_info "them from the roster is the other way out."
-    pr_d_info "macOS has no bubblewrap and no equivalent is wired up yet, so there it is"
-    pr_d_info "the ONLY way out: plan-review init --repo <dir> --reviewers codex,agent"
+    pr_d_info "This is agy's requirement alone now. claude switched to Claude Code's"
+    pr_d_info "own sandbox where bwrap is absent (2026-08-30), so on macOS the roster"
+    pr_d_info "to drop is agy: plan-review init --repo <dir> --reviewers codex,agent,claude"
     return 1
   fi
 
@@ -523,18 +524,99 @@ pr_doctor_check_bwrap_jail() {
   return 1
 }
 
+# WHICH HALF of adapters/claude.sh's confinement branch this host takes, and
+# whether that half's prerequisites are here. Added 2026-08-30 with the branch
+# itself: two confinement mechanisms in one adapter can drift, and the bound on
+# that drift is this check plus the single $confinement variable the adapter
+# assembles at the top. The predicate below is `command -v bwrap` because that
+# is the adapter's, verbatim -- two spellings of it is how the halves would
+# drift while both looked right.
+#
+# Builtins only, like the rest of this file: no sed, grep, awk or jq, which is
+# what lets tests/test-doctor.sh point PATH at a stub directory alone. $OSTYPE
+# rather than uname(1) for the same reason.
+#
+# It never FAILs on the bwrap half: pr_doctor_check_bwrap_jail already runs
+# there and owns that verdict. It can fail on the builtin half, for a missing
+# prerequisite that would take the reviewer out mid-round.
+pr_doctor_check_claude_confinement() {
+  if pr_doctor_have bwrap; then
+    pr_d_pass "claude confinement: bubblewrap (this host has bwrap)"
+    pr_d_info "adapters/claude.sh runs the CLI --dangerously-skip-permissions inside"
+    pr_d_info "the jail and asserts permissionMode bypassPermissions. Claude Code's"
+    pr_d_info "own sandbox is not used here. The jail itself is checked above."
+    return 0
+  fi
+
+  # The builtin half. Two prerequisites, and they fail in different places, so
+  # they are reported separately.
+  local rc=0
+
+  # 1. Credentials this adapter can materialise into the private config dir.
+  #    There is no bwrap to --ro-bind with, so the file is COPIED, or read out
+  #    of the login Keychain where there is no file at all.
+  if [[ -f "${HOME:-}/.claude/.credentials.json" ]]; then
+    pr_d_pass "claude credentials: ~/.claude/.credentials.json (copied into the private config dir)"
+  elif pr_doctor_have security; then
+    pr_d_pass "claude credentials: the login Keychain item 'Claude Code-credentials'"
+    pr_d_info "macOS has no ~/.claude/.credentials.json. The adapter reads the item"
+    pr_d_info "under a 5s timeout -- KEEP THE LOGIN KEYCHAIN UNLOCKED: a locked one"
+    pr_d_info "BLOCKS the read rather than failing it (measured 2026-08-21), drawing"
+    pr_d_info "a dialog nobody is watching. This check does not read it: doing so on"
+    pr_d_info "a locked keychain would hang the doctor for the same reason."
+  else
+    pr_d_fail "claude has no credentials this host can materialise"
+    pr_d_info "~/.claude/.credentials.json does not exist and there is no security(1)"
+    pr_d_info "to read a Keychain item with. Run: claude auth login"
+    rc=1
+  fi
+
+  # 2. On Linux the built-in sandbox needs socat for its bridge sockets. With it
+  #    missing, A7 measured the CLI exiting 1 -- and the adapter's settings file
+  #    carries failIfUnavailable: true precisely so that is a refusal rather
+  #    than the observed fail-open ("Sandbox disabled ... Commands will run
+  #    WITHOUT sandboxing"). A refusal is safe and it is also a reviewer that
+  #    never runs, so it FAILs here rather than warning.
+  #    Not asserted on Darwin: Seatbelt needs no bridge socket, and the row-1
+  #    round of 2026-08-30 confined a Bash tool call on a host with no socat.
+  if [[ "$OSTYPE" != darwin* ]] && ! pr_doctor_have socat; then
+    pr_d_fail "claude confinement: built-in sandbox, but socat is missing"
+    pr_d_info "Without bwrap this adapter relies on Claude Code's own sandbox, which"
+    pr_d_info "on Linux bridges through socat. failIfUnavailable makes the CLI refuse"
+    pr_d_info "to start rather than run unsandboxed, so the reviewer produces nothing."
+    pr_d_info "Debian/Ubuntu: sudo apt install socat -- or install bubblewrap instead,"
+    pr_d_info "which switches this adapter back to the jail."
+    rc=1
+  elif [[ "$OSTYPE" != darwin* ]]; then
+    pr_d_pass "claude confinement: built-in sandbox (no bwrap; socat present for the bridge)"
+  else
+    pr_d_pass "claude confinement: built-in sandbox (macOS Seatbelt; no bwrap, none needed)"
+  fi
+
+  pr_d_info "On this half the CLI runs WITHOUT --dangerously-skip-permissions and the"
+  pr_d_info "adapter asserts permissionMode 'default'. That mode is load-bearing: the"
+  pr_d_info "built-in sandbox confines Bash tool calls ONLY, and denying Write/Edit is"
+  pr_d_info "what keeps the CLI's own unsandboxed writes inside the workspace"
+  pr_d_info "(measured 2026-08-30). The adapter also removes the repo copy's .claude/,"
+  pr_d_info "which was measured switching the sandbox off from the other side."
+  return "$rc"
+}
+
 # adapters/agent.sh's bwrap is a PID FENCE, not a write barrier, and unlike agy
-# and claude that adapter does not fail closed: with no working jail it runs the
+# that adapter does not fail closed: with no working jail it runs the
 # reviewer unwrapped and the execution kernel's best-effort descendant sweep
 # becomes the only bound (docs/adapter-contract.md, the containment clause).
+# claude is neither of those two cases any more -- since 2026-08-30 it SWITCHES
+# MECHANISM rather than refusing or degrading, and pr_doctor_check_claude_confinement
+# above is what reports which one it will take.
 # So this reports a WARN, never a failure -- there is no refusal here to
 # predict, and failing a machine for it would refuse a roster that works.
 #
 # It exists because the alternative was worse: with agent on the roster and
 # neither agy nor claude, the doctor used to print "no reviewer here needs the
 # bubblewrap jail", which stopped being true the moment agent started using one.
-# Only called in that case; when agy or claude is present,
-# pr_doctor_check_bwrap_jail runs the same probe under the strict rule.
+# Only called in that case; when agy is present -- or claude on a host that has
+# bwrap -- pr_doctor_check_bwrap_jail runs the same probe under the strict rule.
 pr_doctor_check_agent_pid_fence() {
   local out rc
   if ! pr_doctor_have bwrap; then
@@ -1396,7 +1478,27 @@ pr_doctor_preflight() {
         # No pin requirement, deliberately. Unlike Cursor and agy, the stream-json
         # init line reports the resolved model, so round.json can record what
         # answered even when PR_CLAUDE_MODEL is unset.
-        jail_for="${jail_for}claude "
+        #
+        # NOT in $jail_for since 2026-08-30. That list means "these adapters
+        # refuse to run without bwrap", and claude no longer does: it switches to
+        # Claude Code's own sandbox instead. What it needs on THAT half is a
+        # credential route, and preflight refuses without one for the same reason
+        # it refuses a missing PR_AGENT_MODEL -- the adapter would fail after the
+        # sandbox copy and the session bookkeeping, forfeiting its resume handle
+        # for the price of a check we could have run first.
+        #
+        # The route is checked, not exercised. Reading the Keychain here would
+        # hang preflight on a locked one exactly as it would hang the adapter,
+        # and the adapter already caps that read and reports it as its own reason
+        # (D5, 2026-08-21).
+        if ! pr_doctor_have bwrap \
+           && [[ ! -f "${HOME:-}/.claude/.credentials.json" ]] \
+           && ! pr_doctor_have security; then
+          echo "preflight: claude has no credentials this host can materialise." >&2
+          echo "  ~/.claude/.credentials.json does not exist and there is no security(1)" >&2
+          echo "  to read the login Keychain item with. Run: claude auth login" >&2
+          rc=1
+        fi
         ;;
     esac
   done
