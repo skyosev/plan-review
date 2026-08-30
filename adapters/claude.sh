@@ -559,20 +559,36 @@ fi
 # jq -Rn with `fromjson? // empty` rather than a plain read of $stream: one
 # malformed line must not abort the count and read as "ran nothing".
 # ---------------------------------------------------------------------------
-ran_ok="$(jq -Rn '
+# One jq, two answers: the count, and -- when the count is zero -- the first
+# failing tool_result's text. The count alone says a round is untrustworthy
+# without saying why, and the four routes are diagnosed by four different
+# strings the CLI already puts in that field: `This command requires approval`
+# (C6), the model's own explanation (C1), and on 2026-08-30 a Darwin
+# measurement worth the extra line -- `sandbox-exec: sandbox_apply: Operation
+# not permitted`, exit 71, which is Claude Code's sandbox being UNAVAILABLE
+# while `failIfUnavailable: true` fails to refuse. Without the excerpt that
+# reads as "the reviewer was lazy" rather than "this host cannot sandbox it".
+{ IFS= read -r ran_ok; first_fail="$(cat)"; } < <(jq -Rrn '
   [inputs | fromjson? // empty] as $s
   | ([ $s[] | select(.type == "assistant") | .message.content[]?
        | select(.type == "tool_use" and .name == "Bash") | .id ]) as $ids
-  | [ $s[] | select(.type == "user") | .message.content[]?
-      | select(.type == "tool_result" and (.is_error != true))
-      | select(.tool_use_id as $i | $ids | index($i)) ] | length' \
-  < "$stream" 2>/dev/null)"
-: "${ran_ok:=0}"
+  | ([ $s[] | select(.type == "user") | .message.content[]?
+       | select(.type == "tool_result")
+       | select(.tool_use_id as $i | $ids | index($i)) ]) as $res
+  | ([ $res[] | select(.is_error != true) ] | length | tostring),
+    ([ $res[] | select(.is_error == true) | (.content | tostring) ][0] // "")' \
+  < "$stream" 2>/dev/null)
+: "${ran_ok:=0}" "${first_fail:=}"
 if [[ "$ran_ok" == 0 ]]; then
   echo "claude adapter: the reviewer ran no command successfully." >&2
   echo "Every Bash tool call was denied, refused approval, or never issued, so" >&2
   echo "this review rests on reading alone. Confinement: $confinement." >&2
-  pr_reason "claude ran no command successfully; the review rests on reading alone"
+  [[ -n "$first_fail" ]] && printf 'First failing tool result: %s\n' "${first_fail:0:400}" >&2
+  # Truncated hard: this is round.json's one-line `detail`, and a tool_result
+  # can be a whole build log. Newlines out for the same reason -- the runner
+  # reads one line (docs/adapter-contract.md).
+  fail_line="${first_fail//$'\n'/ }"
+  pr_reason "claude ran no command successfully; the review rests on reading alone${fail_line:+ (first failure: ${fail_line:0:160})}"
   exit 1
 fi
 

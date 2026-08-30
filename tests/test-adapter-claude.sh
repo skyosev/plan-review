@@ -106,12 +106,16 @@ mkhome() {
   printf '%s' "$h"
 }
 
+# reason_out is passed, so every case here can read the round's one-line detail
+# without rebuilding the invocation. It is optional in the contract and the
+# adapter writes it only on the paths that have something to say, so passing it
+# unconditionally changes nothing for the cases that ignore it.
 run_adapter() {
   local d="$1" session="${2:-}" ; shift 2 || shift
   echo "the actual prompt text" | env "$@" \
     PATH="$d/bin:$PATH" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" \
     bash "$PR_ROOT/adapters/claude.sh" \
-      "$d/work" "$session" "$d/r.md" "$d/m.txt" > "$d/out.txt" 2>&1
+      "$d/work" "$session" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
 }
 
 setup() {
@@ -479,9 +483,7 @@ test_a_review_whose_every_command_errored_is_refused() {
 # operator has to see to know the round did not check anything.
 test_the_no_command_refusal_reaches_the_rounds_detail() {
   local d; d="$(setup claude-sonnet-5 bypassPermissions false "a review" 0 yes completed none)"
-  echo "prompt" | env PATH="$d/bin:$PATH" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" \
-    "$BASH" "$PR_ROOT/adapters/claude.sh" "$d/work" "" "$d/r.md" "$d/m.txt" \
-    "$d/reason.txt" > /dev/null 2>&1
+  run_adapter "$d"
   assert_contains "$(cat "$d/reason.txt")" "rests on reading alone" "the detail says so"
 }
 
@@ -493,6 +495,21 @@ test_the_no_command_refusal_applies_to_the_builtin_half_too() {
   run_adapter_builtin "$d"; rc=$?
   assert_exit_code "$rc" 1 "the tripwire is not bwrap's"
   assert_contains "$(cat "$d/out.txt")" "Confinement: builtin" "and names which half it was on"
+}
+
+# The count alone says a round is untrustworthy without saying why, and the
+# four routes are diagnosed by four different strings the CLI already puts in
+# the tool_result. Measured 2026-08-30 on Darwin: `sandbox-exec: sandbox_apply:
+# Operation not permitted` is what an UNAVAILABLE sandbox looks like there, with
+# failIfUnavailable failing to refuse -- and without this excerpt that reads as
+# "the reviewer was lazy" rather than "this host cannot sandbox it".
+test_the_no_command_refusal_quotes_the_first_failing_tool_result() {
+  local d; d="$(setup claude-sonnet-5 bypassPermissions false "a review" 0 yes completed error)"
+  run_adapter "$d"
+  assert_contains "$(cat "$d/out.txt")" "First failing tool result: Operation not permitted" \
+    "the failure text is on stderr in full"
+  assert_contains "$(cat "$d/reason.txt")" "first failure: Operation not permitted" \
+    "and truncated into the round's one-line detail"
 }
 
 test_denied_tool_calls_warn_but_keep_the_review() {
