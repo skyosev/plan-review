@@ -39,7 +39,7 @@ a `git worktree` per revision — every row but the last, which is 2026-08-28 in
 | + task 3 review fixes (`reviewer-isolation-hardening`, as merged) | 491 | 84.624s | 84.460s |
 | + `backlog-clearing-3` | 519 | 81.060s | 83.451s |
 | **+ the macOS pass's return** | **521** | **80.885s** | **80.610s** |
-| + `claude-macos` — **Darwin only, see below** | 539 | 274.2s | — |
+| + `claude-macos` — **Darwin only, see below** | 542 | 274.2s | — |
 
 So ~62s was still right for `main` at the time: the whole delta was
 `reviewer-isolation-hardening`'s, not host drift —
@@ -100,9 +100,10 @@ account state to assert a drift message. Read that the same way as the bootstrap
 above — it paid for this branch's 28 tests exactly once, there are no live spawns left to
 reclaim, and the next contributor budgets against ~82s at 519 with no credit to spend.
 
-**The last row is Darwin, and it is the only row that is.** `claude-macos` added 18 tests
-(the confinement branch's two halves, the four credential and settings assertions, the
-no-command tripwire on both halves, and five doctor cases) and measured **4m34.2s at 539 on
+**The last row is Darwin, and it is the only row that is.** `claude-macos` added 23 tests
+(the confinement branch's two halves, the credential and settings assertions, the
+no-command tripwire on both halves, the stream-file pair, and five doctor cases) and
+measured **4m34.2s at the 539 of them that existed when the clock was read, 542 now on
 this Mac**, against the **4m36.6s at 519** the row below establishes for the same host — so
 the branch's tests cost *nothing this method can see*, which on a Mac with ~7s of run-to-run
 spread means anything under ~7s. That is not a licence: the tests it added are stub-only, and
