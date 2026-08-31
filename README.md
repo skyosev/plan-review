@@ -664,11 +664,19 @@ write-confined, each by a different thing:
   inference from them rather than something they tested, and it is the price of a probe that
   touches nothing of yours. On that inference the operator's per-user policy no longer
   reaches this reviewer, and their `~/.cursor/projects/` no longer collects its transcripts
-  — those land in the session cache beside the repo copy and live as long as it does.
+  — those land in the session cache beside the repo copy and live as long as that cache
+  does, which is to say until you delete it: nothing collects `~/.cache/plan-review`.
   What it costs: the reviewer runs without your `HOME`-anchored tool configuration, so it
   has no git identity from `~/.gitconfig` and no `~/.ssh`. That cost is inferred from
   where those files live rather than measured against an unmoved baseline; it is accepted, not
   gated, and a reviewer that reads code and writes a critique does not need either.
+  **All four rounds were Linux.** On macOS none of this has been run: the mechanism assumes
+  Cursor keeps its credential at the XDG path there too, and if a Mac keeps it under
+  `~/.cursor` or in the login Keychain instead, the private `HOME` takes it along and the
+  reviewer cannot authenticate. That shows up as a refusal — an `agent` round that publishes
+  nothing, or one whose "review" is the CLI saying it is not logged in — never as a widened
+  sandbox, because the private `HOME` is in force on every platform either way. If you see
+  that on a Mac, say so; one round settles it.
 
   **Whether a plan that was mid-loop when this landed loses a round is unknown** — unlike
   codex below, where it is measured and certain. The obvious check said no: an id minted

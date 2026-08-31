@@ -235,12 +235,29 @@ export CURSOR_CONFIG_DIR="$cursor_config"
 # covered by test_the_adapter_runs_cursor_under_a_private_home and by nothing else.
 #
 # UNMEASURED ON DARWIN, and not gated on it. All four rounds were Linux; that
-# auth.json is XDG-anchored rather than HOME-anchored on a Mac is vendor documentation,
-# not a measurement, and it is the fact this whole ordering rests on. Left ungated
-# deliberately: a wrong answer there is LOUD -- the round reports "Not logged in" and
-# fails -- never a silent widening, and an $OSTYPE gate would ship a second confinement
-# path for agent that nobody has measured either. Recorded in BACKLOG.md with its
-# reopen trigger instead.
+# auth.json is XDG-anchored rather than HOME-anchored on a Mac is an ASSUMPTION -- not
+# a measurement, and not a citation either: nothing under docs/process/probes/ cites a
+# vendor page for it. It is the fact this whole ordering rests on.
+#
+# Left ungated deliberately, and the justification is narrower than the first draft of
+# this comment claimed. What a credential-less run does HERE is not measured: the only
+# "Not logged in" anyone has seen came out of `agent status`
+# (probes/2026-08-31-cursor-write-barrier-gaps/), never out of `agent -p`, so any claim
+# that the failure is loud is inferred from a different command. Both shapes it could
+# take are safe anyway, and they are different. Either the CLI writes nothing and this
+# adapter exits 1 with the empty-output reason below -- or it prints its refusal on
+# STDOUT, which is exactly where the probe's own pass condition looked for that string,
+# and then the round publishes it: `[[ -s "$review_out" ]]` is the whole publication
+# gate here, and lib/reviewer-runner.sh accepts UNPARSEABLE as a legal verdict on an
+# `ok` reviewer. So a Darwin credential problem can land as `status: ok` with the CLI's
+# refusal quoted in the round's own artifact. Not silent, but not a failed round
+# either -- say so rather than promising an exit code that may not come.
+#
+# NEITHER SHAPE IS A SILENT WIDENING, and that is the property the gate turns on: these
+# two exports run before the CLI starts on every platform, so wherever a Mac keeps its
+# credential, the operator's per-user policy is already out of scope. An $OSTYPE gate
+# would instead ship a second confinement path for agent that nobody has measured
+# either. Recorded in BACKLOG.md with its reopen trigger instead.
 #
 # Sited beside the repo copy for the reason CODEX_HOME and cursor-config are: it must
 # survive pr_sandbox_refresh's per-round wipe of <sandbox>/repo. NOT under /tmp -- the C2

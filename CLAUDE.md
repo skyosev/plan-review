@@ -44,6 +44,7 @@ a `git worktree` per revision — every row but the last, which is 2026-08-28 in
 | **+ the row-L3 fix** | **543** | **78.38s** | **78.38s** |
 | `main` re-timed 2026-08-31, same tree as the row above | 543 | 82.17s | 81.13s |
 | **+ `backlog-clearing-4`** | **547** | **81.71s** | **83.53s** |
+| **+ `cursor-peruser-policy`** | **550** | **83.73s** | **82.68s** |
 
 So ~62s was still right for `main` at the time: the whole delta was
 `reviewer-isolation-hardening`'s, not host drift —
@@ -123,8 +124,8 @@ tests it added are stub-only. It is still not a licence. The one thing on this b
 real per-round cost is the Keychain read, which is one `security` fork per `claude` round on
 the builtin half and never runs on Linux at all. The row below it is the same tree plus row L3's fix, and its 543rd test — the
 adapter's Linux refusal — is likewise free (two runs identical to the centisecond).
-**Budget against 547/~82s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
-fix and nobody has re-timed a Mac since.
+**Budget against 550/~83s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
+row-L3 fix and the private-`HOME` branch both, and nobody has re-timed a Mac since.
 
 **The last two rows are a pair and only mean anything read together.** The ~78s of the
 row-L3 tree was measured 2026-08-30; the same tree re-timed on 2026-08-31 — a `git worktree`
@@ -149,6 +150,17 @@ one adapter refusal that exits before spawning anything. The Debian-container ru
 `docs/process/probes/2026-08-30-claude-macos-row8/` is superseded: its 14 failures were the
 container's PID view and seccomp profile and did **not** reproduce on a real host
 (`docs/process/FINDINGS-2026-08-30-linux.md`).
+
+**The last row is `cursor-peruser-policy`, and it is two more stub-only cases.** 550 tests in
+83.73s and 82.68s, measured 2026-08-31 on this host (32 cores, load ~1.1 at both ends, checked
+rather than assumed after the row above), two back-to-back runs on the same tree, the method
+every row here uses. Read against the 547/81.71s–83.53s directly above it — same host, same
+afternoon — the two trees interleave, so the branch's cost is **nothing this method can see**.
+That is the expected answer and not a surprising one: the branch's whole diff is two exports
+in `adapters/agent.sh` and two cases in `tests/test-adapter-agent.sh` that drive the shipped
+stub. What it does **not** license is the next per-round fork. The one thing here with a
+production cost is a single `mkdir -p` per `agent` round, which is below anything this table
+can resolve; a Keychain read or a `ps` poll would not be, and the rows above price those.
 
 **Every row but the Darwin one is Linux.** The suite first ran on **Darwin on 2026-08-29** and cost
 **4m36.6s** for the 519 of the `backlog-clearing-3` row — ~3.4x, spread evenly across files rather than concentrated
@@ -637,7 +649,7 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   at `<sandbox>/cursor-config`, which is the cheapest of the four because an *empty*
   `CURSOR_CONFIG_DIR` is still authenticated: no credential is copied or bound in, and the
   operator's `~/.cursor` hooks, plugins, rules and skills fall out of scope for free.
-  It stopped being the only **partial** one on 2026-08-31, and what completed it was a
+  It stopped being **partial** on 2026-08-31, and what completed it was a
   second variable rather than a second directory: the variable moves a config file, not a
   home, so `~/.cursor/sandbox.json` was still read — an `additionalReadwritePaths` grant
   there widened the reviewer's jail to the operator's home with the private directory in
@@ -655,7 +667,7 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   adapter therefore pins `XDG_CONFIG_HOME` off the **real** home and *then* exports
   `HOME="$(dirname "$workdir")/cursor-home"`. **The order of those two lines is the whole
   mechanism** — reverse them and XDG resolves under the empty private home, the round reports
-  `Not logged in`, and someone concludes for the third time that a private `HOME` costs the
+  `Not logged in`, and someone concludes for the second time that a private `HOME` costs the
   credential. Two cases in `tests/test-adapter-agent.sh` hold the two halves and they are
   **not** interchangeable — the ordering guard is
   `test_an_unset_xdg_config_home_is_pinned_before_the_home_moves`, which fails if and only if
@@ -688,10 +700,19 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   unmeasured. The transition round, exactly as codex's is: every round the runner starts mints
   and resumes inside the private home. And **every one of those four rounds was Linux** — on
   Darwin nothing here has been run, and the XDG anchoring of `auth.json` that the whole
-  ordering rests on is vendor-documented rather than measured there. It is deliberately **not**
-  gated on `$OSTYPE`: a wrong answer on a Mac is loud (`Not logged in`, a round that fails),
-  never a silent widening, and gating would ship a second confinement path nobody has measured
-  either. `BACKLOG.md` carries the reopen trigger.
+  ordering rests on is an **assumption** there — not a measurement, and not a citation either:
+  nothing under `docs/process/probes/` cites a vendor page for it. It is deliberately **not**
+  gated on `$OSTYPE`, and the justification is narrower than it first read here. What a
+  credential-less `agent -p` does is unmeasured — the only `Not logged in` anyone has seen came
+  from `agent status` — so "the round fails loudly" is inferred from a different command. Both
+  shapes are safe and they differ: the CLI writes nothing and the adapter exits 1, **or** it
+  prints its refusal on stdout and the round publishes that as `status: ok` /
+  `UNPARSEABLE`, since `[[ -s "$review_out" ]]` is the whole publication gate and
+  `lib/reviewer-runner.sh` accepts `UNPARSEABLE` on an `ok` reviewer. **Neither is a silent
+  widening** — the two exports run before the CLI starts on every platform, so wherever a Mac
+  keeps its credential the per-user policy is already out of scope — and that, not the exit
+  code, is what decides the gate. Gating would ship a second confinement path nobody has
+  measured either. `BACKLOG.md` carries the reopen trigger.
   `<sandbox>/config` for claude,
   `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
   *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
