@@ -176,7 +176,13 @@ pr_doctor_check_bash() {
 # without it the doctor passes and every claude review dies on
 # `tee: command not found`.
 # This list does NOT reach a round: pr_doctor_preflight never calls
-# pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
+# pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too --
+# and since 2026-08-31 adapters/claude.sh checks for tee at its own, for a
+# sharper reason than the others: the round it would otherwise lose reports the
+# VENDOR's stream envelope as changed, so a missing coreutil reads as drift and
+# sends someone to re-measure a CLI that is behaving perfectly. This row stays
+# regardless; it is the report, not the guard. It is also machine-wide, so on its
+# own it would fail a codex-only roster for a util no round in that config uses.
 PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head tee"
 
 pr_doctor_check_utils() {

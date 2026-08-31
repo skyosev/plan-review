@@ -6,7 +6,9 @@ between three terminals.
 
 ## Requirements
 
-`bash` 5+, `git`, `jq`, `rsync`, `ps`, `tee` (every `claude` review is piped through it), GNU
+`bash` 5+, `git`, `jq`, `rsync`, `ps`, `tee` (every `claude` review is piped through it, and
+`adapters/claude.sh` refuses the round rather than run without it — a missing `tee` would
+otherwise surface as the vendor's stream format having changed), GNU
 coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`, and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well: required if `agy` is
 in the roster, preferred by `claude` and used by `agent` when either is there — see the `bwrap`
 note below and "Reviewer roster".

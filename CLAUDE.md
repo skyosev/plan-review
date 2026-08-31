@@ -502,6 +502,20 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   envelope has moved"; the reason goes into the round's `detail` so it is not
   `exit 1, no output`. Still never unconfined, on any host.
 
+  **A second refusal sits above that predicate and is about a coreutil: no `tee`, no round**
+  (2026-08-31). It is there because a missing `tee` is the one dependency this adapter would
+  *misdiagnose*: the CLI runs through `| tee "$stream"` and `jq` parses the file, so without
+  it the pipe fails, `$stream` is empty, the init line reads as absent, and the tripwire
+  reports the vendor's stream envelope as having changed — sending someone to re-measure a
+  CLI that is behaving perfectly. `PR_DOCTOR_UTILS` lists `tee`, but that list never reaches
+  a round (`pr_doctor_preflight` does not call `pr_doctor_check_utils`) and is machine-wide,
+  so on its own it both misses the round and fails a codex-only roster for a util that roster
+  never uses. Same depth as `lib/lock.sh` checking `flock` at the lock site; the
+  `PR_DOCTOR_UTILS` row stays, as the report rather than the guard. Above the confinement
+  predicate, so it costs one builtin instead of refusing after the credential copy, the
+  private TMPDIR and the sandbox setup are all paid for — and so neither half can reach the
+  pipe without one.
+
   The adapter's predicate is `uname -s` where the doctor's is `$OSTYPE`, and that is the
   one deliberate difference between them: `$OSTYPE` is fixed when bash is compiled and no
   environment can override it in a subprocess, so spelling it that way in the adapter would
