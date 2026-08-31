@@ -173,6 +173,59 @@ if ! mkdir -p "$cursor_config" 2>/dev/null; then
 fi
 export CURSOR_CONFIG_DIR="$cursor_config"
 
+# Part three -- the operator's ~/.cursor/sandbox.json, which the private config directory
+# above does NOT move. An additionalReadwritePaths grant there was measured widening this
+# reviewer's jail with CURSOR_CONFIG_DIR in force and the sandbox still reporting
+# native/fully_enforced (leg B5, 2026-08-31; reproduced against an isolated escape target
+# 2026-09-01). Our own file cannot go where it would win: CURSOR_CONFIG_DIR does not
+# relocate this path (B3), nor does XDG_CONFIG_HOME (C1), and the repo layer cannot revoke
+# a per-user grant because paths are unioned across sources and the schema has no deny list
+# (B6).
+#
+# HOME is the only thing that moves it, and the ORDER of these two lines is the whole
+# mechanism. ~/.cursor follows HOME; Cursor's credential at ~/.config/cursor/auth.json
+# follows XDG. Pin XDG off the REAL home first and the operator's per-user policy goes out
+# of scope while their login stays in it -- nothing copied, no third credential at rest,
+# which is this adapter's one real advantage over the other three. Swap the lines and XDG
+# resolves under the empty private home, the round reports "Not logged in", and someone
+# concludes for the second time that moving HOME breaks Cursor's authentication. It does
+# not; measured 2026-09-01, docs/process/probes/2026-09-01-cursor-private-home/.
+#
+# That probe ran on a host where XDG_CONFIG_HOME was UNSET, so only the default half of the
+# expansion below was exercised live. The custom half -- an operator who sets the variable
+# explicitly -- is the same code path and is covered by
+# tests/test-adapter-agent.sh's second case and by nothing else.
+#
+# Sited beside the repo copy for the reason CODEX_HOME and cursor-config are: it must
+# survive pr_sandbox_refresh's per-round wipe of <sandbox>/repo. NOT under /tmp -- the C2
+# leg worked there only because Cursor grants /tmp by default, which proves nothing about
+# this placement, and lib/sandbox.sh puts TMPDIR inside the repo copy for the sibling
+# reason.
+#
+# Accepted cost, stated rather than solved: this moves the reviewer's WHOLE environment,
+# not just Cursor's state lookup. ~/.gitconfig, ~/.npmrc, ~/.ssh and everything else
+# HOME-anchored go with it, and no other adapter here does that -- codex moves CODEX_HOME,
+# agy binds a private directory over $HOME/.gemini, claude keeps HOME in its whitelist. A
+# reviewer reads code and writes a critique, so the delta is affordable; the probe recorded
+# exactly what it was -- as an INFERENCE from where those files live, not as a differential
+# measurement, since both of its legs ran with HOME already moved and none of them ever
+# showed the unmoved baseline. The answer to a workflow that turns out to need one of those
+# files is NOT to start copying dotfiles in -- that is a policy inventory of the operator's
+# environment, maintained forever, one file at a time.
+#
+# What this does NOT do is isolate the reviewer's user state: XDG_CONFIG_HOME still points
+# at the operator's real ~/.config, deliberately, because the credential is there. And the
+# transcripts are relocated, not eliminated -- ~/.cursor/projects/<slug>/ now lands in the
+# session cache and lives as long as it does.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+cursor_home="$(dirname "$workdir")/cursor-home"
+if ! mkdir -p "$cursor_home" 2>/dev/null; then
+  echo "agent adapter: cannot create $cursor_home" >&2
+  pr_reason "Could not create Cursor's private home; refusing to run under the operator's per-user sandbox policy"
+  exit 1
+fi
+export HOME="$cursor_home"
+
 # Pin the settings the measurement turned on rather than inheriting a fresh
 # install's defaults. They happen to agree today -- a fresh directory comes up
 # `allowlist` with the sandbox off, and `--sandbox enabled` supplies the rest,
