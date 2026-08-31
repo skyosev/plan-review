@@ -42,6 +42,8 @@ a `git worktree` per revision — every row but the last, which is 2026-08-28 in
 | + `claude-macos` — **Darwin only, see below** | 542 | 274.2s | — |
 | **+ `claude-macos`, on Linux** | **542** | **78.84s** | **79.25s** |
 | **+ the row-L3 fix** | **543** | **78.38s** | **78.38s** |
+| `main` re-timed 2026-08-31, same tree as the row above | 543 | 82.17s | 81.13s |
+| **+ `backlog-clearing-4`** | **547** | **81.71s** | **83.53s** |
 
 So ~62s was still right for `main` at the time: the whole delta was
 `reviewer-isolation-hardening`'s, not host drift —
@@ -121,8 +123,29 @@ tests it added are stub-only. It is still not a licence. The one thing on this b
 real per-round cost is the Keychain read, which is one `security` fork per `claude` round on
 the builtin half and never runs on Linux at all. The row below it is the same tree plus row L3's fix, and its 543rd test — the
 adapter's Linux refusal — is likewise free (two runs identical to the centisecond).
-**Budget against 543/~78s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
-fix and nobody has re-timed a Mac since. The Debian-container run in
+**Budget against 547/~82s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
+fix and nobody has re-timed a Mac since.
+
+**The last two rows are a pair and only mean anything read together.** The ~78s of the
+row-L3 tree was measured 2026-08-30; the same tree re-timed on 2026-08-31 — a `git worktree`
+at `main`, two back-to-back runs, the method every row here uses — came in at 82.17s and
+81.13s. So the host is ~3s slower than it was the day before, and `backlog-clearing-4`'s four
+tests cost **nothing this method can see**: 81.71s and 83.53s against main's 82.17s and 81.13s
+on the same afternoon, the two trees interleaved inside the ~2.5s floor. The tree is **548**
+after that branch's `/simplify` pass, and that row's clock was deliberately NOT re-read: the
+host went under heavy external load the same afternoon (`/proc/loadavg` swinging 25 → 3.8 → 26
+between adjacent runs on 32 cores) and four interleaved whole-suite runs came back 99s–133s
+against 82s–104s, a ~20s spread that no change in this diff could explain. Per-file timing —
+the technique that found the `test-bootstrap.sh` bug above — settled it instead: all four
+files the pass touched are identical across the two trees (`test-doctor.sh` 6.75s → 6.40s,
+`test-adapter-claude.sh` 2.52s → 2.65s, `test-adapter-agent.sh` 0.97s → 0.96s,
+`test-bootstrap.sh` 9.49s → 9.57s), and it touched no others. **A whole-suite clock read on a
+loaded host is worse than no clock**; per-file is the fallback, and the 548th test is one more
+stub-only preflight case. Measure the baseline
+again rather than diffing against a number from another day — "the host got slower" was the
+wrong answer once in this table and the right one here, and only a same-session control tells
+the two apart. What the four tests are is also why they are free: three doctor unit cases and
+one adapter refusal that exits before spawning anything. The Debian-container run in
 `docs/process/probes/2026-08-30-claude-macos-row8/` is superseded: its 14 failures were the
 container's PID view and seccomp profile and did **not** reproduce on a real host
 (`docs/process/FINDINGS-2026-08-30-linux.md`).
@@ -174,9 +197,16 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   install`, `plan-review skill` and `plan-review doctor --offline`; it re-derives none of
   their rules, because the second derivation is the one that goes stale. It checks `readlink -f` and bash 5
   before cloning — without those the doctor cannot start, so there is nothing to delegate
-  to. Its skill step is non-fatal by design: the promise is the runner. Covered by
+  to. Its skill step is non-fatal by design: the promise is the runner. It does read that
+  step's **status**, though, and the two failures get different endings — 1 ("ran and
+  failed") earns the `retry with:` line, 2 ("refused before doing anything": no npx/node or
+  jq, no harness) does not, because re-running it refuses identically and exit 2's own
+  message already names what is missing. That is one of the few rules the bootstrap owns
+  rather than delegates, and it owns it because only the caller knows the retry is a wrapper
+  around the same refusal. Covered by
   `tests/test-bootstrap.sh`, which drives it against a throwaway local git repo via
-  `PR_INSTALL_SOURCE`.
+  `PR_INSTALL_SOURCE` — one case per arm, and they are a pair: whichever is read alone, the
+  retry line looks unconditional.
 - `lib/*.sh` — sourcing is side-effect free everywhere; nothing runs until a `pr_*`
   function is called.
 - `adapters/<reviewer>.sh` — one per reviewer CLI. **Standalone**: they source nothing,
@@ -224,6 +254,23 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `jq`-using logic belongs in `lib/config.sh` / `lib/init.sh` instead. The rule is about
   parsing: Tier E (`doctor --smoke`) exists to run adapters and so assumes a working
   PATH, exactly as `_pr_doctor_bwrap_probe` already does.
+- **Every doctor check is now roster-scoped, `pr_doctor_check_versions` included** — it was
+  the last one that was not (fixed 2026-08-31). It iterated `docs/verified-versions.txt`, so
+  a `{"reviewers": ["codex"]}` repo printed "`agy` is not in this round's roster" and then
+  spawned `agy`, `claude` and `agent --version` anyway, the last a ~1.5s live account read.
+  Two things about the fix are decisions rather than derivations. **The orchestrator's own
+  CLI is kept** even though `lib/roster.sh` removes it from every roster: it is the binary
+  running the rounds and nothing else here would report drift on it. It arrives as part of
+  one name list rather than as its own argument — `"$shipped $orchestrator"`, read by the
+  same `_pr_doctor_wants` `pr_doctor_check_pins` uses at the same call site, so `lib/doctor.sh`
+  carries no notion of an orchestrator and the two roster-scoped checks cannot drift apart in
+  how they read an empty list. And the skip is gated on
+  `PR_ROSTER_ADAPTERS` as well as on the roster, so it applies only to names this repo ships
+  an adapter for — a future pins line naming a non-reviewer dependency is in no roster and a
+  bare roster test would drop it in silence. `tests/test-doctor.sh`'s "no real CLI" rule
+  **survives this**: rostered CLIs and the orchestrator's are still spawned, and most cases
+  there name a real orchestrator. What the gate retired is the `PR_TEST_NO_REAL_CLI` shim
+  `BACKLOG.md` proposed — that enforcement was a net under a cause this removed.
 - **`pr_doctor_run` captures each probe to its own pair of files** and replays them on
   the streams they came from, then removes them itself. Both halves are load-bearing:
   a command substitution is held open by any descendant that inherited stdout, so the
@@ -494,6 +541,31 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `command -v` instead of a paid round, and reports the missing package rather than "the
   envelope has moved"; the reason goes into the round's `detail` so it is not
   `exit 1, no output`. Still never unconfined, on any host.
+
+  **A second refusal sits above that predicate and is about a coreutil: no `tee`, no round**
+  (2026-08-31). It is there because a missing `tee` is the one dependency this adapter would
+  *misdiagnose*: the CLI runs through `| tee "$stream"` and `jq` parses the file, so without
+  it the pipe fails, `$stream` is empty, the init line reads as absent, and the tripwire
+  reports the vendor's stream envelope as having changed — sending someone to re-measure a
+  CLI that is behaving perfectly. `PR_DOCTOR_UTILS` lists `tee`, but that list never reaches
+  a round (`pr_doctor_preflight` does not call `pr_doctor_check_utils`) and is machine-wide,
+  so on its own it both misses the round and fails a codex-only roster for a util that roster
+  never uses. Same depth as `lib/lock.sh` checking `flock` at the lock site; the
+  `PR_DOCTOR_UTILS` row stays, as the report rather than the guard. Above the confinement
+  predicate, so it costs one builtin instead of refusing after the credential copy, the
+  private TMPDIR and the sandbox setup are all paid for — and so neither half can reach the
+  pipe without one.
+
+  **`pr_doctor_preflight`'s `claude` arm checks it too, and that copy is the one that saves
+  something.** The adapter's refusal is correct but late: it fires after `pr_sandbox_refresh`
+  has copied the repo and, under R1, after the reviewer has forfeited its resume handle — the
+  exact price that arm's credential check already exists to avoid, in its own words. Preflight
+  is roster-scoped and per-adapter, so unlike `PR_DOCTOR_UTILS` it costs a codex-only roster
+  nothing. Two copies is `PR_TIMEOUT_SECS`'s rule, for `PR_TIMEOUT_SECS`'s reasons: adapters
+  are standalone, and `PR_SKIP_PREFLIGHT=1` can skip the early one. `tee` is the only util
+  that earns a per-adapter arm, and the reason is worth keeping: every other external a round
+  reads through — `jq` above all — is spent long before an adapter is spawned, so a host
+  missing one never reaches a reviewer at all. `tee` is spent nowhere but `adapters/claude.sh`.
 
   The adapter's predicate is `uname -s` where the doctor's is `$OSTYPE`, and that is the
   one deliberate difference between them: `$OSTYPE` is fixed when bash is compiled and no

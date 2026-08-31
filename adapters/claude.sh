@@ -76,6 +76,38 @@ pr_reason() {
   printf '%s\n' "$1" > "$reason_out"
 }
 
+# tee is checked HERE, before anything is spawned, because its absence is the one
+# missing coreutil this adapter would MISDIAGNOSE. The CLI runs through
+# `... | tee "$stream"` far below and jq parses the FILE, so with no tee the
+# pipeline fails, $stream stays empty, the init line reads as absent, and the
+# tripwire down there reports "the --output-format stream-json envelope has
+# changed ... re-run the S2 probes and update docs/verified-versions.txt" -- a
+# missing coreutil sending someone off to re-measure a vendor CLI that is
+# behaving perfectly.
+#
+# lib/doctor.sh lists tee in PR_DOCTOR_UTILS, and that list's own comment says it
+# does NOT reach a round: pr_doctor_preflight never calls pr_doctor_check_utils,
+# so the presence check is a report and not a guard. It is also machine-wide, so
+# it would fail a codex-only roster for a util no round in that config would use.
+# pr_doctor_preflight's claude arm carries the real early guard -- it is
+# roster-scoped, per-adapter, and runs before pr_sandbox_refresh copies the repo
+# or R1 takes the reviewer's resume handle, which is a price this copy cannot
+# save. This one exists anyway for PR_TIMEOUT_SECS's reason: adapters are
+# standalone, and PR_SKIP_PREFLIGHT=1 can skip the other. Two copies on purpose.
+#
+# Before the confinement predicate rather than beside the pipe: this costs one
+# builtin, and refusing at the pipe would mean refusing after the credential
+# copy, the private TMPDIR and the sandbox setup have all been paid for.
+if ! command -v tee > /dev/null 2>&1; then
+  echo "claude adapter: tee not found on PATH." >&2
+  echo "The CLI's stream-json output is written through tee, so that a failed" >&2
+  echo "round's stream survives in log-claude.txt. Without it this adapter would" >&2
+  echo "report the stream envelope as changed, which would be a lie." >&2
+  echo "Debian/Ubuntu: it is in coreutils." >&2
+  pr_reason "claude adapter needs tee(1) and it is not on PATH"
+  exit 1
+fi
+
 # The one predicate. Everything below reads $confinement; nothing re-derives it.
 #
 # The builtin half is DARWIN-ONLY, and that is a measurement rather than a

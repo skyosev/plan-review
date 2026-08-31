@@ -176,7 +176,15 @@ pr_doctor_check_bash() {
 # without it the doctor passes and every claude review dies on
 # `tee: command not found`.
 # This list does NOT reach a round: pr_doctor_preflight never calls
-# pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
+# pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too --
+# and since 2026-08-31 tee is checked twice more where it is actually needed:
+# pr_doctor_preflight's claude arm below, and adapters/claude.sh itself. The
+# reason is sharper than the others': the round it would otherwise lose reports
+# the VENDOR's stream envelope as changed, so a missing coreutil reads as drift
+# and sends someone to re-measure a CLI that is behaving perfectly. This row
+# stays regardless; it is the report, not the guard. It is also machine-wide, so
+# on its own it would fail a codex-only roster for a util no round in that
+# config uses.
 PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head tee"
 
 pr_doctor_check_utils() {
@@ -1089,7 +1097,43 @@ pr_doctor_version_of() {
   return 1
 }
 
+# pr_doctor_check_versions <names>
+#
+# <names> is $shipped plus the orchestrator's own CLI -- one list, because this
+# file has no notion of an orchestrator and does not need one: both are simply
+# names whose drift is worth reporting. Read by _pr_doctor_wants, the same
+# predicate pr_doctor_check_pins uses two lines earlier at the same call site,
+# so the two roster-scoped checks cannot drift apart in how they read one.
+#
+# Roster-gated since 2026-08-31, and it was NOT before: this loop iterated the
+# pins file alone, so `plan-review doctor` on a {"reviewers": ["codex"]} repo
+# printed "`agy` is not in this round's roster" a few lines above and then
+# spawned `agy --version`, `claude --version` and `agent --version` regardless --
+# the last of which is a ~1.5s live account read. The gate is the one
+# libexec/plan-review-doctor.sh already applies to pr_doctor_check_cli, and the
+# reason it went unnoticed is recorded in tests/test-doctor.sh: the suite paid
+# 20 such spawns until stub_all_reviewer_clis replaced what answered them.
+#
+# THE ORCHESTRATOR'S OWN CLI IS KEPT, and that is the decision rather than the
+# derivation (the entry this closes says two reviewers stopped here, and this is
+# the answer they were waiting for). It is never in $shipped -- lib/roster.sh
+# removes it, because a round that reviews its own orchestrator is not
+# independent -- yet it is the binary actually running the rounds, and nothing
+# else in the doctor would ever report drift on it. Its adapter is not in play,
+# so the drift matters less than a reviewer's; it is one `command -v`-cheap
+# --version call, and reporting nothing about the tool the operator is sitting
+# in was the worse of the two silences.
+#
+# Gated on PR_ROSTER_ADAPTERS rather than on the roster alone, so the skip
+# applies ONLY to names this repo ships an adapter for. A future line in
+# verified-versions.txt naming a non-reviewer dependency -- `bubblewrap 0.9.0`
+# is the shape the format comment already uses as an example -- is in no roster
+# and under a bare roster test would be dropped in silence.
+#
+# Silent, deliberately: pr_doctor_check_cli already prints one line per
+# out-of-roster CLI, and a second here would report one fact twice.
 pr_doctor_check_versions() {
+  local names="${1:-}"
   local file="${PR_DOCTOR_VERSIONS_FILE:-${PR_ROOT:-.}/docs/verified-versions.txt}"
   if [[ ! -f "$file" ]]; then
     pr_d_warn "no verified-versions file at $file; skipping drift checks"
@@ -1103,6 +1147,14 @@ pr_doctor_check_versions() {
   local tool want got
   while read -r tool want _; do
     [[ -z "$tool" || "$tool" == \#* ]] && continue
+    # `:-` because lib/doctor.sh sources nothing and lib/roster.sh is what
+    # defines that list. Loaded without it the guard reads as "no name is a
+    # shipped adapter", which skips nothing -- the safe direction, and the same
+    # answer this check gave before the gate existed.
+    if [[ " ${PR_ROSTER_ADAPTERS:-} " == *" $tool "* ]] \
+       && ! _pr_doctor_wants "$names" "$tool"; then
+      continue
+    fi
     # Absence is already a FAIL in Tier A. Repeating it here would double-count
     # one problem as two.
     pr_doctor_have "$tool" || continue
@@ -1506,6 +1558,18 @@ pr_doctor_preflight() {
           echo "  to read the login Keychain item with. Run: claude auth login" >&2
           rc=1
         fi
+        # tee for the same reason as the credential route, and it is the only
+        # util that needs saying here: every other external the round path reads
+        # through -- jq above all -- is spent long before an adapter is spawned,
+        # so a round without one never reaches this. tee is spent NOWHERE but
+        # adapters/claude.sh (one `| tee "$stream"`, and jq parses the file), so
+        # a host missing it gets all the way to a spawned reviewer. The adapter
+        # refuses too, and both copies are wanted for PR_TIMEOUT_SECS's reason:
+        # adapters are standalone and PR_SKIP_PREFLIGHT=1 exists. What the
+        # adapter's copy cannot do is refuse before pr_sandbox_refresh has
+        # copied the repo and the reviewer has forfeited its resume handle.
+        pr_doctor_have tee \
+          || { echo "preflight: tee not on PATH, but the roster runs adapters/claude.sh" >&2; rc=1; }
         ;;
     esac
   done

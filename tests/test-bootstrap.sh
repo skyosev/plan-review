@@ -371,12 +371,18 @@ test_the_removal_line_appears_only_when_a_skill_was_installed() {
 
 # The wrap is non-fatal by contract: a failing skill subcommand must not turn a
 # good install into a failed one, and the warn must hand over the exact retry.
+#
+# This is the EXIT-1 arm -- "the install ran and failed", where retrying is a
+# reasonable thing to suggest. Its exit-2 counterpart is the missing-npx case
+# below, and the two are a pair: whichever of them is read alone, the retry line
+# looks unconditional.
 test_a_failing_skill_step_is_warned_and_survived() {
   local d out rc; d="$(mk_case)"
   pr_test_mkstub "$d/stub/npx" 'case " $* " in *" add "*) exit 1 ;; esac; exit 0'
   out="$(run_bootstrap "$d" "$d/src")"; rc=$?
   assert_exit_code "$rc" 0 "the runner install still succeeded"
   assert_contains "$out" "the skill step did not complete" "warned"
+  assert_contains "$out" "retry with:" "and offered the retry, which is what status 1 earns"
   assert_contains "$out" "plan-review skill" "with the delegated retry command"
   assert_not_contains "$out" "skills remove" "and no removal line for a skill never verified"
 }
@@ -407,6 +413,16 @@ test_a_missing_npx_warns_and_the_install_still_succeeds() {
   assert_contains "$out" "npx skills@1.5.18 add" "with the command to run later"
   assert_contains "$out" "verified: plan-review" "the runner was still installed"
   assert_not_contains "$out" "skills remove" "and no removal line for a skill never installed"
+  # The EXIT-2 arm, and the reason this file has two skill-failure cases at all.
+  # `plan-review skill` exits 2 when it refuses before doing anything -- npx/node
+  # or jq missing, or no harness found -- and re-running it refuses identically,
+  # so the retry line the exit-1 case above earns is an unusable command here.
+  # Reproduced live on macOS 2026-08-29 with a PATH that had no node, printing
+  # the exit-2 diagnosis and `retry with:` directly beneath it.
+  assert_not_contains "$out" "retry with:" \
+    "no retry line: exit 2 refuses before acting, so running it again refuses identically"
+  assert_contains "$out" "refused before it did anything" \
+    "and the wrap says which of the two failures this was"
 }
 
 # The bash-5 refusal is the one thing in this file no stub can reach:

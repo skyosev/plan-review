@@ -157,10 +157,21 @@ setup() {
 # told otherwise, which would leave every case below unrunnable on the Linux
 # hosts they were written on.
 run_adapter_builtin() {
-  local d="$1" session="${2:-}"; shift 2 || shift
+  local d="$1"; shift
   rm -f "$d/bin/bwrap"
   link_min_tools "$d/bin"
   stub_uname_darwin "$d/bin"
+  run_adapter_bare "$d" "$@"
+}
+
+# The invocation alone, with the PATH the caller has already built: run_adapter's
+# counterpart for the cases that must run on min-tools. Split out because three
+# cases now need it and only one of them wants run_adapter_builtin's setup --
+# the two refusals below choose their own (no uname stub is what makes one of
+# them Linux; a kept bwrap is what makes the other the shipped Linux half), and
+# three copies of five positional arguments is three places to miss on a rename.
+run_adapter_bare() {
+  local d="$1" session="${2:-}"; shift 2 || shift
   echo "the actual prompt text" | env -i "$@" \
     PATH="$d/bin" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" SHELL=/bin/bash \
     "$BASH" "$PR_ROOT/adapters/claude.sh" \
@@ -182,11 +193,7 @@ test_no_bwrap_and_not_darwin_refuses_rather_than_running_unconfined() {
   local d rc; d="$(setup claude-sonnet-5 default)"
   rm -f "$d/bin/bwrap"
   link_min_tools "$d/bin"
-  echo "the actual prompt text" | env -i \
-    PATH="$d/bin" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" SHELL=/bin/bash \
-    "$BASH" "$PR_ROOT/adapters/claude.sh" \
-      "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
-  rc=$?
+  run_adapter_bare "$d"; rc=$?
   assert_exit_code "$rc" 1 "refuses"
   assert_file_missing "$d/bin/claude-argv.txt" "and refuses BEFORE spawning the CLI"
   assert_file_missing "$d/r.md" "so no review is produced"
@@ -196,6 +203,32 @@ test_no_bwrap_and_not_darwin_refuses_rather_than_running_unconfined() {
   assert_contains "$(cat "$d/out.txt")" "sudo apt install bubblewrap" "with the fix"
   assert_contains "$(cat "$d/reason.txt")" "bwrap is missing" \
     "and the round's detail names the cause, not just 'exit 1, no output'"
+}
+
+# The fourth refusal, and the only one that is about a coreutil. Without tee the
+# pipeline that writes $stream fails, jq reads an empty file, and the init-line
+# tripwire reports the vendor's envelope as having changed -- sending someone to
+# re-measure a CLI that is behaving perfectly. lib/doctor.sh's PR_DOCTOR_UTILS
+# lists tee but never reaches a round, which is why the guard is in the adapter,
+# the same depth lib/lock.sh checks flock at.
+#
+# bwrap is LEFT in place, so this runs the shipped Linux half: the guard sits
+# above the confinement predicate and neither half may reach the pipe without a
+# tee. Built on the min-tools PATH for the usual reason -- tee is in /usr/bin on
+# a host that has it, and PATH cannot subtract.
+test_a_missing_tee_is_refused_rather_than_misreported_as_envelope_drift() {
+  local d rc; d="$(setup claude-sonnet-5 bypassPermissions)"
+  link_min_tools "$d/bin"
+  rm -f "$d/bin/tee"
+  run_adapter_bare "$d"; rc=$?
+  assert_exit_code "$rc" 1 "refuses"
+  assert_file_missing "$d/bin/claude-argv.txt" "and refuses BEFORE spawning the CLI"
+  assert_file_missing "$d/r.md" "so no review is produced"
+  assert_contains "$(cat "$d/out.txt")" "tee not found on PATH" "names the missing util"
+  assert_not_contains "$(cat "$d/out.txt")" "envelope has changed" \
+    "and does not send the operator to re-measure an innocent vendor CLI"
+  assert_contains "$(cat "$d/reason.txt")" "needs tee(1)" \
+    "the round's detail names the coreutil, not the envelope"
 }
 
 test_no_bwrap_switches_to_the_builtin_sandbox_rather_than_refusing() {

@@ -691,7 +691,7 @@ test_matching_versions_pass() {
   printf '# comment\n\ncodex 0.147.0\n' > "$d/versions.txt"
   local out
   out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
-pr_doctor_check_versions")"
+pr_doctor_check_versions codex")"
   assert_contains "$out" "codex 0.147.0 matches the verified version" "a match"
   assert_contains "$out" "counts 1 0 0" "comments and blank lines are skipped"
 }
@@ -702,7 +702,7 @@ test_version_drift_warns_and_does_not_fail() {
   printf 'codex 0.147.0\n' > "$d/versions.txt"
   local out
   out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
-pr_doctor_check_versions")"
+pr_doctor_check_versions codex")"
   assert_contains "$out" "codex is 0.148.0; the adapters were verified against 0.147.0" \
     "names both versions"
   assert_contains "$out" "fails closed" "explains what drift threatens"
@@ -717,7 +717,7 @@ test_absent_tool_is_not_double_counted_by_the_drift_check() {
   printf 'codex 0.147.0\n' > "$d/versions.txt"
   local out
   out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
-pr_doctor_check_versions")"
+pr_doctor_check_versions codex")"
   assert_contains "$out" "counts 0 0 0" "silent about a tool Tier A already failed"
 }
 
@@ -726,9 +726,73 @@ test_missing_versions_file_warns_rather_than_failing() {
   mkdir -p "$d/bin"
   local out
   out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/nope.txt'
-pr_doctor_check_versions")"
+pr_doctor_check_versions codex")"
   assert_contains "$out" "no verified-versions file" "says what is missing"
   assert_contains "$out" "counts 0 1 0" "a warning"
+}
+
+# --- the roster gate on the drift check (2026-08-31) -----------------------
+#
+# Each SOURCES lib/roster.sh in its own snippet rather than having doctor_run do
+# it for the file: PR_ROSTER_ADAPTERS is what the gate reads, and lib/doctor.sh
+# justifies _pr_doctor_wants having no four-adapter default with "this file
+# cannot source it (tests/test-doctor.sh runs with nothing but lib/doctor.sh and
+# a stub PATH)". Sourcing it in the harness would falsify that sentence for
+# every case in this file to serve three, and would leave the gate's own
+# `${PR_ROSTER_ADAPTERS:-}` fallback unreachable here -- the four cases above,
+# which do not source it, are what exercise that branch. Sourced rather than
+# assigned so the gate sees the same list production does.
+#
+# These three assert on the SPAWN, not on the report, because the report was
+# never the cost: the check printing one extra warning line is free, and
+# `agent --version` reading live account state for ~1.5s on a codex-only round
+# is what the gate exists to stop. Each stub records that it ran, so a
+# regression that puts the spawn back fails here rather than merely getting
+# slower.
+
+test_a_cli_outside_the_roster_is_not_spawned_by_the_drift_check() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/codex" 'echo "codex-cli 0.147.0"'
+  pr_test_mkstub "$d/bin/agy"   "touch '$d/agy-ran'; echo 1.1.22"
+  printf 'codex 0.147.0\nagy 1.1.22\n' > "$d/versions.txt"
+  local out
+  out="$(doctor_run "$d/bin" "source '$PR_ROOT/lib/roster.sh'
+PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions 'codex none'")"
+  assert_contains "$out" "codex 0.147.0 matches" "the rostered CLI is still checked"
+  assert_not_contains "$out" "agy" "and the unrostered one is not reported"
+  assert_file_missing "$d/agy-ran" "nor spawned, which is the whole point"
+}
+
+# The orchestrator is never in $shipped -- lib/roster.sh removes it, because a
+# round that reviews its own orchestrator is not independent. Its binary is
+# still the one running the rounds, so this is the one out-of-roster CLI the
+# check keeps. Decided 2026-08-31; see the function's header.
+test_the_orchestrators_own_cli_is_checked_though_it_never_reviews() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/claude" 'echo "0.0.1 (Claude Code)"'
+  printf 'claude 2.1.251\n' > "$d/versions.txt"
+  local out
+  out="$(doctor_run "$d/bin" "source '$PR_ROOT/lib/roster.sh'
+PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions 'codex agy claude'")"
+  assert_contains "$out" "claude is 0.0.1; the adapters were verified against 2.1.251" \
+    "drift on the orchestrator's own CLI is still reported"
+}
+
+# The gate skips only names this repo ships an adapter for. A pins line naming
+# something else -- `bubblewrap 0.9.0` is the shape the file's own format
+# comment gives as an example -- is in no roster, and a bare roster test would
+# drop it in silence.
+test_a_pin_that_is_not_a_reviewer_is_checked_whatever_the_roster_says() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/bwrap" 'echo "bubblewrap 0.9.0"'
+  printf 'bwrap 0.9.0\n' > "$d/versions.txt"
+  local out
+  out="$(doctor_run "$d/bin" "source '$PR_ROOT/lib/roster.sh'
+PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions 'codex none'")"
+  assert_contains "$out" "bwrap 0.9.0 matches the verified version" "not a reviewer, not gated"
 }
 
 test_the_shipped_versions_file_matches_its_own_format() {
@@ -1119,7 +1183,7 @@ test_claude_effort_enum_differs_from_codex() {
 # Unlike Cursor and agy, whose pins the runner cannot do without.
 test_preflight_does_not_require_a_model_pin_for_claude() {
   local d; d="$(pr_test_tmpdir)"
-  mkpresent "$d/bin/claude"; mkpresent "$d/bin/bwrap"
+  mkpresent "$d/bin/claude"; mkpresent "$d/bin/bwrap"; mkpresent "$d/bin/tee"
   local out
   out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
   assert_not_contains "$out" "PR_CLAUDE_MODEL" "the init line reports the resolved model"
@@ -1127,7 +1191,7 @@ test_preflight_does_not_require_a_model_pin_for_claude() {
 
 test_preflight_refuses_a_claude_roster_without_the_cli() {
   local d; d="$(pr_test_tmpdir)"
-  mkpresent "$d/bin/bwrap"
+  mkpresent "$d/bin/bwrap"; mkpresent "$d/bin/tee"
   local out
   out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
   assert_contains "$out" "claude not on PATH" "names the missing CLI"
@@ -1142,7 +1206,7 @@ test_preflight_does_not_demand_the_jail_for_claude_any_more() {
   mkpresent "$d/bin/claude"
   # A credential route, so the ONE thing this half does still require is met and
   # cannot be what any refusal below is about.
-  mkpresent "$d/bin/security"
+  mkpresent "$d/bin/security"; mkpresent "$d/bin/tee"
   local out
   out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
   assert_not_contains "$out" "refuse to run without it" "no bwrap is not a refusal for claude"
@@ -1155,12 +1219,31 @@ test_preflight_does_not_demand_the_jail_for_claude_any_more() {
 # preflight on a locked one exactly as it would hang the adapter (D5).
 test_preflight_refuses_claude_with_no_credential_route() {
   local d; d="$(pr_test_tmpdir)"
-  mkpresent "$d/bin/claude"
+  mkpresent "$d/bin/claude"; mkpresent "$d/bin/tee"
   local out
   out="$(HOME="$d/nohome" preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
   assert_contains "$out" "no credentials this host can materialise" "names what is missing"
   assert_contains "$out" "claude auth login" "and how to fix it"
   assert_contains "$out" "rc=1" "a refusal"
+}
+
+# And it requires tee on BOTH halves, which no other adapter's arm does. Every
+# other external a round reads through is spent before an adapter is spawned --
+# jq most of all -- so a host missing one never gets this far; tee is spent
+# nowhere but adapters/claude.sh, so a host missing it reaches a spawned
+# reviewer. The adapter refuses too (PR_TIMEOUT_SECS's rule: adapters are
+# standalone, and PR_SKIP_PREFLIGHT=1 exists), but only this copy refuses before
+# pr_sandbox_refresh has copied the repo and R1 has taken the resume handle.
+#
+# bwrap present, so the confinement half is the shipped Linux one and cannot be
+# what the refusal is about.
+test_preflight_refuses_a_claude_roster_with_no_tee() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/claude"; mkpresent "$d/bin/bwrap"
+  local out
+  out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  assert_contains "$out" "tee not on PATH" "names the missing util"
+  assert_contains "$out" "rc=1" "a refusal, before the round pays for a sandbox copy"
 }
 
 # agy is the last reviewer that REQUIRES bubblewrap, and its refusal is intact.
@@ -1190,12 +1273,22 @@ DOCTOR="$PR_ROOT/bin/plan-review"
 # Which check spawns them is the part worth naming, because it is not the one it
 # looks like. pr_doctor_check_cli is `command -v` and spawns nothing. The
 # executor is pr_doctor_check_versions, which iterates docs/verified-versions.txt
-# and is ROSTER-INDEPENDENT -- so a case whose config names only codex still read
-# four real versions off this host, whatever its roster said. Measured with
-# recording wrappers 2026-08-28: 20 real `--version` spawns across this file
-# (6 claude, 5 agy, 5 agent, 4 codex) after the roster-shaped stubs alone.
-# `agent` is the second executor, via pr_doctor_check_agent_identity, and the
-# only one that was ever expensive (~1.5s, live account state).
+# and was ROSTER-INDEPENDENT until 2026-08-31 -- so a case whose config named
+# only codex still read four real versions off this host, whatever its roster
+# said. Measured with recording wrappers 2026-08-28: 20 real `--version` spawns
+# across this file (6 claude, 5 agy, 5 agent, 4 codex) after the roster-shaped
+# stubs alone. `agent` is the second executor, via
+# pr_doctor_check_agent_identity, and the only one that was ever expensive
+# (~1.5s, live account state).
+#
+# THE GATE DOES NOT RETIRE THIS RULE, and reading it as though it had is the
+# mistake to avoid. pr_doctor_check_versions now skips a shipped adapter outside
+# the roster, but it still spawns every CLI that IS in the roster plus the
+# orchestrator's own -- and most cases below run a real orchestrator name. What
+# the gate removed is the machine-wide surface that hid the twenty; what it did
+# not remove is the need to stub. It also removed the reason to build the
+# PR_TEST_NO_REAL_CLI shim the closed backlog entry proposed: the enforcement it
+# was going to add was a net under a cause that no longer exists.
 #
 # Not a fixture in PR_DOCTOR_VERSIONS_FILE: pointing that at an empty file would
 # silence the spawns by removing the drift check these cases run THROUGH, which
@@ -1265,9 +1358,12 @@ test_an_agy_roster_does_check_the_bubblewrap_jail() {
 test_a_fake_adapter_under_a_real_name_demands_no_vendor_login() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
-  # $shipped is empty here, so no pr_doctor_check_cli runs at all -- and the
-  # drift check spawns four CLIs anyway. That gap is why the rule above names
-  # pr_doctor_check_versions rather than the roster.
+  # $shipped is empty here and the orchestrator is `none`, so since the
+  # 2026-08-31 gate this case spawns nothing at all -- it used to read four real
+  # versions off the host, and it is the shape that made the rule above name
+  # pr_doctor_check_versions rather than the roster. The stubs stay anyway: the
+  # rule is that no case in this file may reach a real CLI, and a case that is
+  # safe only because of a gate elsewhere is one refactor from unsafe.
   stub_all_reviewer_clis "$d/bin"
   out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none PR_ADAPTER_MAP="agy=/tmp/fake-ok.sh" \
          bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"

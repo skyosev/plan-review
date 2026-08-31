@@ -6,7 +6,9 @@ between three terminals.
 
 ## Requirements
 
-`bash` 5+, `git`, `jq`, `rsync`, `ps`, `tee` (every `claude` review is piped through it), GNU
+`bash` 5+, `git`, `jq`, `rsync`, `ps`, `tee` (every `claude` review is piped through it, and
+the preflight and `adapters/claude.sh` both refuse the round rather than run without it — a missing `tee` would
+otherwise surface as the vendor's stream format having changed), GNU
 coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`, and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well: required if `agy` is
 in the roster, preferred by `claude` and used by `agent` when either is there — see the `bwrap`
 note below and "Reviewer roster".
@@ -164,8 +166,11 @@ name models that exist, whether the reviewer CLIs have drifted from the versions
 verified against, and — with `REPO` — whether the project config parses, whether `.plan-review/` is
 gitignored and whether an unfinished round is blocking the next one. Every check is driven by the
 adapter map the round would actually use, keyed on adapter *paths*: a CLI that is not reviewing is
-reported as `SKIP` and its pin is not checked, and an adapter this repo does not ship carries no
-requirements at all. Exit status is 1 only for things that would stop a round; drift and unset pins
+reported as `SKIP`, its pin is not checked and its version is not read, and an adapter this repo
+does not ship carries no requirements at all. The one CLI outside the roster that is still checked
+for drift is the **orchestrator's own** — it never reviews, because a round that reviews its own
+orchestrator is not independent, but it is the binary running your rounds and nothing else here
+would report on it. Exit status is 1 only for things that would stop a round; drift and unset pins
 are reported without failing. Nothing it runs costs tokens — unless you pass `--smoke`, which is
 why that one is opt-in.
 
