@@ -96,6 +96,45 @@ fi
 # and the approvalMode that made --sandbox enabled inert above -- is out of the
 # reviewer's reach.
 #
+# That list is exhaustive, and it used to be written as though it generalised.
+# CURSOR_CONFIG_DIR moves cli-config.json and chats/. It does NOT move
+# ~/.cursor/sandbox.json, which is a SECOND user-level file that can switch the
+# write barrier off: an additionalReadwritePaths: ["$HOME"] there puts the
+# reviewer's canary in the operator's home with this private directory in force
+# and the sandbox still reporting native/fully_enforced (measured 2026-08-31,
+# docs/process/probes/2026-08-31-cursor-write-barrier-gaps/, leg B5). That is
+# the same failure mode approvalMode: "unrestricted" was, one file over, and
+# there is no in-band answer to it: our own copy is not read from this directory
+# (leg B3), the repo layer cannot revoke a per-user path grant because paths are
+# UNIONED across sources (leg B6, and the vendor's own merge table), and
+# XDG_CONFIG_HOME relocates cli-config.json without relocating this (leg C1).
+#
+# What DOES close it is moving HOME, and the first version of this comment said
+# that breaks authentication. It does not, and the correction matters because it
+# is the difference between a shut door and an open one: `agent status` under a
+# relocated HOME reports "Not logged in" only because Cursor's credential lives
+# at ~/.config/cursor/auth.json -- XDG-anchored, not in ~/.cursor -- so moving
+# HOME moves XDG_CONFIG_HOME with it to an empty .config. Copy that one file and
+# a private HOME authenticates, the operator's real ~/.cursor/sandbox.json goes
+# inert, and projects/ follows the private home too (leg C2).
+#
+# Whether that is what SHOULD ship is open, and the open part is narrow. C2
+# copied the credential, which would make Cursor the third one at rest and
+# retire this adapter's one real advantage over the other three (nothing copied,
+# nothing bound). But ~/.cursor is HOME-anchored while auth.json is XDG-anchored,
+# so a private HOME with the operator's real XDG_CONFIG_HOME left in place would
+# move the policy and not the credential -- untried, and if it works the cost
+# argument above evaporates. Resume is the cost that would remain either way, and
+# it took two probes and a negative control to establish once. Nothing ships here
+# until both are measured; docs/process/brainstorm/2026-08-31-cursor-peruser-sandbox-warning.md
+# carries the legs and what each would license.
+#
+# The same directory also keeps per-project state this does not move:
+# ~/.cursor/projects/<slugged-workdir>/ collects .workspace-trusted and the full
+# agent-transcripts/*.jsonl of every round, beside the chats/ copy that does land
+# in here. No containment consequence -- the reviewer's tool calls stay confined
+# -- but the record of the review is on the host either way.
+#
 # What this costs in transition rounds is UNKNOWN, and the attempt to measure it
 # is worth recording because it failed in an instructive way. BACKLOG.md
 # pre-registered the price of moving a CLI's state home, and codex really paid
@@ -196,6 +235,18 @@ fi
 # can still hide files from the reviewer, and AGENTS.md is still read; neither
 # was measured widening the sandbox, and hiding a file from a reviewer is a
 # weaker attack than writing to the operator's home.
+#
+# One directory is the WHOLE boundary, not the root of one that needs walking:
+# both surfaces are read from the workspace root and nowhere below it. The leg-3
+# grant that escapes from <repo>/.cursor/sandbox.json is inert at
+# <repo>/sub/.cursor/sandbox.json, twice, with the write denied by the kernel;
+# and a rules/injected.mdc planted one directory down never fires while the same
+# file at the root does -- the review comes back carrying its token (measured
+# 2026-08-31, docs/process/probes/2026-08-31-cursor-write-barrier-gaps/, legs
+# A1/A2). That rules half is also the first time the surface was witnessed doing
+# anything at all: leg 3 planted the file and only ever checked the canary. This
+# adapter always runs from the workspace root (`cd "$workdir"` below), which is
+# the CWD those legs measured.
 #
 # Safe because <workdir> is a disposable per-round copy, never the operator's
 # checkout (lib/sandbox.sh; docs/adapter-contract.md says the same).

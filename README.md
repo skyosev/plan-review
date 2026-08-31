@@ -638,9 +638,27 @@ write-confined, each by a different thing:
   `additionalReadwritePaths` to the operator's `$HOME`, and a repo-supplied `cli.json`
   allowlisting a shell command, were each measured putting the canary on the host — the
   first by widening the jail, the second by switching it off. With both closed the `$HOME`
-  canary is denied and the sandbox reports itself `native`/`fully_enforced`. `/tmp` stays
-  writable, which is the sandbox's documented default. The bubblewrap remains a pid fence
-  and is deliberately not the write barrier.
+  canary is denied and the sandbox reports itself `native`/`fully_enforced`. Only the repo
+  *root* `.cursor` is read: the same escape planted one directory down is inert, and a
+  `rules/` file that fires from the root never fires from a subdirectory (measured
+  2026-08-31). `/tmp` stays writable, which is the sandbox's documented default; closing
+  it is available — `disableTmpWrite: true` in a `.cursor/sandbox.json` the adapter would
+  write back after deleting the repo's — but it costs Cursor's own Bash tool layer its
+  temp file, and nobody has decided to pay that. The bubblewrap remains a pid fence and is
+  deliberately not the write barrier.
+
+  **One user-level surface is still the operator's, and it is not closed.**
+  `CURSOR_CONFIG_DIR` moves `cli-config.json`; it does *not* move
+  `~/.cursor/sandbox.json`, and an `additionalReadwritePaths` grant there widens the
+  reviewer's jail to the operator's home with the private directory in force — the
+  `unrestricted` failure mode, one file over (measured 2026-08-31). There is no in-band
+  fix: the path lists of every source are unioned, so nothing the adapter writes can
+  subtract one, and `XDG_CONFIG_HOME` moves `cli-config.json` without moving this. A
+  private `HOME` *does* close it — `~/.cursor` moves with `HOME`, and Cursor's credential is
+  XDG-anchored at `~/.config/cursor/auth.json` rather than under `~/.cursor`, so
+  authentication need not follow. Whether it can be closed that way **without** copying a
+  credential, and what it costs the resume handle, is being measured; until it is, nothing
+  detects such a file and the `agent` reviewer runs as wide as it grants.
 
   **Whether a plan that was mid-loop when this landed loses a round is unknown** — unlike
   codex below, where it is measured and certain. The obvious check said no: an id minted
@@ -802,7 +820,11 @@ A reviewer's private state directory is also what keeps the *operator's* own con
 out of its reach — `~/.claude`, `~/.gemini`, `~/.codex` and now `~/.cursor`, each of which
 defines hooks, rules or skills that run in the operator's later interactive sessions.
 Cursor's is the cheapest of the four: an empty `CURSOR_CONFIG_DIR` is still authenticated,
-so nothing is copied or bound in.
+so nothing is copied or bound in. It is also the only one that is **partial**, and the
+saving is why: because the variable moves a config file rather than a home,
+`~/.cursor/sandbox.json` is still read (see above) and per-project state —
+`.workspace-trusted`, and the full transcript of every round — is still written under
+`~/.cursor/projects/`.
 
 ## Tests
 

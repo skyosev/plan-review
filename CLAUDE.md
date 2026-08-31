@@ -637,6 +637,30 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   at `<sandbox>/cursor-config`, which is the cheapest of the four because an *empty*
   `CURSOR_CONFIG_DIR` is still authenticated: no credential is copied or bound in, and the
   operator's `~/.cursor` hooks, plugins, rules and skills fall out of scope for free.
+  It is also the only **partial** one, and cheapness is the reason: the variable moves a
+  config file, not a home, so `~/.cursor/sandbox.json` is still read — an
+  `additionalReadwritePaths` grant there widens the reviewer's jail to the operator's home
+  with the private directory in force, which is the `approvalMode: "unrestricted"` failure
+  mode one file over (measured 2026-08-31,
+  `docs/process/probes/2026-08-31-cursor-write-barrier-gaps/`). Nothing in band fixes it:
+  path lists are unioned across sources so no file the adapter writes can subtract one,
+  and `XDG_CONFIG_HOME` moves `cli-config.json` without moving this. Per-project state
+  escapes the same way, without the containment consequence: `~/.cursor/projects/<slug>/`
+  collects `.workspace-trusted` and the full transcript of every round.
+
+  **A private `HOME` closes both, and what it costs is being measured.** The claim that
+  `HOME` relocation breaks Cursor's authentication is **wrong** and was written into three
+  files here before it was checked: the credential is at `~/.config/cursor/auth.json`,
+  XDG-anchored rather than under `~/.cursor`, so moving `HOME` merely drags
+  `XDG_CONFIG_HOME` to an empty `.config`. Copy that one file and a private `HOME`
+  authenticates, the operator's per-user policy goes inert and `projects/` follows
+  (2026-08-31, leg C2). That copy would make Cursor the third credential at rest and retire
+  the adapter's only real advantage over the other three — but it may not be needed:
+  `~/.cursor` follows `HOME` while `auth.json` follows XDG, so a private `HOME` over the
+  operator's real `XDG_CONFIG_HOME` would move the policy alone. Untried. Resume is the cost
+  that survives either answer. **Nothing ships until both are measured**, and a warning was
+  decided once on the strength of the credential cost being certain, which it is not;
+  `docs/process/brainstorm/2026-08-31-cursor-peruser-sandbox-warning.md` carries the legs.
   `<sandbox>/config` for claude,
   `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
   *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
