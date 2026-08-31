@@ -31,17 +31,22 @@
 #            pinned.
 #   builtin  Claude Code's OWN sandbox supplies it, through a settings file
 #            carrying `failIfUnavailable: true`. No --dangerously-skip-permissions,
-#            and the init line must report `default`.
+#            and the init line must report `default`. DARWIN ONLY -- see the
+#            predicate below for why Linux cannot take this half at all.
 #
+# There is no third half, and the platform that has no bwrap and is not Darwin
+# gets a REFUSAL rather than a fallback (2026-08-30, and see the predicate).
 # Neither half is an unconfined fallback and neither may become one: the builtin
 # half is fail-closed on its own terms -- `failIfUnavailable: true` makes the CLI
 # refuse to START when its sandbox is unavailable, which A7 measured on Linux
-# with socat hidden from PATH (exit 1). What replaced the old `command -v bwrap ||
-# exit 1` refusal is therefore a different fail-closed mechanism, not the absence
-# of one. Read that sentence with its limit attached: the refuse-to-start path is
-# measured on LINUX only. Seatbelt is a system facility with no removable
-# dependency and nobody has yet made it unavailable to measure the macOS half
-# (row 5, 2026-08-30; B2 before it).
+# with socat hidden from PATH (exit 1) and the row-L3 round re-measured on Linux
+# with bwrap hidden. Read that with its limit attached: the refuse-to-start path
+# is measured on LINUX only, which is now the platform this adapter never
+# reaches the builtin half on -- so what licenses the DARWIN half is not
+# failIfUnavailable but the no-command tripwire at the bottom of this file. Row
+# 5 (2026-08-30) made Seatbelt unavailable by nesting and the CLI started
+# anyway, denying every Bash call and reporting success; it fails safe there,
+# not closed, and the tripwire is what catches it.
 #
 # Why two halves rather than one (the decision, 2026-08-30, row 2 of
 # HANDOFF-claude-macos.md; specs/claude-macos-rewire/NOTES.md specified ONE path
@@ -72,10 +77,50 @@ pr_reason() {
 }
 
 # The one predicate. Everything below reads $confinement; nothing re-derives it.
+#
+# The builtin half is DARWIN-ONLY, and that is a measurement rather than a
+# preference (2026-08-30 on Linux, FINDINGS-2026-08-30-linux.md row L3): Claude
+# Code's own sandbox is IMPLEMENTED WITH bubblewrap on Linux. So on this
+# platform the condition that selects the builtin half -- no bwrap -- is exactly
+# the condition that makes it fail:
+#
+#     Sandbox required but unavailable: sandbox is enabled but dependencies are
+#     missing: bubblewrap (bwrap) not installed ...
+#     sandbox.failIfUnavailable is set -- refusing to start without a working sandbox.
+#
+# That refusal is safe: nothing ran unsandboxed, and the missing init line took
+# the reviewer out at the bottom of this file. But it spends a round to learn
+# what `command -v` already knows, and it arrives as "the envelope has moved",
+# which is the wrong diagnosis of a missing package. So Linux refuses HERE
+# instead, in agy's spelling and for agy's reason: an adapter that cannot
+# confine writes must not run at all. socat is not the answer -- it is the
+# second half of the same dependency pair, not a substitute for the first.
+#
+# `uname -s` rather than $OSTYPE, and that is the one place this predicate and
+# pr_doctor_check_claude_confinement's are spelled differently. The doctor is
+# under a builtins-only rule ($OSTYPE exists so its tests can point PATH at a
+# stub directory alone); an adapter is not, and it already forks bwrap and jq.
+# What the fork buys is that the DARWIN half stays testable from Linux: $OSTYPE
+# is fixed when bash is compiled and no environment can override it in a
+# subprocess, so a $OSTYPE predicate here would make every builtin-half case in
+# tests/test-adapter-claude.sh unrunnable on a Linux host -- which is where they
+# were written and where they must keep running. The two spellings agree on
+# every real host; if one ever has to move, move both.
 if command -v bwrap > /dev/null 2>&1; then
   confinement=bwrap
-else
+elif [[ "$(uname -s)" == Darwin ]]; then
   confinement=builtin
+else
+  echo "claude adapter: bwrap (bubblewrap) not found on PATH." >&2
+  echo "On this platform Claude Code's own sandbox is built on bubblewrap too," >&2
+  echo "so there is no second mechanism to fall back to: without bwrap the CLI" >&2
+  echo "refuses to start (measured 2026-08-30). Refusing to run it unconfined." >&2
+  echo "Debian/Ubuntu: sudo apt install bubblewrap." >&2
+  # Into the round's `detail` as well: without it this reads as
+  # "claude: failed (exit 1, no output)", which names neither the cause nor the
+  # package. agy's older refusal above still has that shape; this one need not.
+  pr_reason "claude cannot be confined here: bwrap is missing and there is no fallback on this platform"
+  exit 1
 fi
 
 # A private config directory, SIBLING to the repo copy rather than inside it:

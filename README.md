@@ -700,20 +700,28 @@ write-confined, each by a different thing:
   empty private directory. What is lost is agy history from *other* sessions, which
   nothing here relied on: resume is per-session and the session map carries the handles.
 - **claude** is confined **two different ways, chosen per host**, and the choice is made once
-  in `adapters/claude.sh` on `command -v bwrap`. `plan-review doctor` prints which half your
-  machine takes.
+  in `adapters/claude.sh`. `plan-review doctor` prints which half your machine takes.
 
   On a host **with** `bwrap`, nothing has changed: the same bubblewrap jail as `agy`, the CLI
   run with `--dangerously-skip-permissions` inside it, and the init line asserted to report
   `bypassPermissions`. The OAuth credentials file is bind-mounted read-only and is never read
-  or copied.
+  or copied. This is the path the acceptance matrix pins, and it was re-verified live on
+  2026-08-30 at `claude 2.1.251`.
 
-  On a host **without** `bwrap` — which on 2026-08-30 is what put `claude` on the macOS roster —
-  Claude Code's own sandbox is the barrier, declared in a settings file the adapter writes with
-  `failIfUnavailable: true` and `allowUnsandboxedCommands: false`, and the CLI runs **without**
+  On **macOS**, which has no `bwrap` and never will, Claude Code's own sandbox is the barrier,
+  declared in a settings file the adapter writes with `failIfUnavailable: true` and
+  `allowUnsandboxedCommands: false`, and the CLI runs **without**
   `--dangerously-skip-permissions` at `permissionMode: default`. A Bash tool call's writes to
   `$HOME` and to an absolute path outside the workspace were both measured refused through the
   shipped adapter, while the write inside the workspace succeeded.
+
+  **On Linux, a missing `bwrap` is a refusal, not a fallback**, exactly as it is for `agy`.
+  Install bubblewrap — `sudo apt install bubblewrap` on Debian/Ubuntu — and the reviewer works.
+  The reason is worth one sentence, because it surprises people: *Claude Code's own sandbox is
+  built on bubblewrap on Linux*, so it is not an alternative to that binary and cannot stand in
+  for it. Without it the CLI refuses to start and the round buys nothing, so the adapter stops
+  first and the doctor FAILs the host rather than reporting a second mechanism it does not have.
+  Installing `socat` does not help: it is the other binary of the same pair.
 
   **`permissionMode: default` is load-bearing on that half, not incidental.** The built-in
   sandbox confines the commands the Bash tool spawns and **not the CLI's own process**: with

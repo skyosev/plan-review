@@ -196,7 +196,9 @@ else
 fi
 # Always, when claude is on the roster: it says which half the adapter will take
 # and checks that half's own prerequisites, which the jail probe knows nothing
-# about (credentials to materialise; socat, on Linux).
+# about -- credentials to materialise on a Mac, and on any other platform with no
+# bwrap the fact that there is no second mechanism at all and the adapter will
+# refuse (2026-08-30: Claude Code's own sandbox is built on bubblewrap here).
 [[ " $shipped " == *" claude "* ]] && pr_doctor_check_claude_confinement
 pr_doctor_check_cache_root
 

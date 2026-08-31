@@ -537,8 +537,9 @@ pr_doctor_check_bwrap_jail() {
 # rather than uname(1) for the same reason.
 #
 # It never FAILs on the bwrap half: pr_doctor_check_bwrap_jail already runs
-# there and owns that verdict. It can fail on the builtin half, for a missing
-# prerequisite that would take the reviewer out mid-round.
+# there and owns that verdict. It fails in the other two cases -- a non-Darwin
+# host with no bwrap, which has no mechanism at all and whose adapter refuses,
+# and a Mac whose credentials cannot be materialised.
 pr_doctor_check_claude_confinement() {
   if pr_doctor_have bwrap; then
     pr_d_pass "claude confinement: bubblewrap (this host has bwrap)"
@@ -548,13 +549,39 @@ pr_doctor_check_claude_confinement() {
     return 0
   fi
 
-  # The builtin half. Two prerequisites, and they fail in different places, so
-  # they are reported separately.
+  # No bwrap. The builtin half is DARWIN-ONLY, so a non-Darwin host has no
+  # confinement mechanism left at all and the adapter refuses (agy's rule).
+  # Measured 2026-08-30 (FINDINGS-2026-08-30-linux.md, row L3): Claude Code's
+  # own sandbox is IMPLEMENTED WITH bubblewrap on Linux, so the condition that
+  # selects this half is the condition that breaks it -- the CLI exits without
+  # an init line, naming bwrap as the missing dependency.
+  #
+  # This check used to assert socat instead, and it is worth saying why that was
+  # wrong rather than merely incomplete. socat IS a real dependency of that
+  # sandbox on Linux (A7), but it is the second of a pair and this asked only
+  # about the second: a host with socat and no bwrap PASSED, in front of a
+  # reviewer that could not start. Naming bwrap covers both, because a host with
+  # bwrap never reaches this branch at all.
+  #
+  # It returns HERE rather than falling through, because everything below
+  # describes a half this host does not take: the credentials it would
+  # materialise are not read, and the permissionMode note is not its rule.
+  if [[ "$OSTYPE" != darwin* ]]; then
+    pr_d_fail "claude cannot be confined on this host: no bwrap, and no second mechanism"
+    pr_d_info "Claude Code's own sandbox is built on bubblewrap here, so it is not a"
+    pr_d_info "fallback for a missing bwrap -- it needs the same binary. The adapter"
+    pr_d_info "refuses rather than run unconfined, so this reviewer produces nothing."
+    pr_d_info "Debian/Ubuntu: sudo apt install bubblewrap."
+    pr_d_info "The built-in sandbox is the macOS half only."
+    return 1
+  fi
+
+  # The macOS builtin half. One prerequisite the jail probe knows nothing about.
   local rc=0
 
-  # 1. Credentials this adapter can materialise into the private config dir.
-  #    There is no bwrap to --ro-bind with, so the file is COPIED, or read out
-  #    of the login Keychain where there is no file at all.
+  # Credentials this adapter can materialise into the private config dir. There
+  # is no bwrap to --ro-bind with, so the file is COPIED, or read out of the
+  # login Keychain where there is no file at all.
   if [[ -f "${HOME:-}/.claude/.credentials.json" ]]; then
     pr_d_pass "claude credentials: ~/.claude/.credentials.json (copied into the private config dir)"
   elif pr_doctor_have security; then
@@ -571,27 +598,7 @@ pr_doctor_check_claude_confinement() {
     rc=1
   fi
 
-  # 2. On Linux the built-in sandbox needs socat for its bridge sockets. With it
-  #    missing, A7 measured the CLI exiting 1 -- and the adapter's settings file
-  #    carries failIfUnavailable: true precisely so that is a refusal rather
-  #    than the observed fail-open ("Sandbox disabled ... Commands will run
-  #    WITHOUT sandboxing"). A refusal is safe and it is also a reviewer that
-  #    never runs, so it FAILs here rather than warning.
-  #    Not asserted on Darwin: Seatbelt needs no bridge socket, and the row-1
-  #    round of 2026-08-30 confined a Bash tool call on a host with no socat.
-  if [[ "$OSTYPE" != darwin* ]] && ! pr_doctor_have socat; then
-    pr_d_fail "claude confinement: built-in sandbox, but socat is missing"
-    pr_d_info "Without bwrap this adapter relies on Claude Code's own sandbox, which"
-    pr_d_info "on Linux bridges through socat. failIfUnavailable makes the CLI refuse"
-    pr_d_info "to start rather than run unsandboxed, so the reviewer produces nothing."
-    pr_d_info "Debian/Ubuntu: sudo apt install socat -- or install bubblewrap instead,"
-    pr_d_info "which switches this adapter back to the jail."
-    rc=1
-  elif [[ "$OSTYPE" != darwin* ]]; then
-    pr_d_pass "claude confinement: built-in sandbox (no bwrap; socat present for the bridge)"
-  else
-    pr_d_pass "claude confinement: built-in sandbox (macOS Seatbelt; no bwrap, none needed)"
-  fi
+  pr_d_pass "claude confinement: built-in sandbox (macOS Seatbelt; no bwrap, none needed)"
 
   pr_d_info "On this half the CLI runs WITHOUT --dangerously-skip-permissions and the"
   pr_d_info "adapter asserts permissionMode 'default'. That mode is load-bearing: the"

@@ -181,11 +181,10 @@ test_claude_confinement_names_bubblewrap_when_bwrap_is_there() {
 
 test_claude_confinement_names_the_builtin_sandbox_when_bwrap_is_absent() {
   local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin/.claude"
-  # A credentials FILE, the Linux route, with socat present so the only variable
-  # left is the absence of bwrap.
+  # Darwin: the only platform that HAS a second half. A credentials file rather
+  # than the Keychain, so the one variable left is the absence of bwrap.
   mkdir -p "$d/home/.claude"; : > "$d/home/.claude/.credentials.json"
-  mkpresent "$d/bin/socat"
-  out="$(HOME="$d/home" doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  out="$(HOME="$d/home" OSTYPE=darwin24 doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
   assert_contains "$out" "built-in sandbox" "names the other half"
   assert_contains "$out" "permissionMode 'default'" "and the mode THAT half asserts"
   assert_contains "$out" "counts 2 0 0" "credentials and confinement, both clean"
@@ -195,8 +194,7 @@ test_claude_confinement_names_the_builtin_sandbox_when_bwrap_is_absent() {
 # separately -- an operator with neither should be told about both.
 test_claude_confinement_fails_with_no_credential_route() {
   local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
-  mkpresent "$d/bin/socat"
-  out="$(HOME="$d/nohome" doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  out="$(HOME="$d/nohome" OSTYPE=darwin24 doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
   assert_contains "$out" "no credentials this host can materialise" "names what is missing"
   assert_contains "$out" "claude auth login" "and how to fix it"
   assert_contains "$out" "counts 1 0 1" "the sandbox half still passes; only credentials failed"
@@ -216,16 +214,22 @@ test_claude_confinement_accepts_the_keychain_as_the_credential_route() {
   assert_contains "$out" "counts 2 0 0" "clean on a Mac with no bwrap and no socat"
 }
 
-# A7 measured the CLI exiting 1 with socat hidden from PATH on Linux. With
-# failIfUnavailable that is a refusal rather than the observed fail-open -- safe,
-# and also a reviewer that never runs, so it FAILS rather than warning.
-test_claude_confinement_fails_without_socat_on_linux() {
+# A non-Darwin host with no bwrap has NO confinement mechanism: Claude Code's
+# own sandbox is built on bubblewrap there, so it is not a fallback for the
+# binary's absence (measured 2026-08-30 on Linux -- the CLI refused to start,
+# naming bwrap). adapters/claude.sh refuses on that host, and this must say so
+# rather than PASS in front of a reviewer that cannot run. The check that stood
+# here asserted socat, which is the SECOND half of the same dependency pair: it
+# passed exactly the host this now fails.
+test_claude_confinement_fails_on_linux_without_bwrap() {
   local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/home/.claude"
   : > "$d/home/.claude/.credentials.json"
+  mkpresent "$d/bin/socat"      # present, and it does not rescue the host
   out="$(HOME="$d/home" OSTYPE=linux-gnu doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
-  assert_contains "$out" "socat is missing" "names the missing dependency"
-  assert_contains "$out" "install bubblewrap instead" "and the other way out"
-  assert_contains "$out" "counts 1 0 1" "credentials fine, the sandbox is not"
+  assert_contains "$out" "no bwrap, and no second mechanism" "names the state"
+  assert_contains "$out" "sudo apt install bubblewrap" "and the one way out"
+  assert_contains "$out" "macOS half only" "says which platform the other half is for"
+  assert_contains "$out" "counts 0 0 1" "one failure, and no credential PASS to soften it"
 }
 
 test_absent_reviewer_cli_points_at_the_roster_escape_hatch() {

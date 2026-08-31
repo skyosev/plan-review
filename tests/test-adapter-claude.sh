@@ -98,6 +98,18 @@ link_min_tools() {
   done
 }
 
+# Make the adapter's `uname -s` answer Darwin. Written after link_min_tools,
+# which would otherwise link the real one over it.
+stub_uname_darwin() {
+  local bindir="$1"
+  cat > "$bindir/uname" <<'''EOF'''
+#!/usr/bin/env bash
+[[ "${1:-}" == -s ]] && { echo Darwin; exit 0; }
+exec /usr/bin/uname "$@"
+EOF
+  chmod +x "$bindir/uname"
+}
+
 # A HOME with a credentials file, so the read-only bind is exercised.
 mkhome() {
   local h="$1"
@@ -135,14 +147,55 @@ setup() {
 # The builtin half is chosen by the ABSENCE of bwrap, which PATH cannot arrange
 # by subtraction on a host that has it -- hence link_min_tools and a PATH built
 # from nothing. Every builtin-half test below runs through this.
+#
+# It also needs the host to LOOK like a Mac, because the builtin half is
+# Darwin-only since 2026-08-30: on Linux the adapter refuses instead, since
+# Claude Code's own sandbox is built on bubblewrap there and is no fallback for
+# its absence (FINDINGS-2026-08-30-linux.md, row L3). A `uname` stub is how that
+# is arranged, and it is why the adapter's predicate is `uname -s` rather than
+# $OSTYPE -- the latter is fixed when bash is compiled and no subprocess can be
+# told otherwise, which would leave every case below unrunnable on the Linux
+# hosts they were written on.
 run_adapter_builtin() {
   local d="$1" session="${2:-}"; shift 2 || shift
   rm -f "$d/bin/bwrap"
   link_min_tools "$d/bin"
+  stub_uname_darwin "$d/bin"
   echo "the actual prompt text" | env -i "$@" \
     PATH="$d/bin" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" SHELL=/bin/bash \
     "$BASH" "$PR_ROOT/adapters/claude.sh" \
       "$d/work" "$session" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
+}
+
+# The third case, and it is a REFUSAL rather than a half. Claude Code's own
+# sandbox is built on bubblewrap on Linux, so on a host with no bwrap the
+# condition that would select the builtin half is the condition that breaks it:
+# the CLI exits without an init line, naming bwrap (measured 2026-08-30, row L3
+# of FINDINGS-2026-08-30-linux.md). Refusing here costs a `command -v` instead
+# of a paid round, and it reports the missing package rather than "the envelope
+# has moved". agy's rule, agy's spelling: an adapter that cannot confine writes
+# must not run at all.
+#
+# No uname stub: run_adapter_builtin's is what makes the OTHER cases Darwin, and
+# its absence is what makes this one Linux. That is the whole difference.
+test_no_bwrap_and_not_darwin_refuses_rather_than_running_unconfined() {
+  local d rc; d="$(setup claude-sonnet-5 default)"
+  rm -f "$d/bin/bwrap"
+  link_min_tools "$d/bin"
+  echo "the actual prompt text" | env -i \
+    PATH="$d/bin" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" SHELL=/bin/bash \
+    "$BASH" "$PR_ROOT/adapters/claude.sh" \
+      "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
+  rc=$?
+  assert_exit_code "$rc" 1 "refuses"
+  assert_file_missing "$d/bin/claude-argv.txt" "and refuses BEFORE spawning the CLI"
+  assert_file_missing "$d/r.md" "so no review is produced"
+  assert_contains "$(cat "$d/out.txt")" "bwrap (bubblewrap) not found" "names the dependency"
+  assert_contains "$(cat "$d/out.txt")" "no second mechanism to fall back to" \
+    "and says why the built-in sandbox is not one here"
+  assert_contains "$(cat "$d/out.txt")" "sudo apt install bubblewrap" "with the fix"
+  assert_contains "$(cat "$d/reason.txt")" "bwrap is missing" \
+    "and the round's detail names the cause, not just 'exit 1, no output'"
 }
 
 test_no_bwrap_switches_to_the_builtin_sandbox_rather_than_refusing() {

@@ -40,6 +40,8 @@ a `git worktree` per revision — every row but the last, which is 2026-08-28 in
 | + `backlog-clearing-3` | 519 | 81.060s | 83.451s |
 | **+ the macOS pass's return** | **521** | **80.885s** | **80.610s** |
 | + `claude-macos` — **Darwin only, see below** | 542 | 274.2s | — |
+| **+ `claude-macos`, on Linux** | **542** | **78.84s** | **79.25s** |
+| **+ the row-L3 fix** | **543** | **78.38s** | **78.38s** |
 
 So ~62s was still right for `main` at the time: the whole delta was
 `reviewer-isolation-hardening`'s, not host drift —
@@ -100,7 +102,7 @@ account state to assert a drift message. Read that the same way as the bootstrap
 above — it paid for this branch's 28 tests exactly once, there are no live spawns left to
 reclaim, and the next contributor budgets against ~82s at 519 with no credit to spend.
 
-**The last row is Darwin, and it is the only row that is.** `claude-macos` added 23 tests
+**The second-to-last row is Darwin, and it is the only row that is.** `claude-macos` added 23 tests
 (the confinement branch's two halves, the credential and settings assertions, the
 no-command tripwire on both halves, the stream-file pair, and five doctor cases) and
 measured **4m34.2s at the 539 of them that existed when the clock was read, 542 now on
@@ -109,11 +111,23 @@ the branch's tests cost *nothing this method can see*, which on a Mac with ~7s o
 spread means anything under ~7s. That is not a licence: the tests it added are stub-only, and
 the one thing on this branch with a real per-round cost is the Keychain read, which is one
 `security` fork per `claude` round on the builtin half and does not touch the suite at all.
-**No Linux number exists for this branch measured by the author** — the host was a Mac and
-`make test` on Linux was run in a Debian container instead, which is a different machine class
-and not comparable to the rows above. Budget against 519/4m36.6s Darwin and 521/~81s Linux.
+The Linux number that was missing when that row was written **now exists and is the last
+row**: 542 tests in 78.84s and 79.25s, measured 2026-08-30 on this host (32 cores, load ~0.8)
+by the same two back-to-back runs on a clean clone. Read it against the 521/~81s below it and
+the branch's +21 tests cost **nothing this method can see** — the two runs came in 0.41s
+apart, well inside the ~2.5s floor the `backlog-clearing-3` row establishes. The same
+conclusion on both platforms, by two independent measurements, and for the same reason: the
+tests it added are stub-only. It is still not a licence. The one thing on this branch with a
+real per-round cost is the Keychain read, which is one `security` fork per `claude` round on
+the builtin half and never runs on Linux at all. The row below it is the same tree plus row L3's fix, and its 543rd test — the
+adapter's Linux refusal — is likewise free (two runs identical to the centisecond).
+**Budget against 543/~78s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
+fix and nobody has re-timed a Mac since. The Debian-container run in
+`docs/process/probes/2026-08-30-claude-macos-row8/` is superseded: its 14 failures were the
+container's PID view and seccomp profile and did **not** reproduce on a real host
+(`docs/process/FINDINGS-2026-08-30-linux.md`).
 
-**Every number above the last row is Linux.** The suite first ran on **Darwin on 2026-08-29** and cost
+**Every row but the Darwin one is Linux.** The suite first ran on **Darwin on 2026-08-29** and cost
 **4m36.6s** for the 519 of the `backlog-clearing-3` row — ~3.4x, spread evenly across files rather than concentrated
 in one, which is what rules out the missing-`PR_BWRAP_PROBE_TICKS` shape and leaves fork
 cost. Two things came out of that first run and both are load-bearing here. **BSD sed
@@ -454,17 +468,39 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   **fails closed** when `bwrap` is missing. Never add an unconfined fallback for it.
 
   **`claude` stopped being the second such adapter on 2026-08-30 and now switches
-  mechanism per host**, chosen once at a `$confinement` variable on `command -v bwrap`
-  and reported by `pr_doctor_check_claude_confinement` using the same predicate — two
-  bounds on the drift two halves invite, and the reason the predicate is not spelled
-  twice. With `bwrap`: the jail, `--dangerously-skip-permissions`, an init line asserted
+  mechanism per host**, chosen once at a `$confinement` variable and reported by
+  `pr_doctor_check_claude_confinement` — two bounds on the drift two halves invite.
+  With `bwrap`: the jail, `--dangerously-skip-permissions`, an init line asserted
   to say `bypassPermissions` — byte-for-byte what shipped, because nothing on a Mac can
   re-run the twelve-row acceptance matrix that pins it, and buying symmetry by rewriting
   the measured path was the trade this branch refused (row 2, `HANDOFF-claude-macos.md`;
   `specs/claude-macos-rewire/NOTES.md` specified ONE path and is overruled in writing).
-  Without `bwrap`: Claude Code's own sandbox, `failIfUnavailable: true`, no
-  `--dangerously-skip-permissions`, `permissionMode: default`. Still never unconfined —
-  the second mechanism is fail-closed on its own terms.
+  That Linux path was re-verified live on 2026-08-30 at `claude 2.1.251` — init line,
+  `--safe-mode` against a control, and the resume handle — so the byte-for-byte claim is
+  measured and not merely readable (`docs/process/FINDINGS-2026-08-30-linux.md`).
+  On **Darwin** without `bwrap`: Claude Code's own sandbox, `failIfUnavailable: true`, no
+  `--dangerously-skip-permissions`, `permissionMode: default`.
+
+  **There is no third case: a non-Darwin host with no `bwrap` is REFUSED**, in
+  `adapters/agy.sh`'s spelling and for its reason. That is a correction to how the branch
+  first shipped, and the measurement is worth carrying because it is counter-intuitive:
+  **Claude Code's own sandbox is implemented with bubblewrap on Linux.** So the condition
+  that selected the builtin half there — no `bwrap` — was exactly the condition that broke
+  it, and the CLI exited with no init line naming `bwrap` as the missing dependency
+  (measured 2026-08-30, row L3). The builtin half is a **Darwin path**, and `socat` is the
+  second binary of the same dependency pair rather than an alternative to the first — which
+  is what the doctor check originally asserted, so it PASSed a host whose reviewer could not
+  start. It now FAILs that host and names bubblewrap. Refusing in the adapter costs a
+  `command -v` instead of a paid round, and reports the missing package rather than "the
+  envelope has moved"; the reason goes into the round's `detail` so it is not
+  `exit 1, no output`. Still never unconfined, on any host.
+
+  The adapter's predicate is `uname -s` where the doctor's is `$OSTYPE`, and that is the
+  one deliberate difference between them: `$OSTYPE` is fixed when bash is compiled and no
+  environment can override it in a subprocess, so spelling it that way in the adapter would
+  make every builtin-half case in `tests/test-adapter-claude.sh` unrunnable on the Linux
+  hosts they were written on. The doctor cannot fork (builtins only, so its tests can point
+  `PATH` at a stub directory alone). They agree on every real host; move both or neither.
 
   Four things about that half, all measured 2026-08-30
   (`docs/process/probes/2026-08-30-claude-macos-row1`, `-row5`, `-row67`), and each one
