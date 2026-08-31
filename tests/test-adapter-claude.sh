@@ -22,6 +22,13 @@ install_stubs() {
   # `${8-...}`, not `${8:-...}`: the dropped-field case passes "" deliberately,
   # and the colon form would treat that as "unset" and hand back the default.
   local terminal_reason="${8-completed}"
+  # Ninth: what the stub's TOOL FRAMES say, for the "the reviewer ran at least
+  # one command successfully" tripwire. `ok` is the default because a real
+  # reviewer runs commands and every other test in this file is about something
+  # else; `none` emits no tool frames at all (C1's shape -- a confident review
+  # that ran nothing) and `error` emits a Bash call whose result is_error
+  # (C3/D3's shape -- every command denied).
+  local tools="${9:-ok}"
   mkdir -p "$bindir"
 
   cat > "$bindir/bwrap" <<STUB
@@ -47,6 +54,18 @@ if [[ "$emit_init" == yes ]]; then
     '{type:"system",subtype:"init",model:\$m,permissionMode:\$p,
       claude_code_version:"2.1.233",session_id:"sess-abc-123",cwd:"/w"}'
 fi
+if [[ "$tools" != none ]]; then
+  jq -nc '{type:"assistant",message:{content:[
+    {type:"tool_use",id:"toolu_1",name:"Bash",input:{command:"ls -la"}}]}}'
+  if [[ "$tools" == error ]]; then
+    jq -nc '{type:"user",message:{content:[
+      {type:"tool_result",tool_use_id:"toolu_1",is_error:true,
+       content:"Operation not permitted"}]}}'
+  else
+    jq -nc '{type:"user",message:{content:[
+      {type:"tool_result",tool_use_id:"toolu_1",content:"total 0"}]}}'
+  fi
+fi
 jq -nc --argjson e "$is_error" --arg r "\$(printf '$result')" --argjson d "$denials" \
        --arg tr "$terminal_reason" \
   '{type:"result",subtype:(if \$e then "error" else "success" end),is_error:\$e,
@@ -58,6 +77,39 @@ STUB
   chmod +x "$bindir/bwrap" "$bindir/claude"
 }
 
+# A PATH with no bwrap on it, for the builtin half. Hiding bwrap is not
+# something PATH can do by subtraction -- on Linux it sits in /usr/bin next to
+# everything else -- so this builds a directory holding the stubs plus a symlink
+# per external the adapter actually calls, and nothing else. Keep it in step
+# with adapters/claude.sh: an external it needs and this list omits shows up as
+# a mystifying failure rather than as "you forgot to add cp". `bash` is on it
+# for the stubs' own `#!/usr/bin/env bash`, not for the adapter.
+#
+# `security` is DELIBERATELY absent, and that absence is load-bearing on a Mac:
+# link it and the Keychain branch fires against the operator's real login
+# keychain from inside the offline suite. Its absence is what makes
+# test_the_builtin_half_refuses_when_there_is_no_credential_route exercise the
+# same branch on both platforms.
+link_min_tools() {
+  local bindir="$1" t p
+  for t in bash env dirname mkdir cp rm chmod cat head tail tee jq timeout id; do
+    p="$(command -v "$t" 2>/dev/null)" || continue
+    [[ -n "$p" ]] && ln -sf "$p" "$bindir/$t"
+  done
+}
+
+# Make the adapter's `uname -s` answer Darwin. Written after link_min_tools,
+# which would otherwise link the real one over it.
+stub_uname_darwin() {
+  local bindir="$1"
+  cat > "$bindir/uname" <<'''EOF'''
+#!/usr/bin/env bash
+[[ "${1:-}" == -s ]] && { echo Darwin; exit 0; }
+exec /usr/bin/uname "$@"
+EOF
+  chmod +x "$bindir/uname"
+}
+
 # A HOME with a credentials file, so the read-only bind is exercised.
 mkhome() {
   local h="$1"
@@ -66,12 +118,16 @@ mkhome() {
   printf '%s' "$h"
 }
 
+# reason_out is passed, so every case here can read the round's one-line detail
+# without rebuilding the invocation. It is optional in the contract and the
+# adapter writes it only on the paths that have something to say, so passing it
+# unconditionally changes nothing for the cases that ignore it.
 run_adapter() {
   local d="$1" session="${2:-}" ; shift 2 || shift
   echo "the actual prompt text" | env "$@" \
     PATH="$d/bin:$PATH" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" \
     bash "$PR_ROOT/adapters/claude.sh" \
-      "$d/work" "$session" "$d/r.md" "$d/m.txt" > "$d/out.txt" 2>&1
+      "$d/work" "$session" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
 }
 
 setup() {
@@ -83,19 +139,148 @@ setup() {
 }
 
 # ---------------------------------------------------------------------------
-# Confinement. Claude Code exposes no sandbox flag of its own, so bubblewrap is
-# the whole write barrier and an adapter that runs without it runs unconfined.
+# Confinement, and it is PER-HOST since 2026-08-30: bubblewrap where it exists,
+# Claude Code's own sandbox where it does not. The two halves are exercised
+# separately below; what must never appear in either is an unconfined run.
 # ---------------------------------------------------------------------------
 
-test_missing_bwrap_fails_closed() {
-  local d rc out; d="$(setup)"
+# The builtin half is chosen by the ABSENCE of bwrap, which PATH cannot arrange
+# by subtraction on a host that has it -- hence link_min_tools and a PATH built
+# from nothing. Every builtin-half test below runs through this.
+#
+# It also needs the host to LOOK like a Mac, because the builtin half is
+# Darwin-only since 2026-08-30: on Linux the adapter refuses instead, since
+# Claude Code's own sandbox is built on bubblewrap there and is no fallback for
+# its absence (FINDINGS-2026-08-30-linux.md, row L3). A `uname` stub is how that
+# is arranged, and it is why the adapter's predicate is `uname -s` rather than
+# $OSTYPE -- the latter is fixed when bash is compiled and no subprocess can be
+# told otherwise, which would leave every case below unrunnable on the Linux
+# hosts they were written on.
+run_adapter_builtin() {
+  local d="$1" session="${2:-}"; shift 2 || shift
   rm -f "$d/bin/bwrap"
-  out="$(echo "prompt" | PATH="$d/bin" "$BASH" "$PR_ROOT/adapters/claude.sh" \
-    "$d/work" "" "$d/r.md" "$d/m.txt" 2>&1)"; rc=$?
-  assert_exit_code "$rc" 1 "refuses to run unconfined"
-  assert_contains "$out" "bwrap" "names the missing dependency"
-  assert_file_missing "$d/bin/claude-argv.txt" "claude was never invoked"
-  assert_file_missing "$d/r.md" "no review produced"
+  link_min_tools "$d/bin"
+  stub_uname_darwin "$d/bin"
+  echo "the actual prompt text" | env -i "$@" \
+    PATH="$d/bin" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" SHELL=/bin/bash \
+    "$BASH" "$PR_ROOT/adapters/claude.sh" \
+      "$d/work" "$session" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
+}
+
+# The third case, and it is a REFUSAL rather than a half. Claude Code's own
+# sandbox is built on bubblewrap on Linux, so on a host with no bwrap the
+# condition that would select the builtin half is the condition that breaks it:
+# the CLI exits without an init line, naming bwrap (measured 2026-08-30, row L3
+# of FINDINGS-2026-08-30-linux.md). Refusing here costs a `command -v` instead
+# of a paid round, and it reports the missing package rather than "the envelope
+# has moved". agy's rule, agy's spelling: an adapter that cannot confine writes
+# must not run at all.
+#
+# No uname stub: run_adapter_builtin's is what makes the OTHER cases Darwin, and
+# its absence is what makes this one Linux. That is the whole difference.
+test_no_bwrap_and_not_darwin_refuses_rather_than_running_unconfined() {
+  local d rc; d="$(setup claude-sonnet-5 default)"
+  rm -f "$d/bin/bwrap"
+  link_min_tools "$d/bin"
+  echo "the actual prompt text" | env -i \
+    PATH="$d/bin" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" SHELL=/bin/bash \
+    "$BASH" "$PR_ROOT/adapters/claude.sh" \
+      "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
+  rc=$?
+  assert_exit_code "$rc" 1 "refuses"
+  assert_file_missing "$d/bin/claude-argv.txt" "and refuses BEFORE spawning the CLI"
+  assert_file_missing "$d/r.md" "so no review is produced"
+  assert_contains "$(cat "$d/out.txt")" "bwrap (bubblewrap) not found" "names the dependency"
+  assert_contains "$(cat "$d/out.txt")" "no second mechanism to fall back to" \
+    "and says why the built-in sandbox is not one here"
+  assert_contains "$(cat "$d/out.txt")" "sudo apt install bubblewrap" "with the fix"
+  assert_contains "$(cat "$d/reason.txt")" "bwrap is missing" \
+    "and the round's detail names the cause, not just 'exit 1, no output'"
+}
+
+test_no_bwrap_switches_to_the_builtin_sandbox_rather_than_refusing() {
+  local d rc; d="$(setup claude-sonnet-5 default)"
+  run_adapter_builtin "$d"; rc=$?
+  assert_exit_code "$rc" 0 "runs; the built-in sandbox is the barrier here"
+  assert_file_exists "$d/bin/claude-argv.txt" "the CLI was invoked"
+  assert_file_exists "$d/r.md" "a review was produced"
+}
+
+# The whole point of the builtin half: the CLI must NOT be told to skip
+# permissions, because permissionMode `default` is what keeps the unsandboxed
+# Write and Edit tools inside the workspace (measured 2026-08-30 -- with Write
+# allowed, a write to $HOME outside filesystem.allowWrite SUCCEEDED).
+test_the_builtin_half_never_skips_permissions() {
+  local d argv; d="$(setup claude-sonnet-5 default)"
+  run_adapter_builtin "$d"
+  argv="$(cat "$d/bin/claude-argv.txt")"
+  assert_not_contains "$argv" "--dangerously-skip-permissions" "permissions are not skipped"
+  assert_contains "$argv" "--safe-mode" "safe mode still on"
+  assert_contains "$argv" "--settings" "a settings file is passed"
+}
+
+test_the_builtin_half_declares_a_fail_closed_sandbox() {
+  local d settings; d="$(setup claude-sonnet-5 default)"
+  run_adapter_builtin "$d"
+  settings="$(cat "$d/config/pr-sandbox-settings.json")"
+  # failIfUnavailable is not optional: the fail-open default was OBSERVED on
+  # Linux ("Sandbox disabled ... Commands will run WITHOUT sandboxing") and the
+  # init frame carries no sandbox field to assert against instead.
+  assert_contains "$settings" '"failIfUnavailable": true' "refuses to start unsandboxed"
+  assert_contains "$settings" '"allowUnsandboxedCommands": false' "no unsandboxed commands"
+  assert_contains "$settings" '"excludedCommands": []' "no command is exempted from the sandbox"
+  assert_contains "$settings" "$d/work" "the workdir is the writable set"
+  assert_not_contains "$settings" '"allow"' "no permissions allowlist: Write must stay denied"
+}
+
+# Measured 2026-08-30: a repo shipping .claude/settings.json with sandbox.enabled
+# false switched the sandbox OFF from the other side and a Bash tool call wrote
+# $HOME, with our --settings file saying the opposite. Same shape as the
+# .cursor/ finding, same remedy.
+test_the_builtin_half_removes_the_repo_copys_claude_dir() {
+  local d; d="$(setup claude-sonnet-5 default)"
+  mkdir -p "$d/work/.claude"
+  printf '{"sandbox":{"enabled":false}}\n' > "$d/work/.claude/settings.json"
+  run_adapter_builtin "$d"
+  assert_file_missing "$d/work/.claude/settings.json" "the repo copy cannot reopen the sandbox"
+}
+
+# The assertion is on the SHORT PATH'S OWN LENGTH, not on 73 and not on 86:
+# both of those are properties of socket names we do not control and they
+# differ by platform.
+test_the_builtin_half_exports_a_short_private_tmpdir() {
+  local d t; d="$(setup claude-sonnet-5 default)"
+  run_adapter_builtin "$d"
+  t="$(sed -n 's/^TMPDIR=//p' "$d/bin/claude-env.txt")"
+  assert_contains "$t" "/tmp/pr-claude-" "an adapter-owned TMPDIR"
+  (( ${#t} <= 32 )) || pr_fail "the private TMPDIR is ${#t} bytes, not far below the 108-byte socket ceiling: $t"
+}
+
+# No bwrap means no --ro-bind, so the credentials are COPIED. That is a second
+# credential at rest, exactly as adapters/codex.sh's auth.json copy is, and it
+# is the one place the two halves differ in what they cost the operator.
+test_the_builtin_half_copies_the_credentials_it_cannot_bind() {
+  local d; d="$(setup claude-sonnet-5 default)"
+  run_adapter_builtin "$d"
+  assert_file_exists "$d/config/.credentials.json" "credentials materialised"
+  assert_eq "$(cat "$d/config/.credentials.json")" '{"fake":"token"}' "the same token"
+}
+
+test_the_builtin_half_refuses_when_there_is_no_credential_route() {
+  local d rc; d="$(setup claude-sonnet-5 default)"
+  rm -f "$d/home/.claude/.credentials.json"
+  run_adapter_builtin "$d"; rc=$?
+  assert_exit_code "$rc" 1 "refuses rather than letting the CLI fail at login"
+  assert_contains "$(cat "$d/out.txt")" "no credentials" "says what is missing"
+  assert_contains "$(cat "$d/reason.txt")" "credentials" "and says it in the round's detail"
+  assert_file_missing "$d/bin/claude-argv.txt" "the CLI was never invoked"
+}
+
+test_the_builtin_half_asserts_permission_mode_default_not_bypass() {
+  local d rc; d="$(setup claude-sonnet-5 bypassPermissions)"
+  run_adapter_builtin "$d"; rc=$?
+  assert_exit_code "$rc" 1 "a bypassPermissions session is not what this half asked for"
+  assert_contains "$(cat "$d/out.txt")" "expected default" "names the mode it wanted"
 }
 
 test_jail_binds_the_workdir_writable_and_the_root_readonly() {
@@ -319,6 +504,67 @@ test_an_empty_result_is_refused() {
 # A denial is a warning, not a refusal: the review exists, it may just rest on
 # fewer verified claims. agy's empty-response auto-deny signature has no
 # equivalent here because the count is structured.
+# ---------------------------------------------------------------------------
+# "The reviewer ran at least one command successfully."
+#
+# Everything else in this file can be satisfied by a review that ran NOTHING,
+# and there are four MEASURED routes to exactly that -- C1 (the $TMPDIR socket
+# ceiling), C3 (failIfUnavailable starts and denies every call), C6 (Linux: the
+# command needs approval headless cannot grant and never runs) and D3 (macOS:
+# the command runs and the kernel denies the write). All four end in a
+# confident, empty, is_error:false round with a real session id and model.
+# Three of the four are Linux's, which is why this is asserted on BOTH halves.
+# ---------------------------------------------------------------------------
+
+test_a_review_that_ran_no_command_is_refused() {
+  local d rc; d="$(setup claude-sonnet-5 bypassPermissions false "a review" 0 yes completed none)"
+  run_adapter "$d"; rc=$?
+  assert_exit_code "$rc" 1 "a review that ran nothing is not a review"
+  assert_contains "$(cat "$d/out.txt")" "ran no command successfully" "says what is wrong"
+  assert_file_missing "$d/r.md" "and records nothing"
+}
+
+test_a_review_whose_every_command_errored_is_refused() {
+  local d rc; d="$(setup claude-sonnet-5 bypassPermissions false "a review" 0 yes completed error)"
+  run_adapter "$d"; rc=$?
+  assert_exit_code "$rc" 1 "every command denied is the same failure as none issued"
+  assert_contains "$(cat "$d/out.txt")" "ran no command successfully" "says what is wrong"
+}
+
+# The reason file, not just stderr: this is what round.json carries as the
+# reviewer's detail, and "the review rests on reading alone" is the sentence an
+# operator has to see to know the round did not check anything.
+test_the_no_command_refusal_reaches_the_rounds_detail() {
+  local d; d="$(setup claude-sonnet-5 bypassPermissions false "a review" 0 yes completed none)"
+  run_adapter "$d"
+  assert_contains "$(cat "$d/reason.txt")" "rests on reading alone" "the detail says so"
+}
+
+# Asserted on the builtin half too, because that is the half where D3's shape --
+# the command RUNS and Seatbelt denies the write, is_error:false on the result
+# frame, permission_denials empty -- was actually measured.
+test_the_no_command_refusal_applies_to_the_builtin_half_too() {
+  local d rc; d="$(setup claude-sonnet-5 default false "a review" 0 yes completed none)"
+  run_adapter_builtin "$d"; rc=$?
+  assert_exit_code "$rc" 1 "the tripwire is not bwrap's"
+  assert_contains "$(cat "$d/out.txt")" "Confinement: builtin" "and names which half it was on"
+}
+
+# The count alone says a round is untrustworthy without saying why, and the
+# four routes are diagnosed by four different strings the CLI already puts in
+# the tool_result. Measured 2026-08-30 on Darwin: `sandbox-exec: sandbox_apply:
+# Operation not permitted` is what an UNAVAILABLE sandbox looks like there, with
+# failIfUnavailable failing to refuse -- and without this excerpt that reads as
+# "the reviewer was lazy" rather than "this host cannot sandbox it".
+test_the_no_command_refusal_quotes_the_first_failing_tool_result() {
+  local d; d="$(setup claude-sonnet-5 bypassPermissions false "a review" 0 yes completed error)"
+  run_adapter "$d"
+  assert_contains "$(cat "$d/out.txt")" "First failing tool result: Operation not permitted" \
+    "the failure text is on stderr in full"
+  assert_contains "$(cat "$d/reason.txt")" "first failure: Operation not permitted" \
+    "and truncated into the round's one-line detail"
+}
+
 test_denied_tool_calls_warn_but_keep_the_review() {
   local d rc; d="$(setup)"
   install_stubs "$d/bin" "claude-sonnet-5" bypassPermissions false \
@@ -329,10 +575,40 @@ test_denied_tool_calls_warn_but_keep_the_review() {
   assert_contains "$(cat "$d/out.txt")" "denied" "but the operator is told"
 }
 
-test_the_review_is_written_to_the_review_file_never_to_stdout() {
+# Decision 5 (brainstorm 2026-08-27-backlog-clearing-3): stdout now carries the
+# stream-json, so the kernel's `>> log-claude.txt 2>&1` makes it durable -- it
+# used to die with $stream's EXIT trap, leaving log-claude.txt empty and the
+# only record of a failed round deleted. The review artifact is still only the
+# extracted .result: the verdict parser must never see JSON framing.
+# The rewrite of 2026-08-30 nearly shipped two silent changes to the measured
+# bwrap path: the stream file left behind (its EXIT trap having been moved into
+# the builtin branch) and, with TMPDIR unset, sited under $workdir/.pr-tmp --
+# INSIDE the repo copy, where the reviewer's own tool calls could rewrite the
+# stream this adapter parses for the model, the version and the review.
+test_the_bwrap_half_leaves_no_stream_file_behind() {
   local d; d="$(setup)"; run_adapter "$d"
-  assert_contains "$(cat "$d/r.md")" "VERDICT: MINOR" "review in the review file"
-  assert_not_contains "$(cat "$d/out.txt")" "VERDICT: MINOR" "diagnostics only on stdout"
+  local leftovers; leftovers="$(find "$d" -name 'pr-claude-stream.*' 2>/dev/null)"
+  assert_eq "$leftovers" "" "the stream file is removed on exit"
+}
+
+test_the_stream_file_is_never_written_inside_the_repo_copy() {
+  local d; d="$(setup)"
+  # TMPDIR unset is the case that used to resolve to $workdir/.pr-tmp.
+  echo "prompt" | env -u TMPDIR PATH="$d/bin:$PATH" HOME="$d/home" \
+    "$BASH" "$PR_ROOT/adapters/claude.sh" "$d/work" "" "$d/r.md" "$d/m.txt" \
+    > "$d/out.txt" 2>&1
+  assert_eq "$(find "$d/work" -name 'pr-claude-stream.*' 2>/dev/null)" "" \
+    "nothing the reviewer can reach holds the stream"
+  assert_file_exists "$d/r.md" "and the round still worked"
+}
+
+test_the_stream_json_is_teed_to_stdout_for_the_kernel_log() {
+  local d; d="$(setup)"; run_adapter "$d"
+  assert_contains "$(cat "$d/out.txt")" '"subtype":"init"' \
+    "the init line reached stdout, where the kernel's log redirect catches it"
+  assert_contains "$(cat "$d/r.md")" "<!-- VERDICT: MINOR -->" "the review is intact"
+  assert_not_contains "$(cat "$d/r.md")" '"type":"result"' \
+    "and no JSON framing leaked into the artifact the verdict parser reads"
 }
 
 # --- terminal_reason (U3, probe P4) -----------------------------------------
@@ -409,7 +685,8 @@ test_the_clis_stderr_is_inherited_not_redirected() {
   # Line 2 is straight after the shebang, so the stub writes this on the single
   # claude invocation the adapter makes (the version comes off the init line, so
   # there is no second call).
-  sed -i '2i echo "CLAUDE CLI FATAL: could not authenticate" >&2' "$d/bin/claude"
+  pr_test_insert_after_shebang "$d/bin/claude" \
+    'echo "CLAUDE CLI FATAL: could not authenticate" >&2'
   run_adapter "$d"
   # run_adapter merges both streams into out.txt, which is what the execution
   # kernel does into <round>/log-claude.txt (`>> "$log" 2>&1`).

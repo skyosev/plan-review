@@ -27,7 +27,7 @@ usage: plan-review install [options]
   -h, --help         this text
 
 Nothing else is touched: no shell rc file is edited, and the skill is installed
-separately with `npx skills add <this checkout> -g -a <agent>`.
+separately with `plan-review skill`.
 USAGE
 }
 

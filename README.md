@@ -6,15 +6,24 @@ between three terminals.
 
 ## Requirements
 
-`bash` 5+, `git`, `jq`, `rsync`, GNU coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`,
-and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well: required if `agy` or `claude` is
-in the roster, and used by `agent` when it is there — see the `bwrap` note below and "Reviewer
-roster".
+`bash` 5+, `git`, `jq`, `rsync`, `ps`, `tee` (every `claude` review is piped through it), GNU
+coreutils (`sha256sum`, `timeout`, `readlink -f`), `flock`, and the reviewer CLIs on `PATH`. `bwrap` (bubblewrap) as well: required if `agy` is
+in the roster, preferred by `claude` and used by `agent` when either is there — see the `bwrap`
+note below and "Reviewer roster".
 
 The GNU part of "GNU coreutils" is now enforced rather than merely asked for: `plan-review
 doctor` **fails** on a `timeout` that is not GNU coreutils (busybox's, typically). The process
 cleanup after every reviewer relies on GNU `timeout` putting itself in its own process group,
 and under a `timeout` that does not, that cleanup silently does nothing.
+
+`ps` is enforced the same way and for the same cleanup, but by behaviour rather than by name:
+the doctor **runs** both forms that cleanup reads — `ps -eo pid=,ppid=` for the descendant
+table and `ps -o lstart= -p <pid>` for the identity check — and **fails** on either. That is a
+machine-level requirement a host could previously pass without meeting, so a `ps` that is
+busybox's (it rejects `-eo`) is now red where it used to be green. The two degrades are not
+the same: no `-eo` loses the descendant table outright, while a `ps` that answers the table
+but no `lstart` skips every remembered process — safe, but group-only cleanup under a doctor
+that would otherwise have said nothing.
 
 5 is what `make doctor` enforces and it is a support statement rather than a measured
 requirement: nothing here uses a construct newer than `bash` 4 (`${x^^}`, `mapfile`,
@@ -56,18 +65,35 @@ The second line is not optional: coreutils installs as `gtimeout`, `gsha256sum` 
 runner calls the unprefixed names. `flock` is its own formula — `util-linux` is keg-only, and
 installing it does not put `flock` on `PATH`.
 
-`bwrap` is not optional if `agy` or `claude` is in the roster: it is those reviewers' only write
-barrier, and both adapters refuse to run without it. `agent` uses one too, but only as a pid fence
-and never as a requirement — it runs unwrapped when the jail does not work, so the doctor reports
-that case as a warning rather than failing the machine. A project config naming none of the three —
-`"reviewers": ["codex"]` — needs no `bwrap` at all, and the doctor skips the check entirely.
+`bwrap` is not optional if `agy` is in the roster: it is that reviewer's only write barrier and
+its adapter refuses to run without it. Two others use one without requiring it. `agent` takes it
+as a pid fence and runs unwrapped when the jail does not work, so the doctor reports that case as
+a warning rather than failing the machine. `claude` **prefers** it and **switches mechanism**
+where it is absent — bubblewrap on a host that has it, Claude Code's own sandbox on a host that
+does not — which is what put `claude` on the macOS roster on 2026-08-30. Neither half runs
+unconfined: the second is fail-closed through a settings file carrying `failIfUnavailable: true`,
+and `plan-review doctor` says which half your host will take. A project config naming none of the
+three — `"reviewers": ["codex"]` — needs no `bwrap` at all, and the doctor skips the check
+entirely.
 
-`bwrap` is Linux-only, and no macOS equivalent is wired up yet, so on macOS the roster is
-`codex` and `agent` — of which only `codex` confines itself. Cursor's write barrier was
-measured gone at `2026.08.25-3e8eec8` (see *What the sandbox is and is not* below), and with
-no `bwrap` it has no pid fence there either, so a macOS roster today is one self-confining
-reviewer and one confining nothing. All four CLIs still work there as
-orchestrators and as skill targets; only reviewing is affected.
+`bwrap` is Linux-only, so on macOS the roster is `codex`, `agent` and `claude` — all three of
+which confine their own writes, Cursor's barrier having been re-measured working at
+`2026.08.25-3e8eec8` once the adapter stopped reading the operator's `~/.cursor`, and Claude
+Code's measured denying a `$HOME` write through the shipped adapter on 2026-08-30 (see *What the
+sandbox is and is not* below). `agy` is the one reviewer that cannot review on a Mac as the code
+stands. That is a **choice with a measured price**, not a platform limit:
+`docs/process/probes/2026-08-30-claude-macos-row9-agy` ran `agy` on macOS behind a `sandbox-exec`
+write barrier that held — including against a detached grandchild — and found the real cost to be
+a single directory. `agy`'s Linux jail mounts a private state directory over `~/.gemini`, macOS
+has no bind mount to do that with, and `HOME` relocation was measured failing to authenticate even
+with the whole directory copied. So a macOS `agy` would run with the operator's own `~/.gemini`
+writable, which its workspace hooks make a persistence channel out of the sandbox. Nobody has
+decided to pay that; the probe exists so the decision can be taken on evidence.
+
+Two things macOS loses for every reviewer. The pid fence: with no `bwrap` there, the runner's
+best-effort descendant sweep is the only bound on a
+reviewer's process tree. All four CLIs still work there as orchestrators and as skill
+targets; only reviewing is affected.
 
 **What has actually been run on macOS** is one manual pass, on 2026-08-20, on Darwin 25 with the
 packages above: `plan-review doctor`, and one real round in which `codex` and `agent` each
@@ -211,13 +237,13 @@ The skill is separate, because removing it is **global and by name** — it take
 `plan-review` skill is registered, whether this installer put it there or you did. Run it only if
 you let the installer install one, which the installer's own last line tells you:
 
-    npx skills remove -g plan-review
+    npx skills@1.5.18 remove -g plan-review
 
 **By hand instead**, if you want the checkout in your own source tree:
 
     git clone <this repo> ~/code/plan-review
     ~/code/plan-review/bin/plan-review install      # links ~/.local/bin/plan-review
-    npx skills add ~/code/plan-review -g -a claude-code -a codex
+    ~/code/plan-review/bin/plan-review skill        # installs the skill, then verifies it
 
 `install` makes one symlink and then runs `plan-review version` through that link to prove it works.
 `--bin-dir <dir>` puts it elsewhere. It refuses any destination that is already occupied rather than
@@ -228,17 +254,37 @@ checkout and the command breaks. Repair is `rm` on the stale link, then `install
 location. Installing is a convenience in any case — `~/code/plan-review/bin/plan-review doctor`
 works without it.
 
-Name whichever harnesses you use in `skills add`. What it installs is a snapshot taken at that
-moment, and nothing here reports an installed skill's revision, so run `npx skills update` when you
-update the checkout.
+`skill` is the same step the bootstrap runs, and the bootstrap now calls this rather than
+re-deriving it. It detects the harnesses on PATH itself (`claude`, `codex`, `agent`, `agy`), asks
+the `agent` on PATH whether it really is the Cursor CLI before claiming a Cursor install, then does
+**one** `skills add` for all of them and verifies the links with `skills ls -g --json`. Its exit
+status is the contract:
 
-On macOS, `agy` and `claude` cannot review yet (see Requirements), and `plan-review init` treats a
+| status | meaning |
+| --- | --- |
+| `0` | installed (or already present) and verified for every detected harness |
+| `1` | the install ran and failed, or the links could not be verified |
+| `2` | refused before doing anything: `npx`/`node` or `jq` missing, or no harness found |
+
+Under the bootstrap that status is a warning, never a failure — the bootstrap's promise is the
+runner. Run `plan-review skill` directly and it is fatal, which is what makes it usable in a script.
+Every failure prints the exact `npx` command to run by hand.
+
+What it installs is a snapshot taken at that moment, and nothing here reports an installed skill's
+revision, so run `npx skills@1.5.18 update` when you update the checkout, or `plan-review skill`
+again. The pin is the same one `plan-review skill` passes and it is deliberate everywhere: an
+unpinned `npx` floats to whatever the registry serves that day and no doctor check watches it.
+
+On macOS, `agy` cannot review (see Requirements), and `plan-review init` treats a
 reviewer that cannot review as a refusal rather than a silent omission. So name the roster — and
 pin Cursor, which refuses to run without a model because it reports none, so `round.json` could
 not otherwise say what reviewed the plan (`agent --list-models`, or export `PR_AGENT_MODEL`):
 
     PR_ORCHESTRATOR=claude plan-review init --repo <dir> \
-        --reviewers codex,agent --pin agent=<model-id>
+        --reviewers codex,agent,claude --pin agent=<model-id>
+
+Drop `claude` from that list when the orchestrating session is itself Claude Code: putting it in
+the roster is then self-review, which is why it is absent from the derived default.
 
 ## Use
 
@@ -572,14 +618,32 @@ file and locks that, and both run at once.
 
 ## What the sandbox is and is not
 
-An accidental-dirtiness barrier, not a security boundary. Three of the four reviewers are
-write-confined, each by a different thing, and one currently is not:
+An accidental-dirtiness barrier, not a security boundary. All four reviewers are
+write-confined, each by a different thing:
 
-- **Cursor is not write-confined at `2026.08.25-3e8eec8`.** Its `--sandbox enabled` is
-  meant to be its barrier; re-measured 2026-08-27, a tool-call write to `/tmp` and to
-  `$HOME` both succeeded, wrapped and unwrapped alike. Treat it as unconfined for writes at
-  that version until a probe says otherwise — `adapters/agent.sh`'s bubblewrap is a pid
-  fence, and deliberately not a write barrier.
+- **Cursor** confines itself, via its own sandbox — but only once the adapter takes over
+  *whose configuration it reads*. `--sandbox enabled` is inert under
+  `approvalMode: "unrestricted"` in `~/.cursor/cli-config.json`, the Run Everything mode
+  whose own documentation says "Sandbox: No": measured 2026-08-28 at
+  `2026.08.25-3e8eec8`, the tool call then runs with `CURSOR_SANDBOX` unset and a write to
+  `$HOME` lands on the host. That, and not a vendor regression, is what the 2026-08-27
+  probe found. `adapters/agent.sh` therefore runs with a private `CURSOR_CONFIG_DIR`
+  beside the repo copy and pins the approval mode in it, and it deletes the target repo's
+  `.cursor/` before invoking the CLI: a repo-supplied `sandbox.json` granting
+  `additionalReadwritePaths` to the operator's `$HOME`, and a repo-supplied `cli.json`
+  allowlisting a shell command, were each measured putting the canary on the host — the
+  first by widening the jail, the second by switching it off. With both closed the `$HOME`
+  canary is denied and the sandbox reports itself `native`/`fully_enforced`. `/tmp` stays
+  writable, which is the sandbox's documented default. The bubblewrap remains a pid fence
+  and is deliberately not the write barrier.
+
+  **Whether a plan that was mid-loop when this landed loses a round is unknown** — unlike
+  codex below, where it is measured and certain. The obvious check said no: an id minted
+  under the operator's `~/.cursor` resumed under an empty private directory and answered
+  normally. Then the control said that proves nothing — `--resume` with a UUID that was
+  never a chat id answers just as normally, so its exit status distinguishes nothing
+  (measured 2026-08-28). If `agent` fails on the first round after this lands, `--fresh`
+  is worth one try; it is not known to be needed and not known to be useless.
 - **codex** confines itself, via its own OS sandbox. Writes land inside the disposable
   copy; writes outside it are denied.
 
@@ -635,31 +699,89 @@ write-confined, each by a different thing, and one currently is not:
   authenticate — measured on 2026-08-27 by binding candidates one at a time from an
   empty private directory. What is lost is agy history from *other* sessions, which
   nothing here relied on: resume is per-session and the session map carries the handles.
-- **claude** has no sandbox flag to ask for at all, so `adapters/claude.sh` uses the same
-  bubblewrap jail and fails closed the same way. Two additions specific to it. It runs with
-  `--safe-mode`, because without it the *target repo's* `.claude/settings.json` hooks
-  execute inside the jail on every tool call — measured in both directions, with a control
-  run that let the hook fire. And it rebuilds the environment from a whitelist instead of
-  inheriting it: a Claude Code session exports a messaging socket and token addressing the
-  orchestrator, which is a channel out of the jail that no mount flag closes.
+- **claude** is confined **two different ways, chosen per host**, and the choice is made once
+  in `adapters/claude.sh`. `plan-review doctor` prints which half your machine takes.
 
-  Its sessions live in a private `CLAUDE_CONFIG_DIR` beside the repo copy, not in
-  `~/.claude`. That directory survives the per-round wipe, and it keeps the operator's own
-  `settings.json` — whose hooks run in *their* interactive sessions — out of a reviewer's
-  reach. The OAuth credentials file is bind-mounted in read-only; it is never read or copied.
+  On a host **with** `bwrap`, nothing has changed: the same bubblewrap jail as `agy`, the CLI
+  run with `--dangerously-skip-permissions` inside it, and the init line asserted to report
+  `bypassPermissions`. The OAuth credentials file is bind-mounted read-only and is never read
+  or copied. This is the path the acceptance matrix pins, and it was re-verified live on
+  2026-08-30 at `claude 2.1.251`.
 
-`agy` additionally runs with `--dangerously-skip-permissions`, because headless tool
-calls are auto-denied otherwise and a reviewer that cannot run commands cannot check
-the plan's claims. The jail is what makes that acceptable.
+  On **macOS**, which has no `bwrap` and never will, Claude Code's own sandbox is the barrier,
+  declared in a settings file the adapter writes with `failIfUnavailable: true` and
+  `allowUnsandboxedCommands: false`, and the CLI runs **without**
+  `--dangerously-skip-permissions` at `permissionMode: default`. A Bash tool call's writes to
+  `$HOME` and to an absolute path outside the workspace were both measured refused through the
+  shipped adapter, while the write inside the workspace succeeded.
+
+  **On Linux, a missing `bwrap` is a refusal, not a fallback**, exactly as it is for `agy`.
+  Install bubblewrap — `sudo apt install bubblewrap` on Debian/Ubuntu — and the reviewer works.
+  The reason is worth one sentence, because it surprises people: *Claude Code's own sandbox is
+  built on bubblewrap on Linux*, so it is not an alternative to that binary and cannot stand in
+  for it. Without it the CLI refuses to start and the round buys nothing, so the adapter stops
+  first and the doctor FAILs the host rather than reporting a second mechanism it does not have.
+  Installing `socat` does not help: it is the other binary of the same pair.
+
+  **`permissionMode: default` is load-bearing on that half, not incidental.** The built-in
+  sandbox confines the commands the Bash tool spawns and **not the CLI's own process**: with
+  `Write` added to a permissions allowlist, the Write tool wrote to `$HOME`, outside the
+  declared writable set, and the file landed on the host. Denying Write and Edit outright is
+  what keeps those writes inside the workspace. The reviewer keeps its write capability through
+  Bash, which the sandbox does contain — at the cost of one `permission_denials` entry, and a
+  `detail` line in `round.json`, whenever a reviewer reaches for Write.
+
+  That half also **deletes the repo copy's `.claude/`**, because the repository under review
+  reopens the sandbox from the other side and `--settings` does not outrank it: a
+  `.claude/settings.json` carrying `sandbox.enabled: false` let a Bash tool call write `$HOME`
+  with our own settings file saying the opposite. Same shape as `.cursor/`'s two surfaces, same
+  remedy. Under `bwrap` the jail contains the writes regardless, so that half leaves the
+  directory alone.
+
+  Two things are common to both halves. It runs with `--safe-mode`, because without it the
+  target repo's `.claude/settings.json` **hooks** execute on every tool call — measured in both
+  directions, with a control run that let the hook fire; that is a different surface from the
+  sandbox keys above, which `--safe-mode` did *not* stop. And it rebuilds the environment from a
+  whitelist instead of inheriting it: a Claude Code session exports a messaging socket and token
+  addressing the orchestrator, a channel out of any jail that no mount flag closes — so the
+  scrub was never bwrap's work and is not relaxed where bwrap is absent.
+
+  Its sessions live in a private `CLAUDE_CONFIG_DIR` beside the repo copy, not in `~/.claude`.
+  That directory survives the per-round wipe, and it keeps the operator's own `settings.json` —
+  whose hooks run in *their* interactive sessions — out of a reviewer's reach. On the builtin
+  half the credentials are **copied** into it rather than bound, there being no bwrap to bind
+  with, and on macOS they are read out of the **login Keychain** under a 5-second timeout,
+  because `~/.claude/.credentials.json` does not exist there. **Keep the login keychain
+  unlocked:** a locked one *blocks* that read rather than failing it, which without the timeout
+  would be charged to `PR_TIMEOUT_SECS` and reported as a reviewer that timed out. Also worth
+  knowing what the copy holds: the Keychain item carries `organizationUuid` and a live OAuth
+  access token per authenticated MCP server, not only the login pair.
+
+  **Every reviewer must be shown to have run something.** There are four measured ways to get a
+  confident, empty, `status: ok` round out of `claude` — a `$TMPDIR` path over the unix-socket
+  ceiling, a sandbox that starts and denies every call, a command needing an approval a headless
+  run cannot grant, and a command that runs while the kernel denies its write. So the adapter
+  asserts, on **both** halves, that at least one Bash tool call succeeded, and fails the reviewer
+  otherwise with the first failing tool result quoted into `round.json`'s `detail`. A review that
+  genuinely needed no command fails too; that is the intended direction.
+
+`agy` runs with `--dangerously-skip-permissions`, because headless tool calls are
+auto-denied otherwise and a reviewer that cannot run commands cannot check the plan's claims.
+The jail is what makes that acceptable — which is exactly why `claude` drops the flag on the
+half that has no jail, and why the two flags and the two barriers must always be read as a pair.
 
 **Process containment is a separate axis from writes.** A reviewer that spawns a
 background process can leave it running after the round has returned, still holding the
-round's session lock. On Linux every reviewer is now contained by a pid namespace:
+round's session lock. On Linux every reviewer is contained by a pid namespace:
 `agy`, `claude` and `agent` pass `bwrap --unshare-pid`, and codex uses its own
-`--as-pid-1`. `--die-with-parent` alone was not enough — measured 2026-08-27, a detached
+`--as-pid-1`. On macOS none of them is, and the descendant sweep is the whole bound —
+measured doing the work there for the first time on 2026-08-30, against Claude Code's
+Bash-tool wrapper, which takes its own process group and so is out of the group kill's reach. `--die-with-parent` alone was not enough — measured 2026-08-27, a detached
 `setsid sleep` survived the jail's exit without `--unshare-pid` and was gone with it. For
 `agent` the bubblewrap is *only* a pid fence: `/` is bound read-write, the write barrier
-stays Cursor's own, and where the jail does not work — macOS has no `bwrap` at all, and
+stays Cursor's own (and the two coexist: run through the adapter, the `$HOME` canary is
+still denied and Cursor still reports its sandbox `native`),
+and where the jail does not work — macOS has no `bwrap` at all, and
 some Linux hosts have it installed with user namespaces denied — the adapter runs
 unwrapped rather than refusing, because refusing would remove the reviewer for a barrier
 it never supplied. It decides by trying the flags once, not by looking for the binary,
@@ -670,6 +792,12 @@ descendant sweep is the only bound.
 Reads are unconfined for every reviewer. Codex has open network access; Cursor's is
 default-deny with a host allowlist; agy's is open. Point this only at repos you already
 trust these CLIs with.
+
+A reviewer's private state directory is also what keeps the *operator's* own configuration
+out of its reach — `~/.claude`, `~/.gemini`, `~/.codex` and now `~/.cursor`, each of which
+defines hooks, rules or skills that run in the operator's later interactive sessions.
+Cursor's is the cheapest of the four: an empty `CURSOR_CONFIG_DIR` is still authenticated,
+so nothing is copied or bound in.
 
 ## Tests
 

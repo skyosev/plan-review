@@ -110,6 +110,128 @@ test_doctor_passes_gnu_timeout() {
   assert_contains "$out" "counts 1 0 0" "GNU coreutils timeout passes, cleanly"
 }
 
+# BACKLOG 2026-08-27: with no timeout at all, check_utils already fails for the
+# right reason; a second failure here prints "not GNU coreutils" with an empty
+# got: line and sends the operator hunting the wrong problem.
+test_the_gnu_timeout_check_skips_when_timeout_is_absent_entirely() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  out="$(doctor_run "$d/bin" 'pr_doctor_check_gnu_timeout')"
+  assert_contains "$out" "SKIP" "skipped, not failed a second time"
+  assert_contains "$out" "core-utilities" "points at the check that owns the diagnosis"
+  assert_not_contains "$out" "not GNU coreutils" "no misdiagnosis"
+  assert_contains "$out" "counts 0 0 0" "and no counter moved"
+}
+
+# The kernel ships exactly two ps invocations (lib/adapter-exec.sh): the
+# descendant table and the lstart identity read. busybox ps passes `command -v`
+# and rejects -eo; a ps that answers the table but not lstart silently degrades
+# the identity check instead -- never an unsafe kill, but a green doctor
+# claiming a sweep the host cannot deliver.
+test_the_ps_probe_passes_on_a_real_ps() {
+  local out
+  out="$(doctor_run "$PATH" 'pr_doctor_check_ps_forms')"
+  assert_contains "$out" "ps answers both sweep forms" "both invocations probed live"
+  assert_contains "$out" "counts 1 0 0" "one pass, nothing else"
+}
+
+test_a_ps_that_rejects_eo_fails_the_probe() {
+  local d out; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/ps" 'echo "ps: invalid option -- eo" >&2; exit 1'
+  out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_ps_forms')"
+  assert_contains "$out" "did not return this process" "the table form failed"
+  assert_contains "$out" "group-only" "and the consequence is named"
+  assert_contains "$out" "counts 0 0 1" "a FAIL, not a warning"
+}
+
+test_a_ps_without_lstart_fails_the_probe() {
+  local d out real_ps; d="$(pr_test_tmpdir)"; real_ps="$(command -v ps)"
+  # The table form works (delegated to the real ps), the identity form answers
+  # nothing -- the half-broken shape that silently degrades the sweep.
+  pr_test_mkstub "$d/bin/ps" "[[ \"\$1\" == -eo ]] && exec '$real_ps' \"\$@\"
+exit 0"
+  out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_ps_forms')"
+  assert_contains "$out" "no start time" "the identity form failed"
+  assert_contains "$out" "counts 0 0 1" "a FAIL, not a warning"
+}
+
+test_the_ps_probe_skips_when_ps_is_absent_entirely() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  out="$(doctor_run "$d/bin" 'pr_doctor_check_ps_forms')"
+  assert_contains "$out" "SKIP" "check_utils already owns the absence diagnosis"
+  assert_contains "$out" "counts 0 0 0" "and no counter moved"
+}
+
+# --- which half of adapters/claude.sh's confinement branch a host takes -----
+#
+# Two mechanisms in one adapter can drift, and this check is one of the two
+# bounds on that (the other is the single $confinement variable the adapter
+# assembles at the top). It uses the adapter's predicate verbatim --
+# `command -v bwrap` -- so the cases below are just that predicate's two answers
+# plus each half's prerequisites. $OSTYPE is overridden where the case is about
+# a platform this suite may not be running on.
+
+test_claude_confinement_names_bubblewrap_when_bwrap_is_there() {
+  local d out; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/bwrap"
+  out="$(doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "confinement: bubblewrap" "names the half"
+  assert_contains "$out" "bypassPermissions" "and the mode that half asserts"
+  assert_contains "$out" "counts 1 0 0" "a pass, and it does not re-probe the jail"
+}
+
+test_claude_confinement_names_the_builtin_sandbox_when_bwrap_is_absent() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin/.claude"
+  # Darwin: the only platform that HAS a second half. A credentials file rather
+  # than the Keychain, so the one variable left is the absence of bwrap.
+  mkdir -p "$d/home/.claude"; : > "$d/home/.claude/.credentials.json"
+  out="$(HOME="$d/home" OSTYPE=darwin24 doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "built-in sandbox" "names the other half"
+  assert_contains "$out" "permissionMode 'default'" "and the mode THAT half asserts"
+  assert_contains "$out" "counts 2 0 0" "credentials and confinement, both clean"
+}
+
+# The two prerequisites fail in different places, so they are reported
+# separately -- an operator with neither should be told about both.
+test_claude_confinement_fails_with_no_credential_route() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  out="$(HOME="$d/nohome" OSTYPE=darwin24 doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "no credentials this host can materialise" "names what is missing"
+  assert_contains "$out" "claude auth login" "and how to fix it"
+  assert_contains "$out" "counts 1 0 1" "the sandbox half still passes; only credentials failed"
+}
+
+# On macOS there is no ~/.claude/.credentials.json at all: the OAuth item lives
+# in the login Keychain, and security(1) is the route. The check does NOT read
+# it -- a locked keychain BLOCKS the read rather than failing it (D5), which
+# would hang the doctor exactly as it would hang the adapter.
+test_claude_confinement_accepts_the_keychain_as_the_credential_route() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  mkpresent "$d/bin/security"
+  out="$(HOME="$d/nohome" OSTYPE=darwin24 doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "login Keychain item" "names the route"
+  assert_contains "$out" "KEEP THE LOGIN KEYCHAIN UNLOCKED" "and the trap that costs a round"
+  assert_contains "$out" "none needed" "Seatbelt needs no socat"
+  assert_contains "$out" "counts 2 0 0" "clean on a Mac with no bwrap and no socat"
+}
+
+# A non-Darwin host with no bwrap has NO confinement mechanism: Claude Code's
+# own sandbox is built on bubblewrap there, so it is not a fallback for the
+# binary's absence (measured 2026-08-30 on Linux -- the CLI refused to start,
+# naming bwrap). adapters/claude.sh refuses on that host, and this must say so
+# rather than PASS in front of a reviewer that cannot run. The check that stood
+# here asserted socat, which is the SECOND half of the same dependency pair: it
+# passed exactly the host this now fails.
+test_claude_confinement_fails_on_linux_without_bwrap() {
+  local d out; d="$(pr_test_tmpdir)"; mkdir -p "$d/home/.claude"
+  : > "$d/home/.claude/.credentials.json"
+  mkpresent "$d/bin/socat"      # present, and it does not rescue the host
+  out="$(HOME="$d/home" OSTYPE=linux-gnu doctor_run "$d/bin" 'pr_doctor_check_claude_confinement')"
+  assert_contains "$out" "no bwrap, and no second mechanism" "names the state"
+  assert_contains "$out" "sudo apt install bubblewrap" "and the one way out"
+  assert_contains "$out" "macOS half only" "says which platform the other half is for"
+  assert_contains "$out" "counts 0 0 1" "one failure, and no credential PASS to soften it"
+}
+
 test_absent_reviewer_cli_points_at_the_roster_escape_hatch() {
   local d; d="$(pr_test_tmpdir)"
   mkdir -p "$d/bin"
@@ -1012,14 +1134,43 @@ test_preflight_refuses_a_claude_roster_without_the_cli() {
   assert_contains "$out" "rc=1" "a refusal"
 }
 
-# claude has no sandbox flag of its own, so it needs the jail exactly as agy does.
-test_preflight_probes_the_jail_for_claude_too() {
+# claude stopped needing the jail on 2026-08-30: with no bwrap it switches to
+# Claude Code's own sandbox rather than refusing, so it is no longer in
+# $jail_for and a missing bwrap alone is not a refusal.
+test_preflight_does_not_demand_the_jail_for_claude_any_more() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/claude"
+  # A credential route, so the ONE thing this half does still require is met and
+  # cannot be what any refusal below is about.
+  mkpresent "$d/bin/security"
+  local out
+  out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  assert_not_contains "$out" "refuse to run without it" "no bwrap is not a refusal for claude"
+  assert_contains "$out" "rc=0" "the round may start"
+}
+
+# What it DOES require on that half is a credential route -- there is no bwrap
+# to --ro-bind ~/.claude/.credentials.json with, and on macOS that file does not
+# exist at all. Checked, never exercised: reading the Keychain here would hang
+# preflight on a locked one exactly as it would hang the adapter (D5).
+test_preflight_refuses_claude_with_no_credential_route() {
   local d; d="$(pr_test_tmpdir)"
   mkpresent "$d/bin/claude"
   local out
-  out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  out="$(HOME="$d/nohome" preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  assert_contains "$out" "no credentials this host can materialise" "names what is missing"
+  assert_contains "$out" "claude auth login" "and how to fix it"
+  assert_contains "$out" "rc=1" "a refusal"
+}
+
+# agy is the last reviewer that REQUIRES bubblewrap, and its refusal is intact.
+test_preflight_still_demands_the_jail_for_agy() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/agy"
+  local out
+  out="$(PR_AGY_MODEL=m preflight_run "$d/bin" '' "agy=$PR_ROOT/adapters/agy.sh")"
   assert_contains "$out" "refuse to run without it" "fails closed without bwrap"
-  assert_contains "$out" "claude" "names which reviewer needs it"
+  assert_contains "$out" "agy" "names which reviewer needs it"
   assert_contains "$out" "rc=1" "a refusal"
 }
 
@@ -1031,6 +1182,37 @@ test_preflight_probes_the_jail_for_claude_too() {
 # check that depends on this machine.
 
 DOCTOR="$PR_ROOT/bin/plan-review"
+
+# THE RULE for every case below: a `plan-review doctor` driven on the real PATH
+# stubs every reviewer CLI, on a $bindir prefixed onto it. Nothing in this suite
+# may invoke a real one.
+#
+# Which check spawns them is the part worth naming, because it is not the one it
+# looks like. pr_doctor_check_cli is `command -v` and spawns nothing. The
+# executor is pr_doctor_check_versions, which iterates docs/verified-versions.txt
+# and is ROSTER-INDEPENDENT -- so a case whose config names only codex still read
+# four real versions off this host, whatever its roster said. Measured with
+# recording wrappers 2026-08-28: 20 real `--version` spawns across this file
+# (6 claude, 5 agy, 5 agent, 4 codex) after the roster-shaped stubs alone.
+# `agent` is the second executor, via pr_doctor_check_agent_identity, and the
+# only one that was ever expensive (~1.5s, live account state).
+#
+# Not a fixture in PR_DOCTOR_VERSIONS_FILE: pointing that at an empty file would
+# silence the spawns by removing the drift check these cases run THROUGH, which
+# changes what they exercise. Stubbing the CLIs leaves every check intact and
+# only replaces what answers.
+#
+# codex and agy self-update, so their `--version` is not even a hermetic read.
+stub_all_reviewer_clis() {
+  local b="$1"
+  pr_test_mkstub "$b/codex"  'echo "codex-cli 0.0.0-stub"'
+  pr_test_mkstub "$b/agy"    'echo "1.0.0-stub"'
+  pr_test_mkstub "$b/claude" 'echo "0.0.0-stub (Claude Code)"'
+  # agent answers two questions: the identity probe parses .cliVersion, and the
+  # drift check reads the first digit-leading token of --version.
+  pr_test_mkstub "$b/agent" '[[ "$1 $2" == "about --format" ]] && { echo "{\"cliVersion\":\"stub\"}"; exit 0; }
+echo "2026.01.01-stub"'
+}
 
 mkrepo_with_config() {  # mkrepo_with_config <dir> <config-json>
   local d="$1"
@@ -1049,7 +1231,9 @@ mkrepo_with_config() {  # mkrepo_with_config <dir> <config-json>
 test_a_codex_only_roster_does_not_check_the_bubblewrap_jail() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
-  out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
+  stub_all_reviewer_clis "$d/bin"
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
+         bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "no reviewer here needs the bubblewrap jail" "skipped, and said so"
   assert_not_contains "$out" "bwrap jail contains" "the probe did not run"
 }
@@ -1059,12 +1243,7 @@ test_a_codex_only_roster_does_not_check_the_bubblewrap_jail() {
 test_an_agent_roster_checks_the_pid_fence_instead_of_skipping() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex", "agent"]}'
-  # `agent` is stubbed even though this case runs on the real PATH: the roster
-  # makes the doctor run pr_doctor_check_agent_identity, and that invokes the
-  # real Cursor CLI. Nothing in this suite may call a real CLI.
-  pr_test_mkstub "$d/bin/agent" \
-    '[[ "$1 $2" == "about --format" ]] && { echo "{\"cliVersion\":\"stub\"}"; exit 0; }
-exit 1'
+  stub_all_reviewer_clis "$d/bin"
   out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
          bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_not_contains "$out" "no reviewer here needs the bubblewrap jail" \
@@ -1075,7 +1254,9 @@ exit 1'
 test_an_agy_roster_does_check_the_bubblewrap_jail() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["agy"]}'
-  out="$(PR_ORCHESTRATOR=claude bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
+  stub_all_reviewer_clis "$d/bin"
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=claude \
+         bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "bwrap" "agy has no other write barrier"
 }
 
@@ -1084,7 +1265,11 @@ test_an_agy_roster_does_check_the_bubblewrap_jail() {
 test_a_fake_adapter_under_a_real_name_demands_no_vendor_login() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
-  out="$(PR_ORCHESTRATOR=none PR_ADAPTER_MAP="agy=/tmp/fake-ok.sh" \
+  # $shipped is empty here, so no pr_doctor_check_cli runs at all -- and the
+  # drift check spawns four CLIs anyway. That gap is why the rule above names
+  # pr_doctor_check_versions rather than the roster.
+  stub_all_reviewer_clis "$d/bin"
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none PR_ADAPTER_MAP="agy=/tmp/fake-ok.sh" \
          bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
   assert_contains "$out" "does not ship" "named as unknown to this repo"
   assert_contains "$out" "no reviewer here needs the bubblewrap jail" "and carries no requirement"
@@ -1110,10 +1295,18 @@ test_a_preset_without_a_repo_is_a_usage_error() {
 # A doctor report is usually read somewhere other than the machine that produced
 # it, so it has to say which runner produced it.
 test_the_header_names_the_runner_s_revision() {
-  local out version
+  local d out version; d="$(pr_test_tmpdir)"
   source "$PR_ROOT/lib/version.sh"
   version="$(pr_version "$PR_ROOT")"
-  out="$(PR_ORCHESTRATOR=none bash "$DOCTOR" doctor --offline 2>&1)"
+  # No config, so PR_ORCHESTRATOR=none derives the roster as every shipped
+  # adapter -- which makes this the one case in the file that reaches
+  # pr_doctor_check_agent_identity and runs the real `agent about --format
+  # json`. Measured 2026-08-28 with a recording wrapper: ~1.5s and live account
+  # state, in a suite whose stated property is that it is offline. The
+  # mkrepo_with_config grep that found the roster cases above cannot see this
+  # one, because a roster nobody wrote down is still a roster.
+  stub_all_reviewer_clis "$d/bin"
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none bash "$DOCTOR" doctor --offline 2>&1)"
   assert_contains "$out" "$version" "the header carries the same string as \`plan-review version\`"
 }
 
@@ -1227,7 +1420,8 @@ mk_smoke_probe() {
 test_doctor_smoke_is_opt_in() {
   local d out; d="$(pr_test_tmpdir)"
   mk_smoke_probe "$d/probe.sh"
-  out="$(PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
+  stub_all_reviewer_clis "$d/bin"
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
          PR_CACHE_ROOT="$d/cache" PR_TEST_SMOKE_MARKER="$d/marker" \
          bash "$DOCTOR" doctor --offline 2>&1)"
   assert_not_contains "$out" "Smoke" "no smoke section without --smoke"
@@ -1241,7 +1435,8 @@ test_doctor_smoke_is_opt_in() {
 test_doctor_smoke_invokes_the_roster_end_to_end() {
   local d out rc; d="$(pr_test_tmpdir)"
   mk_smoke_probe "$d/probe.sh"
-  out="$(PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
+  stub_all_reviewer_clis "$d/bin"
+  out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none PR_ADAPTER_MAP="codex=$d/probe.sh" \
          PR_CACHE_ROOT="$d/cache" PR_TEST_SMOKE_MARKER="$d/marker" \
          PR_AGENT_MODEL= PR_AGY_MODEL= \
          bash "$DOCTOR" doctor --smoke 2>&1)"; rc=$?

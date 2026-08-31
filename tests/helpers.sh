@@ -42,6 +42,24 @@ pr_test_requires() {
   return 1
 }
 
+# pr_test_requires_setsid -- the gate for the escaper fixture's session escape.
+#
+# The dependency is not `setsid`. tests/fixtures/bin/pr-setsid uses setsid(1)
+# where it exists and perl's POSIX::setsid(2) where it does not, so the gate is
+# "either". Row 7 of the macOS handoff is what changed it: on Darwin the three
+# cases that cover the DESCENDANT sweep were the three that skipped, on the one
+# platform where that sweep is the only cleanup bound -- so the suite reported
+# `0 failed` over exactly the surface a Mac most needs checked.
+#
+# It stays a gate rather than becoming an assumption: a host with neither must
+# still SKIP, loudly, rather than fail on a missing shim.
+pr_test_requires_setsid() {
+  command -v setsid > /dev/null 2>&1 && return 0
+  command -v perl   > /dev/null 2>&1 && return 0
+  pr_test_skip "needs setsid(1) or perl, for tests/fixtures/bin/pr-setsid"
+  return 1
+}
+
 pr_fail() {
   PR_TESTS_FAILED=$((PR_TESTS_FAILED + 1))
   printf '  FAIL %s: %s\n' "$PR_CURRENT_TEST" "$1" >&2
@@ -99,6 +117,33 @@ pr_test_mkstub() {
   chmod +x "$path"
 }
 
+# pr_test_insert_after_shebang <file> <line>
+#
+# Insert one literal line directly after the shebang, so a stub records or emits
+# something on EVERY invocation the adapter makes -- create-chat and --version as
+# well as the review run, which is the property the three call sites turn on.
+#
+# This was spelled `sed -i '2i <line>' "$file"` until 2026-08-29, and that is two
+# GNU-isms in one command: BSD sed's `-i` REQUIRES a backup suffix, so it eats the
+# script argument and reads the filename as the script (macOS prints
+# `sed: 1: "/private/var/...": invalid command code v` and edits nothing, exit 1),
+# and BSD `i` wants a backslash-newline rather than a same-line argument. There is
+# no spelling of `sed -i` that both accept, so the fix is to not need one. The
+# three tests then FAILED rather than erroring, because the stub was left intact
+# and simply never emitted what the assertion looked for -- the first Darwin run
+# of the suite, 2026-08-29, is what found them.
+#
+# The command substitutions finish before the redirect truncates, so reading and
+# writing the same path in one statement is safe. `$(...)` strips trailing
+# newlines from the tail; a shell script does not care, and the callers all pass
+# executable stubs.
+pr_test_insert_after_shebang() {
+  local file="$1" line="$2" head_line rest
+  head_line="$(head -n 1 "$file")"
+  rest="$(tail -n +2 "$file")"
+  printf '%s\n%s\n%s\n' "$head_line" "$line" "$rest" > "$file"
+}
+
 # install_containing_bwrap_stub <bindir>
 #
 # A bwrap stub that stands in for a jail which CONTAINS: it writes the probe's
@@ -121,6 +166,53 @@ for a in "$@"; do
 done
 exit 0'
 }
+
+# The skills-CLI fixtures. Two suites need them -- tests/test-skill.sh drives
+# `plan-review skill` directly, tests/test-bootstrap.sh drives it through the
+# bootstrap's non-fatal wrap -- so the shape is written once here, the same
+# reason install_containing_bwrap_stub above is. Both files source this, so the
+# "helpers.sh is unavailable by construction" exemption that covers
+# test-bootstrap.sh's min-PATH list does not reach these.
+
+# stub_npx <bindir> <ls-json>
+#
+# Records the argv and the telemetry variable of every npx call, and answers
+# `skills ls --json` with whatever the case wants. Anything else exits 0 quietly,
+# which is what `skills add` succeeding looks like.
+stub_npx() {
+  local dir="$1" ls_json="$2"
+  pr_test_mkstub "$dir/npx" "
+{ printf 'DISABLE_TELEMETRY=%s argv:' \"\${DISABLE_TELEMETRY:-unset}\"
+  printf ' %s' \"\$@\"
+  printf '\\n'
+} >> \"\$NPX_LOG\"
+case \" \$* \" in
+  *' ls '*) printf '%s\\n' '$ls_json' ;;
+esac
+exit 0"
+}
+
+# stub_harness_clis <bindir>
+#
+# All four harness CLIs, so detection does not depend on what is installed here.
+# `agent` answers the Cursor identity probe with a non-empty cliVersion unless a
+# case overrides it. `node` joins them: `plan-review skill` only `command -v`s
+# node -- jq does the JSON parsing now -- so neither suite needs a real one.
+stub_harness_clis() {
+  local dir="$1" c
+  for c in claude codex agy node; do pr_test_mkstub "$dir/$c" 'exit 0'; done
+  pr_test_mkstub "$dir/agent" '[ "${1:-}" = about ] && { printf "{\"cliVersion\":\"test\"}\n"; exit 0; }
+exit 0'
+}
+
+# What a fully linked install looks like. The display names are the ones
+# libexec/plan-review-skill.sh's id/name table claims -- confirmed against a real
+# `skills ls -g --json` at 1.5.18 on macOS 2026-08-20, all four exact -- and they
+# are hard-coded here, so a correction to that table needs this string corrected
+# with it or both suites go on passing against the old world. That pointer runs
+# both ways: the table's comment names THIS constant, and names one place because
+# there is now one. A case that wants a miss passes a subset instead.
+PR_TEST_SKILLS_ALL_LINKED='[{"name":"plan-review","agents":["Claude Code","Codex","Cursor","Antigravity CLI"]}]'
 
 # pr_test_git_init_identity <dir> -- git init plus a fixed identity, nothing
 # else: content, plans, commits and remotes stay with each suite, because the

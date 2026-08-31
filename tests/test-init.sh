@@ -68,7 +68,9 @@ stub_claude() {
 exit 0"
 }
 # The jail probe runs bwrap itself rather than a proxy, so a stub is what makes
-# an agy or claude roster testable off a machine with a working one. It has to
+# an agy roster testable off a machine with a working one. (claude stopped
+# needing it on 2026-08-30 -- it switches to Claude Code's own sandbox where
+# bwrap is absent, so `init` no longer fails a Mac for it.) It has to
 # be the CONTAINING stub: the probe measures containment now, and an `exit 0`
 # that never runs the payload is a failure by design (helpers.sh).
 stub_bwrap() { install_containing_bwrap_stub "$1"; }

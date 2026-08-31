@@ -22,7 +22,13 @@ Every adapter — real or fake — is invoked identically:
   is capped at 128 KiB (`MAX_ARG_STRLEN`), which a plan plus diff plus rationale
   can exceed.
 - **stdout / stderr** — diagnostics only, captured to a log. The review must never
-  arrive on stdout.
+  arrive on stdout. One shipped exception, and it is about the *artifact*, not the
+  stream: `adapters/claude.sh` tees the CLI's `stream-json` to stdout so the
+  kernel's `>> log-<reviewer>.txt 2>&1` records it, and the result frame in that
+  stream carries the review text inside its JSON. What the clause protects is
+  `<review_out>` — no framing, no duplicate — and that still holds: the adapter
+  extracts `.result` from the FILE it also wrote. Read the clause as "nothing
+  downstream may read the review off stdout", which nothing does.
 - **`<review_out>`** — the Markdown review, written by the adapter. Write the review
   to exactly the path you are given and to no other: the round hands adapters a
   scratch path and publishes a copy of it under its own name once the adapter has
@@ -47,6 +53,17 @@ Every adapter — real or fake — is invoked identically:
 
   The adapter reports the *effective* values because a pin the CLI silently
   ignored would make `round.json` claim a model that never ran (Q2, R11).
+
+  Line 4 has the same rule and it is not free: **the version must name the
+  binary that wrote the review**, so take it from the run's own output where the
+  CLI offers one (`codex`'s banner, `claude`'s `init` frame) and otherwise read
+  it *before* the run rather than after. Measured 2026-08-29: Cursor
+  self-updated mid-round, and a post-run `agent --version` recorded a binary
+  that had not written the review
+  (`docs/process/probes/2026-08-29-macos-row3-sweep/`). Reading first does not
+  close the window, it only narrows it to the gap between two adjacent commands
+  — but a version read after the run is wrong for the whole duration of every
+  round a self-updating CLI happens to overlap, and nothing detects it.
 
   Line 3 is empty for Cursor and agy by design, not by omission: both fold effort
   into the model id (`claude-opus-5-medium`, `gemini-3.1-pro-high`), so line 2
@@ -100,20 +117,64 @@ Every adapter — real or fake — is invoked identically:
   prompt and fail with a clear message above the cap rather than let `execve`
   return a bare `E2BIG`. Do not "fix" this by moving the whole contract to argv.
 - **confinement is the adapter's job, and it is not uniform.** codex confines
-  its own writes via its sandbox flags. Cursor is *supposed* to, and no longer
-  does: re-measured 2026-08-27 against `2026.08.25-3e8eec8`, a tool-call write to
-  `/tmp` and to `$HOME` both succeeded, wrapped and unwrapped alike
-  (`docs/process/probes/2026-08-27-pid-namespace-adapters`, leg 4). Treat Cursor
-  as unconfined for writes at that version; `adapters/agent.sh`'s bwrap is a pid
-  fence and deliberately not a write barrier, and widening it needs its own probe
-  because Cursor's sandbox machinery runs inside it. `agy` never did: its
+  its own writes via its sandbox flags. Cursor does too, but only once the
+  adapter decides whose configuration it reads — measured 2026-08-28 against
+  `2026.08.25-3e8eec8` (`docs/process/probes/2026-08-28-cursor-containment`).
+  `--sandbox enabled` is *inert* under `approvalMode: "unrestricted"` in the
+  operator's `~/.cursor/cli-config.json`: the tool call runs with
+  `CURSOR_SANDBOX` unset and a write to `$HOME` lands on the host, which is what
+  the 2026-08-27 probe saw and misread as a vendor regression. So
+  `adapters/agent.sh` points `CURSOR_CONFIG_DIR` at a private directory beside
+  the repo copy and pins the approval mode there, and it deletes the target
+  repo's own `.cursor/` first — a repo-supplied `sandbox.json` granting
+  `additionalReadwritePaths` to `$HOME`, and a repo-supplied `cli.json`
+  allowlisting a shell command, were each measured putting the canary on the
+  host. With both closed the `$HOME` canary is denied and the sandbox reports
+  `native`/`fully_enforced` — measured through the adapter, so with its bwrap gate
+  in play, though nothing in that run witnesses which namespace the command was in.
+  The bwrap stays a pid fence and is deliberately still not the write barrier.
+  `agy` never did: its
   `--sandbox` was measured to allow a write to `/tmp` while reporting itself
   enabled, so its adapter wraps the CLI in `bubblewrap` instead and **fails
-  closed** when `bwrap` is unavailable. `claude` exposes no sandbox flag to ask
-  for, so it is confined the same way and fails closed the same way. An adapter
+  closed** when `bwrap` is unavailable. `claude` used to be the second such
+  adapter and is not any more: since 2026-08-30 it **switches mechanism per
+  host** rather than refusing, taking bubblewrap where `bwrap` exists and Claude
+  Code's own sandbox where it does not, chosen once at a single `$confinement`
+  variable. That is not an exception to the rule below and must not become one:
+  the second mechanism is itself fail-closed, by a settings file carrying
+  `failIfUnavailable: true`, and neither half ever runs unconfined. An adapter
   that cannot confine writes must refuse to run, never run unconfined — a vendor
   sandbox you have not measured *at the version you ship against* is not
   confinement, it is a claim.
+
+  Three qualifications on that switch, all measured 2026-08-30 and all
+  load-bearing (`docs/process/probes/2026-08-30-claude-macos-row1`, `-row5`,
+  `-row67`). **A vendor sandbox may confine less than a jail does**: Claude
+  Code's confines the commands its Bash tool spawns and *not the CLI's own
+  process*, so with `Write` allowed the CLI wrote outside the declared writable
+  set — which is why that half must run at `permissionMode: default`, where the
+  unsandboxed Write and Edit tools are denied outright. **The repository under
+  review is a configuration surface and outranks the flags you pass**: a
+  repo-supplied `.claude/settings.json` switched the sandbox off with our own
+  `--settings` saying the opposite, exactly as `.cursor/`'s two surfaces did, so
+  that adapter deletes the repo copy's `.claude/` too. And **`failIfUnavailable`
+  is not the backstop it reads as**: with Seatbelt made unavailable the CLI
+  started anyway and denied every command, ending `is_error: false` with a
+  non-empty review — so an adapter whose confinement is a vendor's must also
+  assert that the reviewer *ran something*, which is the clause below.
+- **a reviewer that ran no command must not be recorded as a review.** There are
+  four measured routes to a confident, empty, `status: ok` round with a real
+  session id and model: a `$TMPDIR` socket path over the 108-byte unix-socket
+  ceiling; a sandbox that starts and denies every call; a command needing an
+  approval a headless run cannot grant; and, on Darwin, a command that *runs*
+  while the kernel denies its write. None of them trips an envelope check,
+  because in all four the envelope is honest — the CLI did what it was asked.
+  Where an adapter's output format makes tool calls visible, it must assert that
+  at least one command succeeded and fail the reviewer otherwise. The cost is
+  stated rather than hidden: a review that legitimately needed no command fails
+  too. That is the intended direction — `lib/prompt.sh` tells every reviewer to
+  run things, and a confident review that checked nothing is worse than a missing
+  one, because `round.json` records it as `ok`.
 - **the environment is part of the boundary.** A jail confines the filesystem;
   it does not stop a variable. When the orchestrating harness is itself an agent
   CLI, its own variables are inherited by everything the runner spawns —
@@ -127,11 +188,19 @@ Every adapter — real or fake — is invoked identically:
   keeps its private `CLAUDE_CONFIG_DIR` at `<sandbox>/config` for that reason:
   the sessions that make carry-forward possible would otherwise be deleted by
   the next round's copy. `adapters/agy.sh` does the same at
-  `<sandbox>/gemini-state`, bound over `~/.gemini`, and `adapters/codex.sh` at
-  `<sandbox>/codex-home`, exported as `CODEX_HOME` — three private directories,
-  one per adapter that has durable state. codex's is not a bind at all: it is an
-  environment variable the CLI honours, which is the cheaper mechanism wherever a
-  CLI offers one. Isolating them also keeps the
+  `<sandbox>/gemini-state`, bound over `~/.gemini` — a bind, and therefore the one
+  of the four with no macOS expression: `HOME` relocation was measured failing to
+  authenticate even with the whole `~/.gemini` copied, and with no sandbox in the
+  picture at all (`docs/process/probes/2026-08-30-claude-macos-row9-agy`) — `adapters/codex.sh` at
+  `<sandbox>/codex-home`, exported as `CODEX_HOME`, and `adapters/agent.sh` at
+  `<sandbox>/cursor-config`, exported as `CURSOR_CONFIG_DIR` — four private
+  directories, one per adapter that has durable state. Two of them are not binds
+  at all: they are environment variables the CLI honours, which is the cheaper
+  mechanism wherever a CLI offers one, and Cursor's is cheaper still, since an
+  empty `CURSOR_CONFIG_DIR` is already authenticated and so needs no credential
+  copied or bound in at all. For Cursor the isolation is not only hygiene: the
+  approval mode that decides whether its sandbox applies lives in that file.
+  Isolating them also keeps the
   operator's own `~/.claude/settings.json` — which defines hooks that run in
   *their* interactive sessions — outside the reviewer's reach, and the same
   argument applies to `~/.gemini`, whose workspace hooks agy honours, and to

@@ -29,19 +29,25 @@ the 22 tests that branch added.
 
 The 457/~62s figure that stood here was stale in its count but not in its clock. Measured
 2026-08-27 on this host (32 cores, load ~0.5), two back-to-back `make test` runs per tree,
-a `git worktree` per revision:
+a `git worktree` per revision — every row but the last, which is 2026-08-28 in place:
 
 | tree | tests | run 1 | run 2 |
 | --- | --- | --- | --- |
 | `ea2b59e` (pre-`reviewer-isolation-hardening`) | 467 | 62.159s | 62.214s |
 | + tasks 1–2 of that branch | 485 | 85.243s | 85.359s |
 | + task 3, as first written | 490 | 93.993s | 94.060s |
-| **+ task 3 review fixes — the current cost** | **491** | **84.624s** | **84.460s** |
+| + task 3 review fixes (`reviewer-isolation-hardening`, as merged) | 491 | 84.624s | 84.460s |
+| + `backlog-clearing-3` | 519 | 81.060s | 83.451s |
+| **+ the macOS pass's return** | **521** | **80.885s** | **80.610s** |
+| + `claude-macos` — **Darwin only, see below** | 542 | 274.2s | — |
+| **+ `claude-macos`, on Linux** | **542** | **78.84s** | **79.25s** |
+| **+ the row-L3 fix** | **543** | **78.38s** | **78.38s** |
 
-So ~62s was still right for `main`: the whole delta is this branch's, not host drift —
+So ~62s was still right for `main` at the time: the whole delta was
+`reviewer-isolation-hardening`'s, not host drift —
 worth stating, because "the host got slower" was the first explanation offered and it was
 wrong. Per-file timing of both trees found where it went, and one line of it was a **bug**:
-`tests/test-bootstrap.sh` had gone 6.156s → 26.707s, a file this branch never edited. It
+`tests/test-bootstrap.sh` had gone 6.156s → 26.707s, a file that branch never edited. It
 drives `plan-review doctor` as a subprocess ~20 times, and task 1 gave
 `_pr_doctor_bwrap_probe` a containment window the pass path always waits out — ~1.04s per
 doctor run at the operator default `PR_BWRAP_PROBE_TICKS=10`. `tests/test-doctor.sh` and
@@ -72,6 +78,81 @@ an identical tree is under 0.2s. Budget against the ~5.5s poll and the ~1s-per-d
 probe, not against test wall-clock that a missing knob export can explain; weigh the next
 per-adapter poll, and the next always-waited probe window, before adding either.
 
+**The last row is the one to budget against: 521 tests in ~81s**, measured 2026-08-29;
+its two tests are the `cli_version` pair and they cost nothing this method can see — the
+two runs came in 0.27s apart, an order of magnitude inside the ~2.5s the row below it
+establishes as this method's floor. Read the two rows together and the conclusion is
+that a stub-only test is free here; that is not a licence, it is why the *next*
+per-adapter fork is still worth pricing before it lands.
+
+The `backlog-clearing-3` row is the one that explains the shape: 519 tests in ~82s,
+measured 2026-08-28 on the same host (load ~0.7) by the same two back-to-back runs the rows above use. Read the
+spread, not the midpoint: 81.1s and 83.5s on an identical tree is the widest gap any row
+here has shown, so a change under ~2.5s is not visible to this method. Both numbers
+moved and they moved in *opposite* directions, which is the fact worth carrying:
+`backlog-clearing-3` added 28 tests and the tree still came out ~2s cheaper than the 491
+it started from. The refund is Task 1's, and it is not a fixture trick — `stub_all_reviewer_clis`
+replaced **20 real reviewer-CLI `--version` spawns** in `tests/test-doctor.sh` (6 claude, 5
+agy, 5 agent, 4 codex, counted with recording wrappers) with stubs that leave every check
+intact and only change what answers, including the one genuinely expensive read: a live
+`agent about --format json`, ~1.5s on its own. `pr_doctor_check_versions` is
+roster-independent, which is why a case whose config named only codex was still reading four
+versions off the host. So the suite did not merely get faster; it stopped consulting live
+account state to assert a drift message. Read that the same way as the bootstrap saving
+above — it paid for this branch's 28 tests exactly once, there are no live spawns left to
+reclaim, and the next contributor budgets against ~82s at 519 with no credit to spend.
+
+**The second-to-last row is Darwin, and it is the only row that is.** `claude-macos` added 23 tests
+(the confinement branch's two halves, the credential and settings assertions, the
+no-command tripwire on both halves, the stream-file pair, and five doctor cases) and
+measured **4m34.2s at the 539 of them that existed when the clock was read, 542 now on
+this Mac**, against the **4m36.6s at 519** the row below establishes for the same host — so
+the branch's tests cost *nothing this method can see*, which on a Mac with ~7s of run-to-run
+spread means anything under ~7s. That is not a licence: the tests it added are stub-only, and
+the one thing on this branch with a real per-round cost is the Keychain read, which is one
+`security` fork per `claude` round on the builtin half and does not touch the suite at all.
+The Linux number that was missing when that row was written **now exists and is the last
+row**: 542 tests in 78.84s and 79.25s, measured 2026-08-30 on this host (32 cores, load ~0.8)
+by the same two back-to-back runs on a clean clone. Read it against the 521/~81s below it and
+the branch's +21 tests cost **nothing this method can see** — the two runs came in 0.41s
+apart, well inside the ~2.5s floor the `backlog-clearing-3` row establishes. The same
+conclusion on both platforms, by two independent measurements, and for the same reason: the
+tests it added are stub-only. It is still not a licence. The one thing on this branch with a
+real per-round cost is the Keychain read, which is one `security` fork per `claude` round on
+the builtin half and never runs on Linux at all. The row below it is the same tree plus row L3's fix, and its 543rd test — the
+adapter's Linux refusal — is likewise free (two runs identical to the centisecond).
+**Budget against 543/~78s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
+fix and nobody has re-timed a Mac since. The Debian-container run in
+`docs/process/probes/2026-08-30-claude-macos-row8/` is superseded: its 14 failures were the
+container's PID view and seccomp profile and did **not** reproduce on a real host
+(`docs/process/FINDINGS-2026-08-30-linux.md`).
+
+**Every row but the Darwin one is Linux.** The suite first ran on **Darwin on 2026-08-29** and cost
+**4m36.6s** for the 519 of the `backlog-clearing-3` row — ~3.4x, spread evenly across files rather than concentrated
+in one, which is what rules out the missing-`PR_BWRAP_PROBE_TICKS` shape and leaves fork
+cost. Two things came out of that first run and both are load-bearing here. **BSD sed
+rejects `sed -i` without a suffix and rejects a same-line `2i`**, which is how three tests
+were silently asserting against unmodified stubs — use `pr_test_insert_after_shebang`, and
+assume nothing about GNU flags in a test. And **`setsid` is util-linux**: Darwin has
+`setsid(2)` but no `setsid(1)`, so the escaper fixture goes through
+`tests/fixtures/bin/pr-setsid`, which prefers the real tool and falls back to perl's
+`POSIX::setsid`. Four cases skip on a Mac — three need `/dev/full`, one is
+`PR_TEST_BASH32` — and none of them is the descendant sweep any more. Run-to-run spread on
+this Mac is ~7s, so nothing smaller than that is measurable there
+(`docs/process/probes/2026-08-29-macos-row1-suite/`).
+
+A third joined them on 2026-08-30 and it is a *reading* trap rather than a writing one:
+**this Mac's locale is `bg_BG`, and `ps -o lstart=` answers `пн 10 авг. 21:07:39 2026`
+there.** It costs `lib/adapter-exec.sh` nothing — the kernel only ever string-compares one
+`lstart` against another and never parses one, which is the property to preserve — but any
+probe observer that *parses* that field must pin `LC_ALL=C` first, and the two on this
+branch do. A fourth, for anyone writing a test that has to exercise a code path chosen by
+the ABSENCE of a binary: **PATH cannot hide `bwrap`** on a host that has it, so
+`tests/test-adapter-claude.sh` builds a directory of symlinks to the externals the adapter
+actually calls and runs from that alone. Keep that list in step with the adapter, and note
+that `security` is deliberately *not* on it — link it and the Keychain branch fires against
+the operator's real login keychain from inside the offline suite.
+
 There is no framework — `tests/helpers.sh` defines `assert_*`, and `pr_run_tests` runs every
 `test_*` function in the sourcing file. Anything that would break "offline and seconds"
 is opt-in behind a flag and skips by default — `PR_TEST_BASH32=1` is the only one, and it
@@ -90,8 +171,8 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
 - `scripts/install.sh` — the curl-pipe bootstrap, and the only file outside `bin/` that
   users run directly. **The one file that must run under bash 3.2**, because it is what
   tells a macOS user their bash is too old. It clones and then **calls** `plan-review
-  install` and `plan-review doctor --offline`; it re-derives none of their rules, because
-  the second derivation is the one that goes stale. It checks `readlink -f` and bash 5
+  install`, `plan-review skill` and `plan-review doctor --offline`; it re-derives none of
+  their rules, because the second derivation is the one that goes stale. It checks `readlink -f` and bash 5
   before cloning — without those the doctor cannot start, so there is nothing to delegate
   to. Its skill step is non-fatal by design: the promise is the runner. Covered by
   `tests/test-bootstrap.sh`, which drives it against a throwaway local git repo via
@@ -101,8 +182,15 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
 - `adapters/<reviewer>.sh` — one per reviewer CLI. **Standalone**: they source nothing,
   by contract, so shared constants (e.g. `PR_MAX_ARG_BYTES`) are deliberately stated
   twice, with cross-referencing comments.
-- `skills/plan-review/SKILL.md` — the Integrator-side workflow, installed separately via
-  `npx skills add`. Behaviour changes usually need edits in three places: the code,
+- `libexec/plan-review-skill.sh` — installs and verifies the skill below into every harness
+  detected on PATH, via the third-party `skills` CLI pinned at `@1.5.18`. It owns the
+  harness id/name tables and the Cursor identity gate, which `scripts/install.sh` used to
+  carry; it may require `jq`, which the bootstrap may not, and that is what let the
+  bootstrap's node JSON parser retire with them (2026-08-28). Fatal on every failure —
+  0 verified, 1 installed-but-unverified or failed, 2 refused before acting — because the
+  bootstrap wraps it non-fatally and something has to own the strict version.
+- `skills/plan-review/SKILL.md` — the Integrator-side workflow, installed by
+  `plan-review skill`. Behaviour changes usually need edits in three places: the code,
   `README.md`, and this file.
 
 ## Architecture notes that span files
@@ -112,6 +200,19 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   **stdin**, review only into `<review_out>`, four fixed lines into `<meta_out>`. Adding
   a reviewer = a new adapter plus its key in `PR_ROSTER_ADAPTERS` (`lib/roster.sh`);
   nothing else derives the roster.
+- **The version on meta line 4 must name the binary that wrote the review.** Take it
+  from the run's own output where the CLI offers one — `codex` off its banner,
+  `claude` off the `init` frame — and otherwise read it **before** the run.
+  `agent` and `agy` have no such field and so read first; they used to read after,
+  and on 2026-08-29 Cursor self-updated *mid-round* and `round.json` recorded a
+  binary that had not answered
+  (`docs/process/probes/2026-08-29-macos-row3-sweep/`, and `agy` moved versions the
+  same day, so it is not one vendor). Nothing is *wrong* when that happens — no
+  review changes — which is exactly why it went unnoticed: what it quietly breaks is
+  `docs/verified-versions.txt`'s drift warning and every "measured at version X"
+  claim in the probe records. Reading first narrows the window from the whole review
+  to the gap between two adjacent commands; it does not close it, and nothing
+  detects the remainder.
 - **Roster precedence**: `PR_ADAPTER_MAP` > config `reviewers` > shipped adapters minus
   the orchestrator. A stated roster is obeyed exactly, including one naming the
   orchestrator's own CLI — that check was removed on purpose (see `lib/roster.sh`).
@@ -166,7 +267,13 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   spawned command of **no shipped reviewer**
   (P6, `docs/process/probes/2026-08-26-roster-sweep-reach/`):
   `codex` is contained by its own `--as-pid-1`, and `agent`'s tool layer takes
-  its own process group *and* session. P6's other claim — that `agy`/`claude`
+  its own process group *and* session — **on Linux**, which is the only place P6
+  ran. On **Darwin** the two swap: `agent`'s escaper stays in the adapter's group
+  and the group kill gets it, while `codex`'s tool layer regroups and codex reaps
+  its own (`docs/process/probes/2026-08-29-macos-row3-sweep/`, 2026-08-29, two
+  live rounds). Which reviewer escapes the group kill is therefore a per-platform
+  vendor choice, and neither `--unshare-pid` nor the sweep is contingent on it —
+  that is the point of both. P6's other claim — that `agy`/`claude`
   were already contained by their adapters' bwrap — was inference, and false:
   `--die-with-parent` without `--unshare-pid` is `PR_SET_PDEATHSIG` on the
   immediate command, so a detached grandchild survives. Measured both ways
@@ -174,7 +281,14 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   (`docs/process/probes/2026-08-27-pid-namespace-adapters/`): `agy`, `claude`
   and now `agent` all pass **`--unshare-pid`**, so on **Linux** every shipped
   reviewer is contained by a jail. On **macOS** none of them is — no bwrap, no
-  pid namespaces — and the sweep below is the only bound there. So `wait` is
+  pid namespaces — and the sweep below is the only bound there. **That sweep was measured
+  doing the work on Darwin for the first time on 2026-08-30**, against `claude`'s Bash-tool
+  wrapper, which takes its own process group (D2/B6's 2026-08-21 mechanism, unchanged at
+  2.1.251) and so is out of the group kill's reach: the marker was remembered in three or
+  four poll frames, reparented to `launchd`, outlived its adapter by a frame, and was gone
+  in the next (`docs/process/probes/2026-08-30-claude-macos-row1` and `-row67`). The
+  2026-08-29 pass concluded the sweep "never had to fire" here; putting `claude` on the
+  macOS roster is what made it fire. So `wait` is
   polled: each tick walks a `ps -eo pid=,ppid=`
   fixpoint from the adapter's pid (`_pr_ae_descendants`, bash builtins over a
   table so both GNU and Darwin shapes are fixture-tested offline) and remembers
@@ -194,8 +308,18 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   change what the round recorded. A survivor the poller misses keeps the
   inherited session lock, and later operations on that session fail closed until
   it exits — the accepted availability cost. Nothing in the poller closes a
-  descriptor. `ps` is therefore a core utility (`PR_DOCTOR_UTILS`), though that
-  is a presence check and busybox's `ps` rejects `-eo`, which degrades silently.
+  descriptor. `ps` is therefore a core utility (`PR_DOCTOR_UTILS`) — but that
+  list is a presence check, and presence is not sufficiency: busybox's `ps` exists
+  and rejects `-eo`. Sufficiency is `pr_doctor_check_ps_forms` (2026-08-28), a
+  Machine-tier probe on `pr_doctor_check_gnu_timeout`'s precedent that *runs* both
+  invocations the kernel ships and **fails** on either. It is behavioural rather
+  than a version match because both the GNU and Darwin shapes must pass. The two
+  degrades it catches are not the same: a `ps` that rejects `-eo` loses the whole
+  descendant table, while one that answers the table but not `lstart` loses only
+  the identity read — every remembered pid then fails its check and is skipped,
+  which is safe but is group-only cleanup under a green doctor. **Coupling rule**:
+  fold the per-tick reads into one `ps -eo pid=,ppid=,lstart=` and that probe and
+  its fixtures change in the same commit as `lib/adapter-exec.sh`.
   **Every one of those three `ps` calls is wrapped in
   `timeout --kill-after=1`**, and the post-`wait` sweep additionally carries a
   30s deadline stamped before it starts: `timeout(1)` bounds the *adapter*,
@@ -230,7 +354,12 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   flag on the *adapter* spawn, which has carried it since the kernel landed. A
   busybox `timeout` is a host that runs no reviewer at all, which is why nothing
   carries a non-GNU fallback.
-  macOS descendant cleanup is unverified live (first row of the macOS cycle).
+  macOS descendant cleanup is verified live as of 2026-08-30 — see above. In one
+  acceptance round all three shapes appeared at once: `claude`'s escaper was reached by the
+  remembered-descendant path, `agent`'s stayed in the adapter's own group and the group kill
+  got it, and `codex` reaped its own 26s before its adapter exited. Do not read that as a
+  design: it is three vendors behaving three ways, which is the whole argument for a bound
+  that does not care which.
   The round (`lib/reviewer-runner.sh`) and `doctor --smoke` both spawn
   through the kernel — the smoke's call guarded by `declare -F` so the stub-PATH
   doctor tests stay green, and the smoke deliberately does *not* publish (it keeps
@@ -273,9 +402,14 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   instead of jq's tmpfile error; the check promises nothing beyond that, since a
   writable directory does not guarantee the write succeeds — hence the `|| exit 2`
   behind it. The all-failed path warns instead of escalating: it already exits non-zero
-  and makes no success claim. **`libexec/plan-review-complete.sh` is the one store-scoped
-  transition still unchecked** — it prints "Round complete" over a `pr_round_set_state`
-  whose status it never reads (backlogged, 2026-08-27).
+  and makes no success claim. `libexec/plan-review-complete.sh` was the last store-scoped
+  transition still unchecked and is now guarded like the rest (2026-08-28): its
+  `pr_round_set_state ... complete` carries `|| exit 2` with `aborting` on stderr, because
+  "Round complete" printed over a state that never persisted is exactly the lie the rule
+  exists to stop. It takes **no** writability preflight, unlike `abort`'s — that one exists
+  only to beat jq's tmpfile error to the diagnosis, and here the raw error plus one sentence
+  is diagnosis enough, while a preflight would also put the guard out of reach of the test
+  that makes the round directory unwritable. Every store-scoped write now checks.
 - **The reviewer runner** (`lib/reviewer-runner.sh`) owns the fan-out:
   `pr_reviewer_run_all` is the only public entry to the fan-out and validates
   the module's variable contract (fourteen caller variables, listed in the
@@ -286,21 +420,152 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   no scratch name of its own, so a rename inside the module cannot silently
   break the round. Every `round.json` and session-map mutation stays serial, in
   the parent.
-- **Confinement is per-adapter and not uniform**: codex confines its own *writes*, and
-  Cursor is supposed to but was re-measured not doing so at `2026.08.25-3e8eec8` (leg 4 of
-  the pid-namespace probe: a tool-call write reached `/tmp` and `$HOME`, wrapped and
-  unwrapped alike), which is why the macOS roster is one self-confining reviewer and one
-  confining nothing; `agy` and `claude` are wrapped in bubblewrap by their adapters and
-  **fail closed** when `bwrap` is missing. `claude` additionally rebuilds the environment from a
+- **Confinement is per-adapter and not uniform**: codex confines its own *writes*, and so
+  does Cursor — but only once the adapter takes the *user-level* config away from it.
+  `--sandbox enabled` is **inert** under `approvalMode: "unrestricted"` in
+  `~/.cursor/cli-config.json` (Run Everything; the vendor's own mode table says
+  "Sandbox: No"): the tool call runs with `CURSOR_SANDBOX` unset and the `$HOME` canary
+  lands on the host. That is what leg 4 of the pid-namespace probe measured and read as a
+  vendor regression — the binary was innocent and so was `--trust`, which every confining
+  run since passes (`docs/process/probes/2026-08-28-cursor-containment`, same version,
+  2026-08-28). So `adapters/agent.sh` exports a private `CURSOR_CONFIG_DIR` and rewrites
+  its `cli-config.json` every round, and it `rm -rf`s the target repo's `.cursor/` first:
+  **two of the three repo-supplied surfaces escaped** — `additionalReadwritePaths: ["$HOME"]`
+  in `sandbox.json` widened the jail with the sandbox still reporting `native`, and
+  `permissions.allow: ["Shell(sh)"]` in `cli.json` switched it off outright; only
+  `type: "insecure_none"` was refused. Nothing is written back in `.cursor`'s place,
+  because `type` from a per-repo `sandbox.json` was measured inert in *both* directions.
+  The empty allowlist in the pinned config is not cosmetic: an allowlisted command is
+  exempted **from the sandbox**, not merely from the prompt. One cost came with the
+  private directory: `agent create-chat` prints the new id and then **never exits** in a
+  config dir that has not yet completed a `-p` run, so it runs under a
+  `timeout --kill-after=1` whose deadline is derived from `PR_TIMEOUT_SECS` (half, capped
+  at 30, floored at 1 — `0` disables a GNU timeout), and the adapter keeps the id it
+  printed. That the killed `create-chat`'s chat still resumes is measured by the acceptance
+  matrix cited below and by nothing else — not by the containment probe's leg 7, whose rc=0
+  the same branch retired as a non-discriminator. That derivation is *not* agy's strict
+  inequality: at `PR_TIMEOUT_SECS=1` the inner bound equals the outer one and can overrun
+  it by the kill grace, which the kernel's own `timeout` then reaps. The escalation is
+  load-bearing for the same reason it is on the `ps` caps: `timeout N` signals at N and
+  then *waits*, and never exiting is the only thing this process is known to do. What the
+  matrix establishes is that an id minted under this bound is usable: its agent leg ran two
+  rounds through the shipped adapter from a fresh throwaway repo, so round 1 minted its chat
+  in a cold config dir — through this very bound — and round 2 reproduced a token round 1 had
+  been told to hold and never to write down, a token absent from round 1's published review
+  and from round 2's prompt, so a cold chat could not have emitted it
+  (`docs/process/probes/2026-08-28-acceptance-matrix/`, 2026-08-28). What it does **not**
+  record is the kill: no rc and no duration of that `create-chat` was captured, so the
+  *killed* half follows from the cold-directory hang measured above, not from the matrix.
+  That discriminator is the point: `agent --resume` returns rc=0 for a UUID that was never
+  a chat id, so **rc
+  discriminates nothing** and every claim here has to rest on content. What stays
+  **unknown** is the *transition*: what moving Cursor's config home costs a handle minted
+  under the operator's `~/.cursor`, which is codex's measured one-cold-round tax and has
+  no counterpart measurement here. Rounds that mint and resume inside the private
+  directory — every round the runner actually starts — are covered; the one migration is
+  not. `agy` is
+  wrapped in bubblewrap by its adapter and
+  **fails closed** when `bwrap` is missing. Never add an unconfined fallback for it.
+
+  **`claude` stopped being the second such adapter on 2026-08-30 and now switches
+  mechanism per host**, chosen once at a `$confinement` variable and reported by
+  `pr_doctor_check_claude_confinement` — two bounds on the drift two halves invite.
+  With `bwrap`: the jail, `--dangerously-skip-permissions`, an init line asserted
+  to say `bypassPermissions` — byte-for-byte what shipped, because nothing on a Mac can
+  re-run the twelve-row acceptance matrix that pins it, and buying symmetry by rewriting
+  the measured path was the trade this branch refused (row 2, `HANDOFF-claude-macos.md`;
+  `specs/claude-macos-rewire/NOTES.md` specified ONE path and is overruled in writing).
+  That Linux path was re-verified live on 2026-08-30 at `claude 2.1.251` — init line,
+  `--safe-mode` against a control, and the resume handle — so the byte-for-byte claim is
+  measured and not merely readable (`docs/process/FINDINGS-2026-08-30-linux.md`).
+  On **Darwin** without `bwrap`: Claude Code's own sandbox, `failIfUnavailable: true`, no
+  `--dangerously-skip-permissions`, `permissionMode: default`.
+
+  **There is no third case: a non-Darwin host with no `bwrap` is REFUSED**, in
+  `adapters/agy.sh`'s spelling and for its reason. That is a correction to how the branch
+  first shipped, and the measurement is worth carrying because it is counter-intuitive:
+  **Claude Code's own sandbox is implemented with bubblewrap on Linux.** So the condition
+  that selected the builtin half there — no `bwrap` — was exactly the condition that broke
+  it, and the CLI exited with no init line naming `bwrap` as the missing dependency
+  (measured 2026-08-30, row L3). The builtin half is a **Darwin path**, and `socat` is the
+  second binary of the same dependency pair rather than an alternative to the first — which
+  is what the doctor check originally asserted, so it PASSed a host whose reviewer could not
+  start. It now FAILs that host and names bubblewrap. Refusing in the adapter costs a
+  `command -v` instead of a paid round, and reports the missing package rather than "the
+  envelope has moved"; the reason goes into the round's `detail` so it is not
+  `exit 1, no output`. Still never unconfined, on any host.
+
+  The adapter's predicate is `uname -s` where the doctor's is `$OSTYPE`, and that is the
+  one deliberate difference between them: `$OSTYPE` is fixed when bash is compiled and no
+  environment can override it in a subprocess, so spelling it that way in the adapter would
+  make every builtin-half case in `tests/test-adapter-claude.sh` unrunnable on the Linux
+  hosts they were written on. The doctor cannot fork (builtins only, so its tests can point
+  `PATH` at a stub directory alone). They agree on every real host; move both or neither.
+
+  Four things about that half, all measured 2026-08-30
+  (`docs/process/probes/2026-08-30-claude-macos-row1`, `-row5`, `-row67`), and each one
+  changed the code:
+
+  - **The built-in sandbox confines Bash tool calls ONLY — not the CLI's own process.**
+    With `permissions.allow: ["Write"]` the Write tool wrote `$HOME`, outside
+    `filesystem.allowWrite`, and the file landed on the host. So `permissionMode: default`
+    is load-bearing rather than incidental: denying the unsandboxed Write and Edit is what
+    keeps those writes in the workspace. **Never put Write or Edit in a `permissions.allow`
+    there.** `NOTES.md`'s "its built-in sandbox enforces the same write barrier bwrap gives
+    us" is wrong in exactly this way — bwrap contains the process, this contains its
+    children.
+  - **The repo under review reopens the sandbox from the other side, and `--settings` does
+    not outrank it.** A repo `.claude/settings.json` with `sandbox.enabled: false` let a
+    Bash call write `$HOME` with our settings saying the opposite; `--safe-mode` did not
+    stop it, that flag stops repo *hooks*. Remedy is `agent.sh`'s: `rm -rf "$workdir/.claude"`,
+    builtin half only. The probe fired four keys at once and did not separate them, and did
+    not fire `.claude/settings.local.json` or a repo-root `.mcp.json` — parked in `BACKLOG.md`.
+  - **`failIfUnavailable` does NOT refuse to start on Darwin.** Row 5 made Seatbelt
+    unavailable by nesting (an outer `sandbox-exec (allow default)` refuses the inner
+    `sandbox_apply`) and the CLI started anyway, denied every Bash call with
+    `Exit code 71 / sandbox-exec: sandbox_apply: Operation not permitted`, and ended
+    `subtype: success`, `is_error: false`, `permission_denials: []` with a non-empty review.
+    It fails **safe** — nothing ran unsandboxed — but not **closed**. The refuse-to-start
+    path A7 measured on Linux has never been seen on a Mac. **What makes this half safe to
+    ship is the tripwire below, not `failIfUnavailable`**, and that reverses the weighting
+    the rewire spec gave the two.
+  - **macOS credentials come out of the login Keychain**, under its own 5s `timeout`, because
+    `~/.claude/.credentials.json` does not exist there and a *locked* keychain BLOCKS the read
+    rather than failing it — charged to `PR_TIMEOUT_SECS` it reads as "the reviewer timed out",
+    a wrong diagnosis of a login problem. They are **copied**, not bound; there is no bwrap to
+    bind with, so this is a second credential at rest exactly as codex's `auth.json` is, and the
+    item carries `organizationUuid` and a live `mcpOAuth` token per authenticated MCP server.
+    `.claude.json` is **synthesized** (`{"hasCompletedOnboarding":true}`), not copied from the
+    operator's — the smallest file that satisfies a headless run, measured.
+
+  **A reviewer that ran no command is refused, on BOTH halves.** Four measured routes end in a
+  confident, empty, `status: ok` round with a real session id and model — C1 (the `$TMPDIR`
+  socket ceiling), C3 (starts, denies everything), C6 (Linux: needs an approval headless cannot
+  grant), D3 (Darwin: the command runs and the kernel denies the write). Three of the four are
+  Linux's, which is why the assertion is not conditioned on the platform. It counts Bash
+  `tool_use` ids whose `tool_result` is not an error, and quotes the first failing result into
+  the round's `detail` — without that excerpt an unsandboxable host reads as a lazy reviewer.
+  Accepted cost, stated: a review that legitimately needed no command fails its reviewer too.
+
+  `claude` additionally rebuilds the environment from a
   whitelist (the orchestrator's `CLAUDE_*` messaging socket is a channel out of the jail)
-  and runs `--safe-mode`. Never add an unconfined fallback — for those two.
+  and runs `--safe-mode`. Neither is relaxed on the builtin half: the scrub was never bwrap's
+  work.
   `adapters/agent.sh` is the exception and is deliberately **not** fail-closed: its bwrap
-  supplies the pid namespace and nothing else (`/` is bound read-write on purpose), so
+  supplies the pid namespace and nothing else (`/` is bound read-write on purpose — and
+  Cursor's own sandbox still reports `native`/`fully_enforced` and still denies the `$HOME`
+  canary when the adapter runs on a host where the wrap gate passes — the two coexist, which
+  is weaker than "Landlock nests" and is all the transcripts witness, since the gate is a
+  silent trial and the probe command echoed nothing naming its namespace), so
   where the jail does not *work* it runs unwrapped and the kernel's sweep is the bound,
   exactly as `docs/adapter-contract.md`'s containment clause says — and that gate is a
   trial run of the flags, not `command -v`, because a host with bwrap installed and its
   userns denied would otherwise lose the reviewer outright. Both fail-closed adapters also
-  keep a **private state directory** beside the repo copy — `<sandbox>/config` for claude,
+  keep a **private state directory** beside the repo copy — as does `adapters/agent.sh`,
+  at `<sandbox>/cursor-config`, which is the cheapest of the four because an *empty*
+  `CURSOR_CONFIG_DIR` is still authenticated: no credential is copied or bound in, and the
+  operator's `~/.cursor` hooks, plugins, rules and skills fall out of scope for free.
+  `<sandbox>/config` for claude,
   `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
   *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
   because agy cannot be told to look elsewhere, while claude's is bound at its own path
@@ -342,8 +607,12 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
 
 - **`PR_TIMEOUT_SECS` must be a positive integer**, enforced in
   `libexec/plan-review-round.sh` before preflight (which `PR_SKIP_PREFLIGHT=1` can
-  skip) and again in `adapters/agy.sh`, which derives its own deadline from it with
-  integer arithmetic. Two copies, because adapters are standalone. `doctor --smoke`
+  skip) and again in `adapters/agy.sh` and `adapters/agent.sh`, which each derive their
+  own deadline from it with integer arithmetic. Three copies, because adapters are
+  standalone — and identical copies, deliberately: `docs/adapter-contract.md` names
+  `adapters/agy.sh` as *the* reference spelling for an adapter that derives an inner
+  deadline, so an adapter that quietly substituted a default instead would leave the
+  contract pointing at the minority. `doctor --smoke`
   enforces the same rule on `PR_SMOKE_TIMEOUT_SECS`, which the smoke hands to the
   adapters *as* their `PR_TIMEOUT_SECS`.
 

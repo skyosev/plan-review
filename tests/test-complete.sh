@@ -117,4 +117,23 @@ test_re_reads_the_state_after_taking_the_lock() {
     "complete did not write over a state it never re-read"
 }
 
+# Store-scoped write integrity (CLAUDE.md): "Round complete" printed over a
+# state that never persisted is the lie this guard exists to stop. The write
+# fails for real -- _pr_round_edit's temp file lands INSIDE the round directory
+# (lib/round.sh:207), so an unwritable round directory fails the jq redirect.
+# No writability preflight here, deliberately: abort's preflight exists to beat
+# jq's tmpfile error to the diagnosis, and a preflight+guard pair would leave
+# the guard unreachable by this test (review round 1, 2026-08-28).
+test_refuses_to_claim_a_completion_it_could_not_record() {
+  local d rd rc out; d="$(pr_test_tmpdir)"; rd="$d/round-1"; make_round "$rd"
+  echo r > "$rd/rationale-codex.md"
+  echo r > "$rd/rationale-agent.md"
+  chmod a-w "$rd"
+  out="$(bash "$COMPLETE" complete --round "$rd" 2>&1)"; rc=$?
+  chmod u+w "$rd"
+  assert_exit_code "$rc" 2 "a lost store write is exit 2, like every store-scoped failure"
+  assert_not_contains "$out" "Round complete" "no success claim over a lost write"
+  assert_eq "$(jq -r '.state' < "$rd/round.json")" "awaiting_integration" "state unmoved"
+}
+
 pr_run_tests

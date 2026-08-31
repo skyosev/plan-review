@@ -164,11 +164,20 @@ pr_doctor_check_bash() {
 # keeps the session lock. This is a PRESENCE check and presence is not
 # sufficiency: busybox `ps` exists and rejects `-eo`, which produces the same
 # silent degrade with the doctor still reporting the set present. Sufficiency
-# belongs to Tier E (`doctor --smoke`), which runs an adapter for real; this
-# tier stays a `command -v` over a stub PATH by design.
+# for ps now lives one check along, in pr_doctor_check_ps_forms, which runs both
+# shipped invocations for real -- the same Machine-tier precedent
+# pr_doctor_check_gnu_timeout set. pr_doctor_check_utils ITSELF stays a
+# `command -v` over a stub PATH by design: that is what lets tests/test-doctor.sh
+# point PATH at a stub directory alone, and it is the only reason this list can
+# be checked at all on a machine that has none of it.
+# `tee` is adapters/claude.sh: the CLI's stream-json is piped through it so the
+# same bytes reach both the file jq parses and this adapter's stdout, which the
+# kernel appends to log-claude.txt. Named here for the same reason `ps` is --
+# without it the doctor passes and every claude review dies on
+# `tee: command not found`.
 # This list does NOT reach a round: pr_doctor_preflight never calls
 # pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too.
-PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head"
+PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head tee"
 
 pr_doctor_check_utils() {
   local u missing=()
@@ -202,6 +211,14 @@ pr_doctor_check_utils() {
 # project's own stated baseline. Bash-builtin match on purpose: this file
 # parses with builtins only, so the stub-PATH doctor tests stay green.
 pr_doctor_check_gnu_timeout() {
+  # A host with no timeout at all already failed pr_doctor_check_utils for the
+  # right reason. Failing here too printed "not GNU coreutils" with an empty
+  # got: line and a brew hint -- two failures, one cause, the louder one naming
+  # the wrong thing (BACKLOG, 2026-08-27). Skip, and say where the diagnosis is.
+  pr_doctor_have timeout || {
+    pr_d_skip "timeout is absent entirely; the core-utilities failure above is the diagnosis"
+    return 0
+  }
   local v
   # Through pr_doctor_run like every other version read in this file, not a bare
   # command substitution: a substitution is held open by any descendant that
@@ -239,6 +256,57 @@ pr_doctor_check_gnu_timeout() {
   pr_d_info "macOS: brew install coreutils, then put the GNU names first:"
   pr_d_info "  PATH=\"\$(brew --prefix)/opt/coreutils/libexec/gnubin:\$PATH\""
   return 1
+}
+
+# Presence is not sufficiency, the ps edition: PR_DOCTOR_UTILS proves ps EXISTS,
+# and the execution kernel's descendant sweep needs the two exact invocations it
+# ships (lib/adapter-exec.sh): `ps -eo pid=,ppid=` every tick for the descendant
+# table, `ps -o lstart= -p <pid>` per new descendant for the identity read.
+# busybox ps passes the presence check and rejects -eo; a ps that answers the
+# table but not lstart silently degrades the identity check instead -- the
+# survivor is then skipped, never unsafely killed, but the green doctor would be
+# claiming a sweep the host cannot deliver. Probed with live invocations rather
+# than a version match because the question is behavioural and both GNU and
+# Darwin shapes must pass.
+#
+# COUPLING RULE: if the kernel's per-tick reads are ever folded into one
+# `ps -eo pid=,ppid=,lstart=` (the fold parked for the next matrix cycle;
+# the Mac handoff's row 2 captures its Darwin fixture), this
+# probe and its fixtures change in the same commit as lib/adapter-exec.sh.
+pr_doctor_check_ps_forms() {
+  # Absence is already a FAIL in pr_doctor_check_utils; a second failure here
+  # would name the wrong thing, exactly like the gnu_timeout skip above.
+  pr_doctor_have ps || {
+    pr_d_skip "ps is absent entirely; the core-utilities failure above is the diagnosis"
+    return 0
+  }
+  local out pid ppid rest seen=""
+  out="$(pr_doctor_run 10 ps -eo pid=,ppid=)"
+  # Builtins-only parse, the file's own rule. The recognizable row is this
+  # process: $$ is alive by definition, so a table without it is not the table
+  # the sweep walks. `rest` must be empty -- three columns would mean ps ignored
+  # the format and dumped its default output while exiting 0.
+  while read -r pid ppid rest; do
+    [[ "$pid" == "$$" && "$ppid" =~ ^[0-9]+$ && -z "$rest" ]] && seen=1
+  done <<< "$out"
+  if [[ -z "$seen" ]]; then
+    pr_d_fail "ps -eo pid=,ppid= did not return this process in a two-column numeric table"
+    pr_d_info "the kernel's descendant sweep reads that exact form every tick; a ps that"
+    pr_d_info "rejects it (busybox does) degrades the sweep to group-only cleanup, silently."
+    pr_d_info "got: ${out%%$'\n'*}"
+    return 1
+  fi
+  local start
+  start="$(pr_doctor_run 10 ps -o lstart= -p "$$")"
+  if [[ -z "${start//[[:space:]]/}" ]]; then
+    pr_d_fail "ps -o lstart= -p returned no start time for a live pid"
+    pr_d_info "the sweep signals a remembered pid only when its lstart still matches;"
+    pr_d_info "with no start time every remembered descendant is skipped -- group-only"
+    pr_d_info "cleanup with the doctor still green, which is what this probe exists to catch."
+    return 1
+  fi
+  pr_d_pass "ps answers both sweep forms (-eo pid=,ppid= table, -o lstart= identity)"
+  return 0
 }
 
 # What to say when a reviewer CLI is absent. No install URLs: the three CLIs are
@@ -427,12 +495,13 @@ pr_doctor_check_bwrap_jail() {
   if ! pr_doctor_have bwrap; then
     pr_d_fail "bwrap (bubblewrap) not on PATH"
     pr_d_info "Debian/Ubuntu: sudo apt install bubblewrap"
-    pr_d_info "agy's own --sandbox was measured NOT confining writes, and Claude Code"
-    pr_d_info "exposes no sandbox flag at all, so bubblewrap is the only write barrier"
-    pr_d_info "either reviewer has. Both adapters refuse to run without it. Dropping"
+    pr_d_info "agy's own --sandbox was measured NOT confining writes, so bubblewrap is"
+    pr_d_info "the only write barrier it has, and its adapter refuses without it."
+    pr_d_info "claude prefers the jail where it exists but does not need it. Dropping"
     pr_d_info "them from the roster is the other way out."
-    pr_d_info "macOS has no bubblewrap and no equivalent is wired up yet, so there it is"
-    pr_d_info "the ONLY way out: plan-review init --repo <dir> --reviewers codex,agent"
+    pr_d_info "This is agy's requirement alone now. claude switched to Claude Code's"
+    pr_d_info "own sandbox where bwrap is absent (2026-08-30), so on macOS the roster"
+    pr_d_info "to drop is agy: plan-review init --repo <dir> --reviewers codex,agent,claude"
     return 1
   fi
 
@@ -455,27 +524,117 @@ pr_doctor_check_bwrap_jail() {
   return 1
 }
 
+# WHICH HALF of adapters/claude.sh's confinement branch this host takes, and
+# whether that half's prerequisites are here. Added 2026-08-30 with the branch
+# itself: two confinement mechanisms in one adapter can drift, and the bound on
+# that drift is this check plus the single $confinement variable the adapter
+# assembles at the top. The predicate below is `command -v bwrap` because that
+# is the adapter's, verbatim -- two spellings of it is how the halves would
+# drift while both looked right.
+#
+# Builtins only, like the rest of this file: no sed, grep, awk or jq, which is
+# what lets tests/test-doctor.sh point PATH at a stub directory alone. $OSTYPE
+# rather than uname(1) for the same reason.
+#
+# It never FAILs on the bwrap half: pr_doctor_check_bwrap_jail already runs
+# there and owns that verdict. It fails in the other two cases -- a non-Darwin
+# host with no bwrap, which has no mechanism at all and whose adapter refuses,
+# and a Mac whose credentials cannot be materialised.
+pr_doctor_check_claude_confinement() {
+  if pr_doctor_have bwrap; then
+    pr_d_pass "claude confinement: bubblewrap (this host has bwrap)"
+    pr_d_info "adapters/claude.sh runs the CLI --dangerously-skip-permissions inside"
+    pr_d_info "the jail and asserts permissionMode bypassPermissions. Claude Code's"
+    pr_d_info "own sandbox is not used here. The jail itself is checked above."
+    return 0
+  fi
+
+  # No bwrap. The builtin half is DARWIN-ONLY, so a non-Darwin host has no
+  # confinement mechanism left at all and the adapter refuses (agy's rule).
+  # Measured 2026-08-30 (FINDINGS-2026-08-30-linux.md, row L3): Claude Code's
+  # own sandbox is IMPLEMENTED WITH bubblewrap on Linux, so the condition that
+  # selects this half is the condition that breaks it -- the CLI exits without
+  # an init line, naming bwrap as the missing dependency.
+  #
+  # This check used to assert socat instead, and it is worth saying why that was
+  # wrong rather than merely incomplete. socat IS a real dependency of that
+  # sandbox on Linux (A7), but it is the second of a pair and this asked only
+  # about the second: a host with socat and no bwrap PASSED, in front of a
+  # reviewer that could not start. Naming bwrap covers both, because a host with
+  # bwrap never reaches this branch at all.
+  #
+  # It returns HERE rather than falling through, because everything below
+  # describes a half this host does not take: the credentials it would
+  # materialise are not read, and the permissionMode note is not its rule.
+  if [[ "$OSTYPE" != darwin* ]]; then
+    pr_d_fail "claude cannot be confined on this host: no bwrap, and no second mechanism"
+    pr_d_info "Claude Code's own sandbox is built on bubblewrap here, so it is not a"
+    pr_d_info "fallback for a missing bwrap -- it needs the same binary. The adapter"
+    pr_d_info "refuses rather than run unconfined, so this reviewer produces nothing."
+    pr_d_info "Debian/Ubuntu: sudo apt install bubblewrap."
+    pr_d_info "The built-in sandbox is the macOS half only."
+    return 1
+  fi
+
+  # The macOS builtin half. One prerequisite the jail probe knows nothing about.
+  local rc=0
+
+  # Credentials this adapter can materialise into the private config dir. There
+  # is no bwrap to --ro-bind with, so the file is COPIED, or read out of the
+  # login Keychain where there is no file at all.
+  if [[ -f "${HOME:-}/.claude/.credentials.json" ]]; then
+    pr_d_pass "claude credentials: ~/.claude/.credentials.json (copied into the private config dir)"
+  elif pr_doctor_have security; then
+    pr_d_pass "claude credentials: the login Keychain item 'Claude Code-credentials'"
+    pr_d_info "macOS has no ~/.claude/.credentials.json. The adapter reads the item"
+    pr_d_info "under a 5s timeout -- KEEP THE LOGIN KEYCHAIN UNLOCKED: a locked one"
+    pr_d_info "BLOCKS the read rather than failing it (measured 2026-08-21), drawing"
+    pr_d_info "a dialog nobody is watching. This check does not read it: doing so on"
+    pr_d_info "a locked keychain would hang the doctor for the same reason."
+  else
+    pr_d_fail "claude has no credentials this host can materialise"
+    pr_d_info "~/.claude/.credentials.json does not exist and there is no security(1)"
+    pr_d_info "to read a Keychain item with. Run: claude auth login"
+    rc=1
+  fi
+
+  pr_d_pass "claude confinement: built-in sandbox (macOS Seatbelt; no bwrap, none needed)"
+
+  pr_d_info "On this half the CLI runs WITHOUT --dangerously-skip-permissions and the"
+  pr_d_info "adapter asserts permissionMode 'default'. That mode is load-bearing: the"
+  pr_d_info "built-in sandbox confines Bash tool calls ONLY, and denying Write/Edit is"
+  pr_d_info "what keeps the CLI's own unsandboxed writes inside the workspace"
+  pr_d_info "(measured 2026-08-30). The adapter also removes the repo copy's .claude/,"
+  pr_d_info "which was measured switching the sandbox off from the other side."
+  return "$rc"
+}
+
 # adapters/agent.sh's bwrap is a PID FENCE, not a write barrier, and unlike agy
-# and claude that adapter does not fail closed: with no working jail it runs the
+# that adapter does not fail closed: with no working jail it runs the
 # reviewer unwrapped and the execution kernel's best-effort descendant sweep
 # becomes the only bound (docs/adapter-contract.md, the containment clause).
+# claude is neither of those two cases any more -- since 2026-08-30 it SWITCHES
+# MECHANISM rather than refusing or degrading, and pr_doctor_check_claude_confinement
+# above is what reports which one it will take.
 # So this reports a WARN, never a failure -- there is no refusal here to
 # predict, and failing a machine for it would refuse a roster that works.
 #
 # It exists because the alternative was worse: with agent on the roster and
 # neither agy nor claude, the doctor used to print "no reviewer here needs the
 # bubblewrap jail", which stopped being true the moment agent started using one.
-# Only called in that case; when agy or claude is present,
-# pr_doctor_check_bwrap_jail runs the same probe under the strict rule.
+# Only called in that case; when agy is present -- or claude on a host that has
+# bwrap -- pr_doctor_check_bwrap_jail runs the same probe under the strict rule.
 pr_doctor_check_agent_pid_fence() {
   local out rc
   if ! pr_doctor_have bwrap; then
     pr_d_warn "no bwrap: agent runs without a pid namespace"
-    pr_d_info "Cursor's tool layer takes its own process group AND session, so a"
-    pr_d_info "background process it spawns can outlive the round and keep holding"
-    pr_d_info "the session lock. bwrap --unshare-pid is what disposes of it."
+    pr_d_info "On Linux, Cursor's tool layer takes its own process group AND"
+    pr_d_info "session, so a background process it spawns can outlive the round and"
+    pr_d_info "keep holding the session lock. bwrap --unshare-pid disposes of it."
     pr_d_info "Debian/Ubuntu: sudo apt install bubblewrap. Expected on macOS, which"
-    pr_d_info "has neither bubblewrap nor pid namespaces."
+    pr_d_info "has neither bubblewrap nor pid namespaces -- and where that same tool"
+    pr_d_info "layer was measured staying in the adapter's group (2026-08-29), so the"
+    pr_d_info "kernel's descendant sweep is the bound and this WARN is not a gap."
     return 0
   fi
   # --bind, not the default --ro-bind: adapters/agent.sh binds / READ-WRITE,
@@ -643,17 +802,30 @@ pr_doctor_fetch_agy_models() {
 # `about` also returns the account's userEmail. It is never echoed here -- a
 # doctor's output gets pasted into issues -- which is the rule
 # pr_doctor_check_claude_auth already follows for the account address.
+# The pure half of the identity question, shared with libexec/plan-review-skill.sh:
+# no pr_d_* output, no counters. stdout is the Cursor cliVersion; rc 1 is "the
+# agent on PATH is not the Cursor CLI" (or never answered). The check below owns
+# the doctor-formatted reporting.
+pr_agent_identity_version() {
+  local out ver
+  out="$(pr_doctor_run 15 agent about --format json 2>&1)" || return 1
+  ver="$(jq -r '.cliVersion // ""' <<< "$out" 2>/dev/null)"
+  [[ -n "$ver" ]] || return 1
+  printf '%s\n' "$ver"
+}
+
 pr_doctor_check_agent_identity() {
   pr_doctor_have agent || return 0   # absence is already a FAIL in Tier A
-  local out rc ver
-  out="$(pr_doctor_run 15 agent about --format json 2>&1)"
-  rc=$?
-  ver="$(jq -r '.cliVersion // ""' <<< "$out" 2>/dev/null)"
-  if (( rc == 0 )) && [[ -n "$ver" ]]; then
+  local ver
+  if ver="$(pr_agent_identity_version)"; then
     pr_d_pass "agent is the Cursor CLI, version $ver"
     return 0
   fi
-  pr_d_fail "the agent on PATH does not answer 'agent about --format json' (exit $rc)"
+  # The `(exit N)` the message used to carry is gone with the split: the
+  # predicate collapses "never answered" and "answered without a cliVersion"
+  # into one rc, and re-exposing the inner status just to print it would put the
+  # doctor's formatting back inside the half libexec/plan-review-skill.sh reuses.
+  pr_d_fail "the agent on PATH does not answer 'agent about --format json'"
   pr_d_info "$(command -v agent) may be a different tool with the same name."
   pr_d_info "adapters/agent.sh would run it with Cursor's flags and fail mid-round."
   return 1
@@ -1313,7 +1485,27 @@ pr_doctor_preflight() {
         # No pin requirement, deliberately. Unlike Cursor and agy, the stream-json
         # init line reports the resolved model, so round.json can record what
         # answered even when PR_CLAUDE_MODEL is unset.
-        jail_for="${jail_for}claude "
+        #
+        # NOT in $jail_for since 2026-08-30. That list means "these adapters
+        # refuse to run without bwrap", and claude no longer does: it switches to
+        # Claude Code's own sandbox instead. What it needs on THAT half is a
+        # credential route, and preflight refuses without one for the same reason
+        # it refuses a missing PR_AGENT_MODEL -- the adapter would fail after the
+        # sandbox copy and the session bookkeeping, forfeiting its resume handle
+        # for the price of a check we could have run first.
+        #
+        # The route is checked, not exercised. Reading the Keychain here would
+        # hang preflight on a locked one exactly as it would hang the adapter,
+        # and the adapter already caps that read and reports it as its own reason
+        # (D5, 2026-08-21).
+        if ! pr_doctor_have bwrap \
+           && [[ ! -f "${HOME:-}/.claude/.credentials.json" ]] \
+           && ! pr_doctor_have security; then
+          echo "preflight: claude has no credentials this host can materialise." >&2
+          echo "  ~/.claude/.credentials.json does not exist and there is no security(1)" >&2
+          echo "  to read the login Keychain item with. Run: claude auth login" >&2
+          rc=1
+        fi
         ;;
     esac
   done

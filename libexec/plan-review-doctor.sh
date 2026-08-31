@@ -160,6 +160,7 @@ pr_d_section "Machine"
 pr_doctor_check_bash
 pr_doctor_check_utils
 pr_doctor_check_gnu_timeout
+pr_doctor_check_ps_forms
 for cli in $PR_ROSTER_ADAPTERS; do
   if [[ " $shipped " != *" $cli "* ]]; then
     pr_d_skip "$cli is not in this round's roster"
@@ -177,13 +178,28 @@ done
 # invocation in a pid-namespace bwrap, so "no reviewer here needs the jail" was
 # false for a codex+agent roster. It gets a WARN-only check, because that
 # adapter runs unwrapped rather than refusing -- see pr_doctor_check_agent_pid_fence.
-if [[ " $shipped " == *" agy "* || " $shipped " == *" claude "* ]]; then
+# claude stopped being one of the two unconditional cases on 2026-08-30: it now
+# picks its confinement per host (bwrap where it exists, Claude Code's own
+# sandbox where it does not), so it needs the jail probe only on the first half
+# -- and on the second half a missing bwrap is not a defect to report. agy is
+# the last reviewer that REQUIRES bubblewrap and refuses without it.
+needs_jail=""
+[[ " $shipped " == *" agy "* ]] && needs_jail="agy"
+[[ " $shipped " == *" claude "* ]] && pr_doctor_have bwrap && needs_jail="${needs_jail:+$needs_jail }claude"
+
+if [[ -n "$needs_jail" ]]; then
   pr_doctor_check_bwrap_jail
 elif [[ " $shipped " == *" agent "* ]]; then
   pr_doctor_check_agent_pid_fence
 else
   pr_d_skip "no reviewer here needs the bubblewrap jail"
 fi
+# Always, when claude is on the roster: it says which half the adapter will take
+# and checks that half's own prerequisites, which the jail probe knows nothing
+# about -- credentials to materialise on a Mac, and on any other platform with no
+# bwrap the fact that there is no second mechanism at all and the adapter will
+# refuse (2026-08-30: Claude Code's own sandbox is built on bubblewrap here).
+[[ " $shipped " == *" claude "* ]] && pr_doctor_check_claude_confinement
 pr_doctor_check_cache_root
 
 pr_d_section "Reviewer CLIs"

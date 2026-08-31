@@ -72,14 +72,20 @@ pr_init_has_effort() { local e="PR_EFFORTS_${1^^}"; [[ -n "${!e:-}" ]]; }
 # so without one round.json could not record what reviewed the plan.
 pr_init_needs_pin() { [[ "$1" == agent || "$1" == agy ]]; }
 
-# Which CLIs need the bubblewrap jail. agy's own --sandbox does not confine
-# writes and Claude Code exposes no sandbox flag, so both adapters refuse to run
-# without bwrap. This is REFUSAL, not use: adapters/agent.sh also wraps itself in
-# bwrap, for a pid namespace rather than a write barrier, and runs unwrapped when
-# there is none -- so listing it here would block `init` on a machine where the
-# roster works. The doctor reports that case as a warning instead
-# (pr_doctor_check_agent_pid_fence).
-pr_init_needs_jail() { [[ "$1" == agy || "$1" == claude ]]; }
+# Which CLIs REFUSE TO RUN without the bubblewrap jail. agy's own --sandbox does
+# not confine writes, so its adapter refuses without bwrap and that is the whole
+# list.
+#
+# This is REFUSAL, not use, and two reviewers use a jail without belonging here.
+# adapters/agent.sh wraps itself in bwrap for a pid namespace rather than a write
+# barrier and runs unwrapped when there is none, so listing it would block `init`
+# on a machine where the roster works; the doctor reports that case as a warning
+# instead (pr_doctor_check_agent_pid_fence). claude joined it on 2026-08-30: it
+# prefers the jail and takes it wherever bwrap exists, but where bwrap does not
+# it switches to Claude Code's own sandbox rather than refusing -- so `init`
+# must not fail a Mac for a reviewer that works there. Which half a host takes
+# is pr_doctor_check_claude_confinement's answer, and the doctor prints it.
+pr_init_needs_jail() { [[ "$1" == agy ]]; }
 
 # pr_init_lookup <pairs> <key>  -- "cli=value cli=value" -> value, or 1.
 pr_init_lookup() {

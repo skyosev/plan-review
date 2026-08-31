@@ -93,7 +93,7 @@ test_sweeps_even_when_the_adapter_exits_cleanly() {
 # The P6 gate: a grandchild that took its own session survives the group
 # sweep (measured, probes 2026-08-26); the descendant sweep must reach it.
 test_sweep_reaches_a_setsid_escaper() {
-  pr_test_requires setsid || return 0   # util-linux command; absent on macOS
+  pr_test_requires_setsid || return 0   # setsid(1) or perl; see the shim
   local d; d="$(pr_test_tmpdir)"
   local rc=-1 timed_out=-1
   pr_adapter_exec "$PR_ROOT/tests/fixtures/adapters/fake-escaper.sh" "$d" "" \
@@ -132,7 +132,7 @@ test_a_hung_ps_table_read_does_not_hang_the_kernel() {
 # it could not re-read (unknown is not a match). The stub execs the real ps
 # by absolute path so it cannot recurse into itself.
 test_a_hung_sweep_identity_read_is_bounded_and_never_kills_blind() {
-  pr_test_requires setsid || return 0   # the fixture's escape needs it; absent on macOS
+  pr_test_requires_setsid || return 0   # the fixture's escape needs one of the two
   local d rc=99 timed_out=99 real_ps child
   d="$(pr_test_tmpdir)"; mkdir -p "$d/w" "$d/bin" "$d/tmp"
   real_ps="$(command -v ps)"
@@ -197,7 +197,7 @@ test_an_oversized_cap_is_clamped() {
 # every ps in the poll loop would exit 125, the escaper would never be
 # remembered, and it would outlive the round.
 test_a_nonnumeric_cap_does_not_silently_disable_the_sweep() {
-  pr_test_requires setsid || return 0   # util-linux command; absent on macOS
+  pr_test_requires_setsid || return 0   # setsid(1) or perl; see the shim
   local d rc=-1 timed_out=-1; d="$(pr_test_tmpdir)"
   PR_PS_CAP_SECS=abc \
     pr_adapter_exec "$FAKES/fake-escaper.sh" "$d" "" \

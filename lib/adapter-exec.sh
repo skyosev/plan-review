@@ -111,6 +111,16 @@
 # round left `sleep 900` running after the round had returned, holding the
 # inherited session-lock fd.
 #
+# P6 was a LINUX measurement, and 2026-08-29 on Darwin swapped the two roles
+# (probes/2026-08-29-macos-row3-sweep, two live rounds with a detached
+# signal-ignoring escaper each): `agent`'s escaper stayed inside the adapter's
+# process group and the ordinary group kill got it, while codex's tool layer
+# gave its spawned command a group of its own -- and codex reaped it itself,
+# 45s before its own adapter exited. So on macOS this sweep never had to fire,
+# and the case it exists for is codex's, held together there by a vendor's own
+# cleanup that nothing versions and nothing asserts. Insurance against that
+# shape, not the mechanism currently doing the work.
+#
 # P6 also asserted that agy and claude "are covered by the adapter's bwrap".
 # That half was inference, not measurement -- P6 ran only codex and agent --
 # and it was false: --die-with-parent without --unshare-pid contains nothing

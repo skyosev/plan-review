@@ -19,8 +19,10 @@
 # refusal, and reasoning about which are which per line is not worth it.
 #
 # In practice: no ${x^^}, no mapfile, no local -n, no associative arrays. Indexed
-# arrays do work in 3.2, but `set --` inside a function is used as the argument
-# array anyway (verify_skill), because it needs no version reasoning at all.
+# arrays do work in 3.2, but `set --` is used as the argument array anyway (main,
+# for the optional --bin-dir), because it needs no version reasoning at all. The
+# harness tables and the skills-CLI argv that used to need this rule the hardest
+# now live in libexec/plan-review-skill.sh, which is bash 5 like everything else.
 #
 # What it promises is the RUNNER, not a working plan-review, and not the skill:
 # the skill step is non-fatal, so exit 0 says the runner was linked and nothing
@@ -38,9 +40,9 @@ set -euo pipefail
 # local repository -- the only reason this is a variable.
 PR_INSTALL_SOURCE="${PR_INSTALL_SOURCE:-https://github.com/skyosev/plan-review.git}"
 
-# Set by install_skill, and read only by the epilogue: the removal line it gates
-# takes out a GLOBAL skill by name, so it is printed when this run installed one
-# and never otherwise.
+# Set by main's skill step, and read only by the epilogue: the removal line it
+# gates takes out a GLOBAL skill by name, so it is printed when this run
+# installed AND verified one, and never otherwise.
 PR_SKILL_INSTALLED=0
 
 # Under `curl | bash`, stdin IS this script. Nothing below may read it, and git
@@ -257,199 +259,6 @@ upgrade_checkout() {
   fi
 }
 
-# Harness ids and display names as the skills CLI spells them, read at version
-# 1.5.18 on 2026-08-19 and CONFIRMED against a real 1.5.18 on macOS 2026-08-20:
-# all four ids exit 0, and all four display names came back exactly as written
-# below. Two strings per harness because verification needs both: the id selects,
-# the display name is what comes back.
-#
-# `agy` is `antigravity-cli`, NOT `antigravity`: skills lists those as two agents
-# with two separate global directories, and lib/doctor.sh:141 identifies agy as
-# the Antigravity *CLI*.
-#
-# Re-confirm both tables whenever this comment's version goes stale. No offline
-# test can check any of them -- a stub reproduces whatever name it is given, which
-# is how `antigravity` survived a draft of this file, and tests/test-bootstrap.sh's
-# ALL_LINKED fixture hard-codes the same four names, so a correction here needs the
-# fixture corrected with it or the suite passes against the old world. A wrong name
-# is at least self-diagnosing rather than silent: verify_skill prints both what it
-# wanted and what came back. Same convention, same reason, as lib/doctor.sh:396.
-skill_id_for() {
-  case "$1" in
-    claude) printf 'claude-code\n' ;;
-    codex)  printf 'codex\n' ;;
-    agent)  printf 'cursor\n' ;;
-    agy)    printf 'antigravity-cli\n' ;;
-  esac
-}
-
-skill_name_for() {
-  case "$1" in
-    claude) printf 'Claude Code\n' ;;
-    codex)  printf 'Codex\n' ;;
-    agent)  printf 'Cursor\n' ;;
-    agy)    printf 'Antigravity CLI\n' ;;
-  esac
-}
-
-# `agent` is a generic name, and `command -v agent` cannot tell the Cursor CLI
-# from any other tool called agent. lib/doctor.sh:405 asks the same question and
-# requires a NON-EMPTY .cliVersion; an exit-status-only probe is a different and
-# much weaker test, because another tool can exit 0 on a subcommand it does not
-# recognise.
-#
-# Parsed with node, not jq and not parameter expansion. jq is not a requirement
-# of this installer and must not become one; npx has already proved node is here,
-# one function above. A substring hunt for "cliVersion" was the first draft and it
-# accepts truncated JSON, an unterminated value, and the key appearing inside some
-# other tool's error string -- which is the exact confusion this function exists
-# to resolve, so it cannot be the thing doing the resolving.
-cursor_identity_ok() {
-  agent about --format json < /dev/null 2>/dev/null | node -e '
-    let s = "";
-    process.stdin.on("data", d => { s += d; });
-    process.stdin.on("end", () => {
-      let v;
-      try { v = JSON.parse(s); } catch (e) { process.exit(1); }
-      const ok = v && typeof v === "object" && !Array.isArray(v)
-              && typeof v.cliVersion === "string" && v.cliVersion.length > 0;
-      process.exit(ok ? 0 : 1);
-    });'
-}
-
-# The skill is the primary interface, and it is installed by a third-party CLI
-# into each harness's own global directory. Everything here is NON-FATAL: the
-# promise is scoped to the runner, and a missing npx or a registry outage must
-# not turn a good install into a failed one. Every failure prints the exact
-# command to run by hand.
-install_skill() {
-  local checkout="$1" cli targets="" add_args=""
-  # node before npx, because cursor_identity_ok and verify_skill both need it and
-  # a bare `npx` with no node behind it is not a thing anyone has.
-  if ! command -v npx > /dev/null 2>&1 || ! command -v node > /dev/null 2>&1; then
-    # A concrete id, not a <harness> placeholder: pasted, `<harness>` is a
-    # redirect and the line dies on "harness: No such file or directory". The
-    # whole reason q() exists is that these lines get pasted.
-    warn "npx and node are needed for the skill, and one of them is not on PATH." \
-      "install it later with: npx skills add $(q "$checkout") -g -a claude-code" \
-      "repeat -a for each one you use: claude-code, codex, cursor, antigravity-cli"
-    return 0
-  fi
-  # The same four CLIs lib/roster.sh's PR_ROSTER_ADAPTERS names, spelled again
-  # because this file sources nothing. Not the roster, though: this asks which
-  # harnesses can HOST the skill, so it includes the orchestrator, and a fifth
-  # one would need skill_id_for and skill_name_for entries regardless.
-  for cli in claude codex agent agy; do
-    command -v "$cli" > /dev/null 2>&1 || continue
-    if [ "$cli" = agent ] && ! cursor_identity_ok; then
-      warn "the 'agent' on PATH does not answer 'agent about --format json'." \
-        "it looks like a different tool with the same name; skipping Cursor."
-      continue
-    fi
-    targets="$targets $cli"
-    add_args="$add_args -a $(skill_id_for "$cli")"
-  done
-  [ -n "$targets" ] || {
-    warn "no supported harness on PATH, so the skill was not installed."
-    return 0; }
-
-  step "installing the skill for:$targets"
-  # ONE add for every harness, not one per harness. The CLI takes repeated -a,
-  # and four separate calls were four snapshots of the checkout taken at four
-  # moments as well as four mutable third-party processes.
-  #
-  # $add_args is deliberately unquoted: word splitting is the mechanism, and
-  # every id is a bare word by construction above.
-  #
-  # Two -y flags, belonging to two different programs: the leading one is npm's
-  # "do not ask before fetching this package", the trailing one is the skills
-  # CLI's own "do not prompt". Only the second suppresses its questions.
-  # DISABLE_TELEMETRY because we spawn this on the user's behalf rather than them
-  # running it -- and it is on BOTH npx calls, not just this one. stdin is closed
-  # because under `curl | bash` stdin is us.
-  if ! DISABLE_TELEMETRY=1 npx -y skills add "$checkout" -g $add_args -y < /dev/null; then
-    warn "the skill install failed." \
-      "retry with: DISABLE_TELEMETRY=1 npx -y skills add $(q "$checkout") -g$add_args -y"
-    return 0
-  fi
-  PR_SKILL_INSTALLED=1
-  verify_skill "$targets" || true
-}
-
-# One `skills ls -g --json`, then the real question: does plan-review's `agents`
-# array contain the display name of every harness we just installed for?
-#
-# An earlier design asked only whether the array was non-empty under
-# `skills ls -a <harness>`, on the theory that scoping the query made the answer
-# unambiguous. It does not -- the CLI attributes skills to agents outside the
-# filter -- so a skill linked into Claude Code alone answers "non-empty" to a
-# Codex query. The fixture written for that check encoded the same false
-# positive: it returned ["Claude Code"] to all four queries and called all four
-# verified. Exact names cost four more third-party strings; a check that cannot
-# fail costs more.
-#
-# Name presence alone is not verification either. Measured with skills 1.5.18 in
-# an isolated home on 2026-08-19: an install that produced no Claude Code link
-# still had `skills ls` print plan-review and exit 0, annotated only `not linked`.
-# The JSON is where the difference lives.
-#
-# A missing name is not always a missing link. Measured on macOS 2026-08-20 with
-# skills 1.5.18: `ls -g --json` attributes a skill to an agent only when that
-# agent's config directory exists in the same HOME (`~/.codex`, `~/.cursor`,
-# `~/.claude`, `~/.gemini/antigravity-cli`) -- `-a` says where to install, and a
-# separate per-agent detectInstalled() decides what gets reported. On the FIRST
-# run in a pristine home the add copied the skill for Codex and this check still
-# said `no agent at all`; the second run passed, because the doctor's own
-# `codex --version` probe had created `~/.codex` in between. The warning is left
-# as it is: it is right whenever the user has ever run the harness, its remedy
-# line is correct either way, and suppressing it would cost the true miss.
-#
-# node, not jq: jq is not a requirement of this installer and must not become
-# one, while npx has already proved Node is here.
-verify_skill() {
-  local targets="$1" cli out rc=0
-  out="$(DISABLE_TELEMETRY=1 npx -y skills ls -g --json < /dev/null 2>/dev/null)" || out=""
-  if [ -z "$out" ]; then
-    warn "could not read 'skills ls -g --json'; the links are unverified." \
-      "check it by hand: npx skills ls -g --json"
-    return 2
-  fi
-  # `set --` rather than an array: this file has to run under bash 3.2, and the
-  # display names contain spaces so a split string will not do.
-  set --
-  for cli in $targets; do set -- "$@" "$(skill_name_for "$cli")"; done
-  printf '%s' "$out" | node -e '
-    let s = "";
-    process.stdin.on("data", d => { s += d; });
-    process.stdin.on("end", () => {
-      let v;
-      try { v = JSON.parse(s); } catch (e) { process.exit(2); }
-      const list = Array.isArray(v) ? v : (v && v.skills) || [];
-      const hit = list.find(x => x && x.name === "plan-review");
-      const have = (hit && Array.isArray(hit.agents)) ? hit.agents : [];
-      const want = process.argv.slice(1);
-      const missing = want.filter(n => have.indexOf(n) < 0);
-      if (missing.length) {
-        console.error("  not linked into: " + missing.join(", "));
-        console.error("  skills reports: " + (have.length ? have.join(", ") : "no agent at all"));
-        process.exit(1);
-      }
-    });' "$@" || rc=$?
-  case "$rc" in
-    0) say "  verified: the skill is linked into$targets"; return 0 ;;
-    # The hand-check line is repeated rather than shared after the case: it is a
-    # remedy, and a remedy now travels as an argument of the warning it belongs
-    # to. Two copies of one short string is the price of not printing it on a
-    # different stream from the warning it explains.
-    1) warn "the skill is installed but not linked everywhere (see above)." \
-         "a harness you have never launched reports this way whether linked or not." \
-         "check it by hand: npx skills ls -g --json" ;;
-    *) warn "could not parse 'skills ls -g --json'; the links are unverified." \
-         "check it by hand: npx skills ls -g --json" ;;
-  esac
-  return "$rc"
-}
-
 main() {
   local ref="main" bin_dir="" skip_skill=0 checkout before after
 
@@ -510,10 +319,23 @@ main() {
     say "$before -> $after"
   fi
 
-  # Before the doctor, so the doctor's report is the last thing on screen -- and
-  # non-fatal in every branch it can take, which is why nothing here guards the
-  # status.
-  [ "$skip_skill" = 1 ] || install_skill "$checkout"
+  # Before the doctor, so the doctor's report is the last thing on screen.
+  #
+  # Delegated to the subcommand, the same rule as `install` and the doctor:
+  # re-deriving harness detection here is the second derivation that goes
+  # stale. Non-fatal, because this script's promise is the RUNNER; the
+  # subcommand owns the fatal version of every failure for direct invocations.
+  # The removal hint is printed only on a fully verified install now -- an
+  # installed-but-unverified skill loses it, an accepted cost: the failure
+  # output already carries the exact commands to run by hand.
+  if [ "$skip_skill" != 1 ]; then
+    if "$checkout/bin/plan-review" skill < /dev/null; then
+      PR_SKILL_INSTALLED=1
+    else
+      warn "the skill step did not complete (see above)." \
+        "retry with: $(q "$checkout/bin/plan-review") skill"
+    fi
+  fi
 
   step "checking readiness"
   # Through the checkout's own path, never a bare `plan-review`: it is not on
@@ -544,7 +366,7 @@ EPILOGUE
   # npx or a failed install would be inviting someone to delete a skill this run
   # never touched.
   if [ "$PR_SKILL_INSTALLED" = 1 ]; then
-    say '      npx skills remove -g plan-review    # global, and by name'
+    say '      npx skills@1.5.18 remove -g plan-review    # global, and by name'
   fi
 }
 
