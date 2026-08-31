@@ -83,11 +83,18 @@ test_a_skill_attributed_to_no_agent_says_so() {
   assert_contains "$out" "skills reports: no agent at all" "an empty array is not a blank line"
 }
 
+# "could not PARSE", not "unverified": both branches print the latter -- the
+# empty-`out` one at libexec/plan-review-skill.sh's first exit and the jq-failure
+# one at its second -- so asserting on the shared word left the case unable to
+# say which it had exercised. It would have passed a regression that stopped
+# parsing altogether and reported every host as unreadable instead.
 test_an_unparseable_ls_is_nonzero() {
   local d out rc; d="$(mk_case 'this is not json')"
   out="$(run_skill "$d")"; rc=$?
   assert_exit_code "$rc" 1 "unverified is nonzero when invoked directly"
-  assert_contains "$out" "unverified" "and says so"
+  assert_contains "$out" "could not parse 'skills ls -g --json'" \
+    "and names the jq-failure branch, not the empty-output one beside it"
+  assert_not_contains "$out" "could not read" "which is the other branch"
 }
 
 test_a_failed_add_is_nonzero_with_the_retry_line() {

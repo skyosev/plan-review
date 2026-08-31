@@ -272,7 +272,12 @@ test_a_broken_jail_costs_the_fence_not_the_reviewer() {
   rc=$?
   assert_exit_code "$rc" 0 "the review still runs unwrapped"
   assert_file_exists "$d/bin/argv.txt" "the CLI ran"
-  assert_contains "$(cat "$d/bin/bwrap-argv.txt")" "true" "the jail was trialled once"
+  # grep -c, not assert_contains: the name says ONCE, and presence cannot say
+  # how many. The stub appends one line per argv word, so the trial's own `true`
+  # is one line of its own and a second trial would be a second. A retry loop
+  # added to the wrap gate would have passed the old assertion silently.
+  assert_eq "$(grep -c '^true$' "$d/bin/bwrap-argv.txt")" "1" \
+    "the jail was trialled exactly once"
   assert_not_contains "$(cat "$d/bin/bwrap-argv.txt")" "agent" "and no vendor call was wrapped"
 }
 

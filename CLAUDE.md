@@ -42,6 +42,8 @@ a `git worktree` per revision — every row but the last, which is 2026-08-28 in
 | + `claude-macos` — **Darwin only, see below** | 542 | 274.2s | — |
 | **+ `claude-macos`, on Linux** | **542** | **78.84s** | **79.25s** |
 | **+ the row-L3 fix** | **543** | **78.38s** | **78.38s** |
+| `main` re-timed 2026-08-31, same tree as the row above | 543 | 82.17s | 81.13s |
+| **+ `backlog-clearing-4`** | **547** | **81.71s** | **83.53s** |
 
 So ~62s was still right for `main` at the time: the whole delta was
 `reviewer-isolation-hardening`'s, not host drift —
@@ -121,8 +123,19 @@ tests it added are stub-only. It is still not a licence. The one thing on this b
 real per-round cost is the Keychain read, which is one `security` fork per `claude` round on
 the builtin half and never runs on Linux at all. The row below it is the same tree plus row L3's fix, and its 543rd test — the
 adapter's Linux refusal — is likewise free (two runs identical to the centisecond).
-**Budget against 543/~78s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
-fix and nobody has re-timed a Mac since. The Debian-container run in
+**Budget against 547/~82s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
+fix and nobody has re-timed a Mac since.
+
+**The last two rows are a pair and only mean anything read together.** The ~78s of the
+row-L3 tree was measured 2026-08-30; the same tree re-timed on 2026-08-31 — a `git worktree`
+at `main`, two back-to-back runs, the method every row here uses — came in at 82.17s and
+81.13s. So the host is ~3s slower than it was the day before, and `backlog-clearing-4`'s four
+tests cost **nothing this method can see**: 81.71s and 83.53s against main's 82.17s and 81.13s
+on the same afternoon, the two trees interleaved inside the ~2.5s floor. Measure the baseline
+again rather than diffing against a number from another day — "the host got slower" was the
+wrong answer once in this table and the right one here, and only a same-session control tells
+the two apart. What the four tests are is also why they are free: three doctor unit cases and
+one adapter refusal that exits before spawning anything. The Debian-container run in
 `docs/process/probes/2026-08-30-claude-macos-row8/` is superseded: its 14 failures were the
 container's PID view and seccomp profile and did **not** reproduce on a real host
 (`docs/process/FINDINGS-2026-08-30-linux.md`).
