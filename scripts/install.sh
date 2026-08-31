@@ -260,7 +260,7 @@ upgrade_checkout() {
 }
 
 main() {
-  local ref="main" bin_dir="" skip_skill=0 checkout before after
+  local ref="main" bin_dir="" skip_skill=0 checkout before after skill_rc
 
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -328,9 +328,27 @@ main() {
   # The removal hint is printed only on a fully verified install now -- an
   # installed-but-unverified skill loses it, an accepted cost: the failure
   # output already carries the exact commands to run by hand.
+  #
+  # The two failure statuses get different endings, and the difference is the
+  # retry line. libexec/plan-review-skill.sh's own header defines them: 1 is
+  # "the install ran and failed, or the links could not be verified", where
+  # running it again is a reasonable thing to suggest; 2 is "refused before
+  # doing anything" -- npx/node or jq missing, or no harness found -- where the
+  # retry is guaranteed to refuse identically, and exit 2's own message already
+  # names what is missing. Handing an operator a command that cannot work is
+  # worse than saying nothing, and the install_skill function this delegation
+  # replaced returned 0 quietly in exactly those branches.
+  #
+  # Reproduced live on macOS 2026-08-29 (a bootstrap under a PATH with no node
+  # printed the exit-2 diagnosis and the `retry with:` line directly beneath
+  # it), so this is a fix for something measured, not a hypothetical.
   if [ "$skip_skill" != 1 ]; then
-    if "$checkout/bin/plan-review" skill < /dev/null; then
+    skill_rc=0
+    "$checkout/bin/plan-review" skill < /dev/null || skill_rc=$?
+    if [ "$skill_rc" -eq 0 ]; then
       PR_SKILL_INSTALLED=1
+    elif [ "$skill_rc" -eq 2 ]; then
+      warn "the skill step was refused before it did anything (see above)."
     else
       warn "the skill step did not complete (see above)." \
         "retry with: $(q "$checkout/bin/plan-review") skill"

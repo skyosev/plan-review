@@ -174,9 +174,16 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   install`, `plan-review skill` and `plan-review doctor --offline`; it re-derives none of
   their rules, because the second derivation is the one that goes stale. It checks `readlink -f` and bash 5
   before cloning — without those the doctor cannot start, so there is nothing to delegate
-  to. Its skill step is non-fatal by design: the promise is the runner. Covered by
+  to. Its skill step is non-fatal by design: the promise is the runner. It does read that
+  step's **status**, though, and the two failures get different endings — 1 ("ran and
+  failed") earns the `retry with:` line, 2 ("refused before doing anything": no npx/node or
+  jq, no harness) does not, because re-running it refuses identically and exit 2's own
+  message already names what is missing. That is one of the few rules the bootstrap owns
+  rather than delegates, and it owns it because only the caller knows the retry is a wrapper
+  around the same refusal. Covered by
   `tests/test-bootstrap.sh`, which drives it against a throwaway local git repo via
-  `PR_INSTALL_SOURCE`.
+  `PR_INSTALL_SOURCE` — one case per arm, and they are a pair: whichever is read alone, the
+  retry line looks unconditional.
 - `lib/*.sh` — sourcing is side-effect free everywhere; nothing runs until a `pr_*`
   function is called.
 - `adapters/<reviewer>.sh` — one per reviewer CLI. **Standalone**: they source nothing,
