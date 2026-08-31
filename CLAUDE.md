@@ -231,6 +231,19 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `jq`-using logic belongs in `lib/config.sh` / `lib/init.sh` instead. The rule is about
   parsing: Tier E (`doctor --smoke`) exists to run adapters and so assumes a working
   PATH, exactly as `_pr_doctor_bwrap_probe` already does.
+- **Every doctor check is now roster-scoped, `pr_doctor_check_versions` included** — it was
+  the last one that was not (fixed 2026-08-31). It iterated `docs/verified-versions.txt`, so
+  a `{"reviewers": ["codex"]}` repo printed "`agy` is not in this round's roster" and then
+  spawned `agy`, `claude` and `agent --version` anyway, the last a ~1.5s live account read.
+  Two things about the fix are decisions rather than derivations. **The orchestrator's own
+  CLI is kept** even though `lib/roster.sh` removes it from every roster: it is the binary
+  running the rounds and nothing else here would report drift on it. And the skip is gated on
+  `PR_ROSTER_ADAPTERS` as well as on the roster, so it applies only to names this repo ships
+  an adapter for — a future pins line naming a non-reviewer dependency is in no roster and a
+  bare roster test would drop it in silence. `tests/test-doctor.sh`'s "no real CLI" rule
+  **survives this**: rostered CLIs and the orchestrator's are still spawned, and most cases
+  there name a real orchestrator. What the gate retired is the `PR_TEST_NO_REAL_CLI` shim
+  `BACKLOG.md` proposed — that enforcement was a net under a cause this removed.
 - **`pr_doctor_run` captures each probe to its own pair of files** and replays them on
   the streams they came from, then removes them itself. Both halves are load-bearing:
   a command substitution is held open by any descendant that inherited stdout, so the

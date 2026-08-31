@@ -1095,7 +1095,39 @@ pr_doctor_version_of() {
   return 1
 }
 
+# pr_doctor_check_versions <roster> [orchestrator]
+#
+# <roster> is $shipped: the reviewer names this round would actually run.
+#
+# Roster-gated since 2026-08-31, and it was NOT before: this loop iterated the
+# pins file alone, so `plan-review doctor` on a {"reviewers": ["codex"]} repo
+# printed "`agy` is not in this round's roster" a few lines above and then
+# spawned `agy --version`, `claude --version` and `agent --version` regardless --
+# the last of which is a ~1.5s live account read. The gate is the one
+# libexec/plan-review-doctor.sh already applies to pr_doctor_check_cli, and the
+# reason it went unnoticed is recorded in tests/test-doctor.sh: the suite paid
+# 20 such spawns until stub_all_reviewer_clis replaced what answered them.
+#
+# THE ORCHESTRATOR'S OWN CLI IS KEPT, and that is the decision rather than the
+# derivation (the entry this closes says two reviewers stopped here, and this is
+# the answer they were waiting for). It is never in $shipped -- lib/roster.sh
+# removes it, because a round that reviews its own orchestrator is not
+# independent -- yet it is the binary actually running the rounds, and nothing
+# else in the doctor would ever report drift on it. Its adapter is not in play,
+# so the drift matters less than a reviewer's; it is one `command -v`-cheap
+# --version call, and reporting nothing about the tool the operator is sitting
+# in was the worse of the two silences.
+#
+# Gated on PR_ROSTER_ADAPTERS rather than on the roster alone, so the skip
+# applies ONLY to names this repo ships an adapter for. A future line in
+# verified-versions.txt naming a non-reviewer dependency -- `bubblewrap 0.9.0`
+# is the shape the format comment already uses as an example -- is in no roster
+# and under a bare roster test would be dropped in silence.
+#
+# Silent, deliberately: pr_doctor_check_cli already prints one line per
+# out-of-roster CLI, and a second here would report one fact twice.
 pr_doctor_check_versions() {
+  local roster="${1:-}" orch="${2:-}"
   local file="${PR_DOCTOR_VERSIONS_FILE:-${PR_ROOT:-.}/docs/verified-versions.txt}"
   if [[ ! -f "$file" ]]; then
     pr_d_warn "no verified-versions file at $file; skipping drift checks"
@@ -1109,6 +1141,14 @@ pr_doctor_check_versions() {
   local tool want got
   while read -r tool want _; do
     [[ -z "$tool" || "$tool" == \#* ]] && continue
+    # `:-` because lib/doctor.sh sources nothing and lib/roster.sh is what
+    # defines that list. Loaded without it the guard reads as "no name is a
+    # shipped adapter", which skips nothing -- the safe direction, and the same
+    # answer this check gave before the gate existed.
+    if [[ " ${PR_ROSTER_ADAPTERS:-} " == *" $tool "* \
+       && " $roster " != *" $tool "* && "$tool" != "$orch" ]]; then
+      continue
+    fi
     # Absence is already a FAIL in Tier A. Repeating it here would double-count
     # one problem as two.
     pr_doctor_have "$tool" || continue

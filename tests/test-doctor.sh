@@ -34,7 +34,13 @@ doctor_run() {
   local path="$1" snippet="$2"
   PATH="$path" "$BASH" -c "set -uo pipefail
 source '$PR_ROOT/lib/paths.sh'
+source '$PR_ROOT/lib/roster.sh'
 source '$PR_ROOT/lib/doctor.sh'
+# roster.sh, even though nothing here calls a pr_roster_* function and
+# lib/doctor.sh sources nothing itself: it defines PR_ROSTER_ADAPTERS, which
+# pr_doctor_check_versions's roster gate reads. Sourced rather than assigned so
+# the gate sees the same list production does, and safe to add to every case
+# because sourcing lib/ is side-effect free by contract.
 $snippet
 printf 'counts %s %s %s\n' \"\$PR_DOCTOR_PASS\" \"\$PR_DOCTOR_WARN\" \"\$PR_DOCTOR_FAIL\"" 2>&1
 }
@@ -691,7 +697,7 @@ test_matching_versions_pass() {
   printf '# comment\n\ncodex 0.147.0\n' > "$d/versions.txt"
   local out
   out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
-pr_doctor_check_versions")"
+pr_doctor_check_versions codex")"
   assert_contains "$out" "codex 0.147.0 matches the verified version" "a match"
   assert_contains "$out" "counts 1 0 0" "comments and blank lines are skipped"
 }
@@ -702,7 +708,7 @@ test_version_drift_warns_and_does_not_fail() {
   printf 'codex 0.147.0\n' > "$d/versions.txt"
   local out
   out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
-pr_doctor_check_versions")"
+pr_doctor_check_versions codex")"
   assert_contains "$out" "codex is 0.148.0; the adapters were verified against 0.147.0" \
     "names both versions"
   assert_contains "$out" "fails closed" "explains what drift threatens"
@@ -717,7 +723,7 @@ test_absent_tool_is_not_double_counted_by_the_drift_check() {
   printf 'codex 0.147.0\n' > "$d/versions.txt"
   local out
   out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
-pr_doctor_check_versions")"
+pr_doctor_check_versions codex")"
   assert_contains "$out" "counts 0 0 0" "silent about a tool Tier A already failed"
 }
 
@@ -726,9 +732,60 @@ test_missing_versions_file_warns_rather_than_failing() {
   mkdir -p "$d/bin"
   local out
   out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/nope.txt'
-pr_doctor_check_versions")"
+pr_doctor_check_versions codex")"
   assert_contains "$out" "no verified-versions file" "says what is missing"
   assert_contains "$out" "counts 0 1 0" "a warning"
+}
+
+# --- the roster gate on the drift check (2026-08-31) -----------------------
+#
+# These three assert on the SPAWN, not on the report, because the report was
+# never the cost: the check printing one extra warning line is free, and
+# `agent --version` reading live account state for ~1.5s on a codex-only round
+# is what the gate exists to stop. Each stub records that it ran, so a
+# regression that puts the spawn back fails here rather than merely getting
+# slower.
+
+test_a_cli_outside_the_roster_is_not_spawned_by_the_drift_check() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/codex" 'echo "codex-cli 0.147.0"'
+  pr_test_mkstub "$d/bin/agy"   "touch '$d/agy-ran'; echo 1.1.22"
+  printf 'codex 0.147.0\nagy 1.1.22\n' > "$d/versions.txt"
+  local out
+  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions codex none")"
+  assert_contains "$out" "codex 0.147.0 matches" "the rostered CLI is still checked"
+  assert_not_contains "$out" "agy" "and the unrostered one is not reported"
+  assert_file_missing "$d/agy-ran" "nor spawned, which is the whole point"
+}
+
+# The orchestrator is never in $shipped -- lib/roster.sh removes it, because a
+# round that reviews its own orchestrator is not independent. Its binary is
+# still the one running the rounds, so this is the one out-of-roster CLI the
+# check keeps. Decided 2026-08-31; see the function's header.
+test_the_orchestrators_own_cli_is_checked_though_it_never_reviews() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/claude" 'echo "0.0.1 (Claude Code)"'
+  printf 'claude 2.1.251\n' > "$d/versions.txt"
+  local out
+  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions 'codex agy' claude")"
+  assert_contains "$out" "claude is 0.0.1; the adapters were verified against 2.1.251" \
+    "drift on the orchestrator's own CLI is still reported"
+}
+
+# The gate skips only names this repo ships an adapter for. A pins line naming
+# something else -- `bubblewrap 0.9.0` is the shape the file's own format
+# comment gives as an example -- is in no roster, and a bare roster test would
+# drop it in silence.
+test_a_pin_that_is_not_a_reviewer_is_checked_whatever_the_roster_says() {
+  local d; d="$(pr_test_tmpdir)"; mkdir -p "$d/bin"
+  pr_test_mkstub "$d/bin/bwrap" 'echo "bubblewrap 0.9.0"'
+  printf 'bwrap 0.9.0\n' > "$d/versions.txt"
+  local out
+  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions codex none")"
+  assert_contains "$out" "bwrap 0.9.0 matches the verified version" "not a reviewer, not gated"
 }
 
 test_the_shipped_versions_file_matches_its_own_format() {
@@ -1190,12 +1247,22 @@ DOCTOR="$PR_ROOT/bin/plan-review"
 # Which check spawns them is the part worth naming, because it is not the one it
 # looks like. pr_doctor_check_cli is `command -v` and spawns nothing. The
 # executor is pr_doctor_check_versions, which iterates docs/verified-versions.txt
-# and is ROSTER-INDEPENDENT -- so a case whose config names only codex still read
-# four real versions off this host, whatever its roster said. Measured with
-# recording wrappers 2026-08-28: 20 real `--version` spawns across this file
-# (6 claude, 5 agy, 5 agent, 4 codex) after the roster-shaped stubs alone.
-# `agent` is the second executor, via pr_doctor_check_agent_identity, and the
-# only one that was ever expensive (~1.5s, live account state).
+# and was ROSTER-INDEPENDENT until 2026-08-31 -- so a case whose config named
+# only codex still read four real versions off this host, whatever its roster
+# said. Measured with recording wrappers 2026-08-28: 20 real `--version` spawns
+# across this file (6 claude, 5 agy, 5 agent, 4 codex) after the roster-shaped
+# stubs alone. `agent` is the second executor, via
+# pr_doctor_check_agent_identity, and the only one that was ever expensive
+# (~1.5s, live account state).
+#
+# THE GATE DOES NOT RETIRE THIS RULE, and reading it as though it had is the
+# mistake to avoid. pr_doctor_check_versions now skips a shipped adapter outside
+# the roster, but it still spawns every CLI that IS in the roster plus the
+# orchestrator's own -- and most cases below run a real orchestrator name. What
+# the gate removed is the machine-wide surface that hid the twenty; what it did
+# not remove is the need to stub. It also removed the reason to build the
+# PR_TEST_NO_REAL_CLI shim the closed backlog entry proposed: the enforcement it
+# was going to add was a net under a cause that no longer exists.
 #
 # Not a fixture in PR_DOCTOR_VERSIONS_FILE: pointing that at an empty file would
 # silence the spawns by removing the drift check these cases run THROUGH, which
@@ -1265,9 +1332,12 @@ test_an_agy_roster_does_check_the_bubblewrap_jail() {
 test_a_fake_adapter_under_a_real_name_demands_no_vendor_login() {
   local d out; d="$(pr_test_tmpdir)"
   mkrepo_with_config "$d/repo" '{"reviewers": ["codex"]}'
-  # $shipped is empty here, so no pr_doctor_check_cli runs at all -- and the
-  # drift check spawns four CLIs anyway. That gap is why the rule above names
-  # pr_doctor_check_versions rather than the roster.
+  # $shipped is empty here and the orchestrator is `none`, so since the
+  # 2026-08-31 gate this case spawns nothing at all -- it used to read four real
+  # versions off the host, and it is the shape that made the rule above name
+  # pr_doctor_check_versions rather than the roster. The stubs stay anyway: the
+  # rule is that no case in this file may reach a real CLI, and a case that is
+  # safe only because of a gate elsewhere is one refactor from unsafe.
   stub_all_reviewer_clis "$d/bin"
   out="$(PATH="$d/bin:$PATH" PR_ORCHESTRATOR=none PR_ADAPTER_MAP="agy=/tmp/fake-ok.sh" \
          bash "$DOCTOR" doctor --repo "$d/repo" --offline 2>&1)"
