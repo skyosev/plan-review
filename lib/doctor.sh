@@ -177,12 +177,14 @@ pr_doctor_check_bash() {
 # `tee: command not found`.
 # This list does NOT reach a round: pr_doctor_preflight never calls
 # pr_doctor_check_utils, so lib/lock.sh checks for flock at the lock site too --
-# and since 2026-08-31 adapters/claude.sh checks for tee at its own, for a
-# sharper reason than the others: the round it would otherwise lose reports the
-# VENDOR's stream envelope as changed, so a missing coreutil reads as drift and
-# sends someone to re-measure a CLI that is behaving perfectly. This row stays
-# regardless; it is the report, not the guard. It is also machine-wide, so on its
-# own it would fail a codex-only roster for a util no round in that config uses.
+# and since 2026-08-31 tee is checked twice more where it is actually needed:
+# pr_doctor_preflight's claude arm below, and adapters/claude.sh itself. The
+# reason is sharper than the others': the round it would otherwise lose reports
+# the VENDOR's stream envelope as changed, so a missing coreutil reads as drift
+# and sends someone to re-measure a CLI that is behaving perfectly. This row
+# stays regardless; it is the report, not the guard. It is also machine-wide, so
+# on its own it would fail a codex-only roster for a util no round in that
+# config uses.
 PR_DOCTOR_UTILS="jq rsync git sha256sum timeout readlink sed diff wc flock ps head tee"
 
 pr_doctor_check_utils() {
@@ -1552,6 +1554,18 @@ pr_doctor_preflight() {
           echo "  to read the login Keychain item with. Run: claude auth login" >&2
           rc=1
         fi
+        # tee for the same reason as the credential route, and it is the only
+        # util that needs saying here: every other external the round path reads
+        # through -- jq above all -- is spent long before an adapter is spawned,
+        # so a round without one never reaches this. tee is spent NOWHERE but
+        # adapters/claude.sh (one `| tee "$stream"`, and jq parses the file), so
+        # a host missing it gets all the way to a spawned reviewer. The adapter
+        # refuses too, and both copies are wanted for PR_TIMEOUT_SECS's reason:
+        # adapters are standalone and PR_SKIP_PREFLIGHT=1 exists. What the
+        # adapter's copy cannot do is refuse before pr_sandbox_refresh has
+        # copied the repo and the reviewer has forfeited its resume handle.
+        pr_doctor_have tee \
+          || { echo "preflight: tee not on PATH, but the roster runs adapters/claude.sh" >&2; rc=1; }
         ;;
     esac
   done

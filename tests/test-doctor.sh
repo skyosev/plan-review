@@ -1176,7 +1176,7 @@ test_claude_effort_enum_differs_from_codex() {
 # Unlike Cursor and agy, whose pins the runner cannot do without.
 test_preflight_does_not_require_a_model_pin_for_claude() {
   local d; d="$(pr_test_tmpdir)"
-  mkpresent "$d/bin/claude"; mkpresent "$d/bin/bwrap"
+  mkpresent "$d/bin/claude"; mkpresent "$d/bin/bwrap"; mkpresent "$d/bin/tee"
   local out
   out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
   assert_not_contains "$out" "PR_CLAUDE_MODEL" "the init line reports the resolved model"
@@ -1184,7 +1184,7 @@ test_preflight_does_not_require_a_model_pin_for_claude() {
 
 test_preflight_refuses_a_claude_roster_without_the_cli() {
   local d; d="$(pr_test_tmpdir)"
-  mkpresent "$d/bin/bwrap"
+  mkpresent "$d/bin/bwrap"; mkpresent "$d/bin/tee"
   local out
   out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
   assert_contains "$out" "claude not on PATH" "names the missing CLI"
@@ -1199,7 +1199,7 @@ test_preflight_does_not_demand_the_jail_for_claude_any_more() {
   mkpresent "$d/bin/claude"
   # A credential route, so the ONE thing this half does still require is met and
   # cannot be what any refusal below is about.
-  mkpresent "$d/bin/security"
+  mkpresent "$d/bin/security"; mkpresent "$d/bin/tee"
   local out
   out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
   assert_not_contains "$out" "refuse to run without it" "no bwrap is not a refusal for claude"
@@ -1212,12 +1212,31 @@ test_preflight_does_not_demand_the_jail_for_claude_any_more() {
 # preflight on a locked one exactly as it would hang the adapter (D5).
 test_preflight_refuses_claude_with_no_credential_route() {
   local d; d="$(pr_test_tmpdir)"
-  mkpresent "$d/bin/claude"
+  mkpresent "$d/bin/claude"; mkpresent "$d/bin/tee"
   local out
   out="$(HOME="$d/nohome" preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
   assert_contains "$out" "no credentials this host can materialise" "names what is missing"
   assert_contains "$out" "claude auth login" "and how to fix it"
   assert_contains "$out" "rc=1" "a refusal"
+}
+
+# And it requires tee on BOTH halves, which no other adapter's arm does. Every
+# other external a round reads through is spent before an adapter is spawned --
+# jq most of all -- so a host missing one never gets this far; tee is spent
+# nowhere but adapters/claude.sh, so a host missing it reaches a spawned
+# reviewer. The adapter refuses too (PR_TIMEOUT_SECS's rule: adapters are
+# standalone, and PR_SKIP_PREFLIGHT=1 exists), but only this copy refuses before
+# pr_sandbox_refresh has copied the repo and R1 has taken the resume handle.
+#
+# bwrap present, so the confinement half is the shipped Linux one and cannot be
+# what the refusal is about.
+test_preflight_refuses_a_claude_roster_with_no_tee() {
+  local d; d="$(pr_test_tmpdir)"
+  mkpresent "$d/bin/claude"; mkpresent "$d/bin/bwrap"
+  local out
+  out="$(preflight_run "$d/bin" '' "claude=$PR_ROOT/adapters/claude.sh")"
+  assert_contains "$out" "tee not on PATH" "names the missing util"
+  assert_contains "$out" "rc=1" "a refusal, before the round pays for a sandbox copy"
 }
 
 # agy is the last reviewer that REQUIRES bubblewrap, and its refusal is intact.

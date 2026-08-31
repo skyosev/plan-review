@@ -87,12 +87,13 @@ pr_reason() {
 #
 # lib/doctor.sh lists tee in PR_DOCTOR_UTILS, and that list's own comment says it
 # does NOT reach a round: pr_doctor_preflight never calls pr_doctor_check_utils,
-# so the presence check is a report and not a guard. The precedent for the right
-# depth is named in that same comment -- lib/lock.sh checks for flock at the lock
-# site too. Keeping the PR_DOCTOR_UTILS row as well is right; keeping only it is
-# the shallow half. That check is also machine-wide, so it would fail a
-# codex-only roster for a util no round in that config would use, which is the
-# second reason the guard belongs in the adapter that needs it.
+# so the presence check is a report and not a guard. It is also machine-wide, so
+# it would fail a codex-only roster for a util no round in that config would use.
+# pr_doctor_preflight's claude arm carries the real early guard -- it is
+# roster-scoped, per-adapter, and runs before pr_sandbox_refresh copies the repo
+# or R1 takes the reviewer's resume handle, which is a price this copy cannot
+# save. This one exists anyway for PR_TIMEOUT_SECS's reason: adapters are
+# standalone, and PR_SKIP_PREFLIGHT=1 can skip the other. Two copies on purpose.
 #
 # Before the confinement predicate rather than beside the pipe: this costs one
 # builtin, and refusing at the pipe would mean refusing after the credential

@@ -542,6 +542,17 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   private TMPDIR and the sandbox setup are all paid for — and so neither half can reach the
   pipe without one.
 
+  **`pr_doctor_preflight`'s `claude` arm checks it too, and that copy is the one that saves
+  something.** The adapter's refusal is correct but late: it fires after `pr_sandbox_refresh`
+  has copied the repo and, under R1, after the reviewer has forfeited its resume handle — the
+  exact price that arm's credential check already exists to avoid, in its own words. Preflight
+  is roster-scoped and per-adapter, so unlike `PR_DOCTOR_UTILS` it costs a codex-only roster
+  nothing. Two copies is `PR_TIMEOUT_SECS`'s rule, for `PR_TIMEOUT_SECS`'s reasons: adapters
+  are standalone, and `PR_SKIP_PREFLIGHT=1` can skip the early one. `tee` is the only util
+  that earns a per-adapter arm, and the reason is worth keeping: every other external a round
+  reads through — `jq` above all — is spent long before an adapter is spawned, so a host
+  missing one never reaches a reviewer at all. `tee` is spent nowhere but `adapters/claude.sh`.
+
   The adapter's predicate is `uname -s` where the doctor's is `$OSTYPE`, and that is the
   one deliberate difference between them: `$OSTYPE` is fixed when bash is compiled and no
   environment can override it in a subprocess, so spelling it that way in the adapter would
