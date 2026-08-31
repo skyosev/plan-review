@@ -102,21 +102,49 @@ agent 2026.08.25-3e8eec8
 # the argv, since a rejected flag would have failed the envelope row outright.
 agy 1.1.22
 
-# Verified 2026-08-28 by the acceptance matrix, both rows.
-#   claude-init-line   the live stream-json `init` line carried every field the
-#                      parser reads -- model, permissionMode (bypassPermissions,
-#                      which is what the adapter asks for and refuses to proceed
-#                      without) and claude_code_version. That match at this
-#                      version is what licenses trusting the offline pin of the
-#                      refusal branch, which cannot be provoked against a live
-#                      CLI on demand.
-#   claude-safe-mode   RE-MEASURED this run, with the control. A target repo
-#                      whose .claude/settings.json ran a hook on SessionStart and
-#                      UserPromptSubmit fired NEITHER canary through the adapter,
-#                      while the same repo under a plain `claude -p` fired both.
-#                      The round was run with PR_KEEP_SANDBOX=1 and the reviewer's
-#                      retained repo copy checked: settings.json had arrived
-#                      verbatim and the workdir was writable, so the absence is
-#                      suppression and not a missing file or a read-only target.
+# Verified 2026-08-31 on Linux, by the L1 set: the repaired resume leg plus the
+# three rows of the 2026-08-30 return leg
+# (docs/process/FINDINGS-2026-08-31-resume-probe.md, and
+# FINDINGS-2026-08-30-linux.md behind it). This line moved off 2.1.248 for the
+# first time since the 2026-08-28 matrix, and it moved because the resume row --
+# the one thing blocking it -- can pass again.
+#
+# EVERY MEASUREMENT BEHIND THIS LINE IS THE BUBBLEWRAP HALF. Both hosts had
+# bwrap, so both took it; adapters/claude.sh's Darwin half has never been
+# measured at this version, and a Mac cannot reach the bwrap half to check the
+# rest. The pin is one number for an adapter with two paths, and it vouches for
+# one of them.
+#
+#   claude-init-line   RE-MEASURED 2026-08-31, and for free: adapters/claude.sh
+#                      refuses to record a review when the stream-json `init`
+#                      line is missing or reports a permission mode it did not
+#                      ask for, so every paid round of the resume leg parsed one.
+#                      The retained head carries model, permissionMode
+#                      (bypassPermissions) and claude_code_version 2.1.251. That
+#                      match at this version is what licenses trusting the
+#                      offline pin of the refusal branch, which cannot be
+#                      provoked against a live CLI on demand.
+#   resume             all four observables plus the new fifth, at
+#                      claude-sonnet-5 -- the model that DECLINED the previous
+#                      probe in writing on 2026-08-30. The discriminator changed,
+#                      not the mechanism: the marker now rides in a repository
+#                      file that is deleted between rounds, and nothing asks the
+#                      reviewer to keep a secret. See the findings note before
+#                      re-running it; the plant's irrelevance to round 1's
+#                      question is load-bearing and was got wrong once.
+#   claude-safe-mode   CITED, not re-measured on 2026-08-31. Last measured
+#                      2026-08-30 on the same host at this same version, with the
+#                      control: a target repo whose .claude/settings.json ran a
+#                      hook on SessionStart and UserPromptSubmit fired NEITHER
+#                      canary through the adapter, while the same repo under a
+#                      plain `claude -p` fired both; PR_KEEP_SANDBOX=1 and the
+#                      retained copy confirmed settings.json arrived verbatim
+#                      into a writable workdir, so the absence is suppression.
+#                      The citation rests on a diff: the only commit to
+#                      adapters/claude.sh since that reading is the row-L3 fix,
+#                      whose sole executable change is the refusal branch for a
+#                      non-Darwin host with no bwrap. The bubblewrap half is
+#                      byte-identical.
+#   claude-fail-closed CITED on the same terms, from the same reading.
 # Also still true at this version: no effort is reported in either output format.
-claude 2.1.248
+claude 2.1.251
