@@ -118,22 +118,39 @@ fi
 # a private HOME authenticates, the operator's real ~/.cursor/sandbox.json goes
 # inert, and projects/ follows the private home too (leg C2).
 #
-# Whether that is what SHOULD ship is open, and the open part is narrow. C2
-# copied the credential, which would make Cursor the third one at rest and
-# retire this adapter's one real advantage over the other three (nothing copied,
-# nothing bound). But ~/.cursor is HOME-anchored while auth.json is XDG-anchored,
-# so a private HOME with the operator's real XDG_CONFIG_HOME left in place would
-# move the policy and not the credential -- untried, and if it works the cost
-# argument above evaporates. Resume is the cost that would remain either way, and
-# it took two probes and a negative control to establish once. Nothing ships here
-# until both are measured; docs/process/brainstorm/2026-08-31-cursor-peruser-sandbox-warning.md
-# carries the legs and what each would license.
+# That is what ships, and it is measured. A private HOME at <sandbox>/cursor-home
+# with the operator's real XDG_CONFIG_HOME pinned FIRST was run live over four
+# paid rounds on 2026-09-01 (docs/process/probes/2026-09-01-cursor-private-home/,
+# agent 2026.08.25-3e8eec8, composer-2.5 throughout). A positive control put the
+# canary in an escape target the sandbox would otherwise deny, using a
+# $HOME-anchored additionalReadwritePaths grant; the identical grant went inert
+# under the relocated HOME, denied by the kernel in its own words, while the round
+# still authenticated and NOTHING was copied into the private home. So the cost
+# argument the C2 leg raised evaporated: auth.json is XDG-anchored, the policy is
+# HOME-anchored, and moving one without the other moves exactly the file we wanted
+# moved. Cursor is still not a credential at rest here.
 #
-# The same directory also keeps per-project state this does not move:
-# ~/.cursor/projects/<slugged-workdir>/ collects .workspace-trusted and the full
-# agent-transcripts/*.jsonl of every round, beside the chats/ copy that does land
-# in here. No containment consequence -- the reviewer's tool calls stay confined
-# -- but the record of the review is on the host either way.
+# Resume survives it: two rounds through that same environment, and round 2
+# reproduced a token round 1 was told to hold and never to write down -- absent
+# from round 1's published review and from round 2's prompt, so the chat carried
+# it. Judged on content, because `agent --resume` returns rc=0 for a UUID that was
+# never a chat id and rc therefore discriminates nothing.
+#
+# The cost, recorded and accepted rather than gated: the reviewer runs without the
+# operator's HOME-anchored tool configuration -- no ~/.gitconfig, so no git
+# identity, and no ~/.ssh. The probe records that as an INFERENCE from where those
+# files live, not as a differential measurement: both of its legs ran with HOME
+# already moved, so no leg ever showed the unmoved baseline. See the block beside
+# the export below for why the answer to a workflow that needs one of them is not
+# to start copying dotfiles in.
+#
+# The per-project state moves with it, which the earlier version of this paragraph
+# said it did not. ~/.cursor/projects/<slugged-workdir>/ -- .workspace-trusted and
+# the full agent-transcripts/*.jsonl of every round -- now lands under the private
+# home beside the repo copy. Measured by slug, not by clock: after four rounds the
+# operator's real ~/.cursor/projects/ held no entry naming any path the probe used.
+# It is relocated, not eliminated; the record of the review is still on the host,
+# and it now lives as long as the session cache does.
 #
 # What this costs in transition rounds is UNKNOWN, and the attempt to measure it
 # is worth recording because it failed in an instructive way. BACKLOG.md

@@ -647,18 +647,25 @@ write-confined, each by a different thing:
   temp file, and nobody has decided to pay that. The bubblewrap remains a pid fence and is
   deliberately not the write barrier.
 
-  **One user-level surface is still the operator's, and it is not closed.**
-  `CURSOR_CONFIG_DIR` moves `cli-config.json`; it does *not* move
-  `~/.cursor/sandbox.json`, and an `additionalReadwritePaths` grant there widens the
-  reviewer's jail to the operator's home with the private directory in force — the
-  `unrestricted` failure mode, one file over (measured 2026-08-31). There is no in-band
-  fix: the path lists of every source are unioned, so nothing the adapter writes can
-  subtract one, and `XDG_CONFIG_HOME` moves `cli-config.json` without moving this. A
-  private `HOME` *does* close it — `~/.cursor` moves with `HOME`, and Cursor's credential is
-  XDG-anchored at `~/.config/cursor/auth.json` rather than under `~/.cursor`, so
-  authentication need not follow. Whether it can be closed that way **without** copying a
-  credential, and what it costs the resume handle, is being measured; until it is, nothing
-  detects such a file and the `agent` reviewer runs as wide as it grants.
+  **The last user-level surface is closed, by moving `HOME`.** `CURSOR_CONFIG_DIR` moves
+  `cli-config.json`; it does *not* move `~/.cursor/sandbox.json`, and an
+  `additionalReadwritePaths` grant there widened the reviewer's jail to the operator's home
+  with the private directory in force — the `unrestricted` failure mode, one file over
+  (measured 2026-08-31). No file the adapter writes can subtract that grant: path lists are
+  unioned across sources, and `XDG_CONFIG_HOME` moves `cli-config.json` without moving this.
+  So the reviewer runs under a private `HOME` at `<sandbox>/cursor-home` instead, with the
+  operator's `XDG_CONFIG_HOME` pinned first — `~/.cursor` follows `HOME`, Cursor's credential
+  at `~/.config/cursor/auth.json` follows XDG, and pinning one before moving the other takes
+  the policy out of scope while the login stays in it. Measured over four paid rounds on
+  2026-09-01: a positive control escaped, the same grant went inert under the relocation with
+  the kernel denying the write, the round still authenticated with **no credential copied**,
+  and a resumed chat reproduced a token it could only have carried. The operator's per-user
+  policy no longer reaches this reviewer, and their `~/.cursor/projects/` no longer collects
+  its transcripts — those land in the session cache beside the repo copy and live as long as
+  it does. What it costs: the reviewer runs without your `HOME`-anchored tool configuration,
+  so it has no git identity from `~/.gitconfig` and no `~/.ssh`. That cost is inferred from
+  where those files live rather than measured against an unmoved baseline; it is accepted, not
+  gated, and a reviewer that reads code and writes a critique does not need either.
 
   **Whether a plan that was mid-loop when this landed loses a round is unknown** — unlike
   codex below, where it is measured and certain. The obvious check said no: an id minted

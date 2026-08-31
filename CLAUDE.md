@@ -637,30 +637,48 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   at `<sandbox>/cursor-config`, which is the cheapest of the four because an *empty*
   `CURSOR_CONFIG_DIR` is still authenticated: no credential is copied or bound in, and the
   operator's `~/.cursor` hooks, plugins, rules and skills fall out of scope for free.
-  It is also the only **partial** one, and cheapness is the reason: the variable moves a
-  config file, not a home, so `~/.cursor/sandbox.json` is still read — an
-  `additionalReadwritePaths` grant there widens the reviewer's jail to the operator's home
-  with the private directory in force, which is the `approvalMode: "unrestricted"` failure
-  mode one file over (measured 2026-08-31,
-  `docs/process/probes/2026-08-31-cursor-write-barrier-gaps/`). Nothing in band fixes it:
-  path lists are unioned across sources so no file the adapter writes can subtract one,
-  and `XDG_CONFIG_HOME` moves `cli-config.json` without moving this. Per-project state
-  escapes the same way, without the containment consequence: `~/.cursor/projects/<slug>/`
-  collects `.workspace-trusted` and the full transcript of every round.
+  It stopped being the only **partial** one on 2026-09-01, and what completed it was a
+  second variable rather than a second directory: the variable moves a config file, not a
+  home, so `~/.cursor/sandbox.json` was still read — an `additionalReadwritePaths` grant
+  there widened the reviewer's jail to the operator's home with the private directory in
+  force, the `approvalMode: "unrestricted"` failure mode one file over (measured 2026-08-31,
+  `docs/process/probes/2026-08-31-cursor-write-barrier-gaps/`). Nothing *in band* fixes it:
+  path lists are unioned across sources so no file the adapter writes can subtract one, and
+  `XDG_CONFIG_HOME` moves `cli-config.json` without moving this.
 
-  **A private `HOME` closes both, and what it costs is being measured.** The claim that
-  `HOME` relocation breaks Cursor's authentication is **wrong** and was written into three
-  files here before it was checked: the credential is at `~/.config/cursor/auth.json`,
-  XDG-anchored rather than under `~/.cursor`, so moving `HOME` merely drags
-  `XDG_CONFIG_HOME` to an empty `.config`. Copy that one file and a private `HOME`
-  authenticates, the operator's per-user policy goes inert and `projects/` follows
-  (2026-08-31, leg C2). That copy would make Cursor the third credential at rest and retire
-  the adapter's only real advantage over the other three — but it may not be needed:
-  `~/.cursor` follows `HOME` while `auth.json` follows XDG, so a private `HOME` over the
-  operator's real `XDG_CONFIG_HOME` would move the policy alone. Untried. Resume is the cost
-  that survives either answer. **Nothing ships until both are measured**, and a warning was
-  decided once on the strength of the credential cost being certain, which it is not;
-  `docs/process/brainstorm/2026-08-31-cursor-peruser-sandbox-warning.md` carries the legs.
+  **A private `HOME` closes both, and it ships; the cost is measured and accepted**
+  (2026-09-01, `docs/process/probes/2026-09-01-cursor-private-home/` — four paid rounds,
+  `agent 2026.08.25-3e8eec8`, `composer-2.5`, Linux). The claim that `HOME` relocation breaks
+  Cursor's authentication is **wrong** and was written into three files here before it was
+  checked: the credential is at `~/.config/cursor/auth.json`, XDG-anchored rather than under
+  `~/.cursor`, so moving `HOME` merely drags `XDG_CONFIG_HOME` to an empty `.config`. The
+  adapter therefore pins `XDG_CONFIG_HOME` off the **real** home and *then* exports
+  `HOME="$(dirname "$workdir")/cursor-home"`. **The order of those two lines is the whole
+  mechanism** — reverse them and XDG resolves under the empty private home, the round reports
+  `Not logged in`, and someone concludes for the third time that a private `HOME` costs the
+  credential. `tests/test-adapter-agent.sh` has one case that fails if and only if they are
+  reversed, and it is also the only coverage of the *custom* `XDG_CONFIG_HOME` case: the probe
+  host had the variable unset, so only the default half of the expansion ran live. What the
+  probe measured: a positive control escaped to an isolated target, the identical grant went
+  inert under the relocation with the kernel itself denying the write, the round still
+  authenticated with **nothing copied** — so Cursor is still not a credential at rest, and the
+  adapter keeps its one real advantage over the other three — and two rounds proved resume
+  carries context across it, judged on a reproduced token because `agent --resume` returns
+  rc=0 for a UUID that was never a chat id. Per-project state moved with the policy, which is
+  more than the brief asked for: `~/.cursor/projects/<slug>/` — `.workspace-trusted` plus the
+  full transcript of every round — now lands under the private home, and after four rounds the
+  operator's real `projects/` held no entry naming any path the probe used (argued from the
+  slug, not from mtime). The cost, **recorded rather than gated**: the reviewer runs without
+  the operator's `HOME`-anchored tool configuration — no `~/.gitconfig`, so no git identity at
+  all, and no `~/.ssh`. It is the only adapter here that moves a whole `HOME` (codex moves
+  `CODEX_HOME`, agy binds one directory over `~/.gemini`, claude keeps `HOME` in its
+  whitelist), and the probe states that cost as an **inference** from where those files live
+  rather than a differential measurement — both of its legs ran with `HOME` already moved, so
+  none of them ever showed the unmoved baseline. The remedy for a workflow that needs one of
+  those files is not to start copying dotfiles in; that is a policy inventory of the
+  operator's environment, maintained forever, one file at a time. The transition round is the
+  one thing still unmeasured, exactly as codex's is: every round the runner starts mints and
+  resumes inside the private home.
   `<sandbox>/config` for claude,
   `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
   *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
