@@ -1097,9 +1097,13 @@ pr_doctor_version_of() {
   return 1
 }
 
-# pr_doctor_check_versions <roster> [orchestrator]
+# pr_doctor_check_versions <names>
 #
-# <roster> is $shipped: the reviewer names this round would actually run.
+# <names> is $shipped plus the orchestrator's own CLI -- one list, because this
+# file has no notion of an orchestrator and does not need one: both are simply
+# names whose drift is worth reporting. Read by _pr_doctor_wants, the same
+# predicate pr_doctor_check_pins uses two lines earlier at the same call site,
+# so the two roster-scoped checks cannot drift apart in how they read one.
 #
 # Roster-gated since 2026-08-31, and it was NOT before: this loop iterated the
 # pins file alone, so `plan-review doctor` on a {"reviewers": ["codex"]} repo
@@ -1129,7 +1133,7 @@ pr_doctor_version_of() {
 # Silent, deliberately: pr_doctor_check_cli already prints one line per
 # out-of-roster CLI, and a second here would report one fact twice.
 pr_doctor_check_versions() {
-  local roster="${1:-}" orch="${2:-}"
+  local names="${1:-}"
   local file="${PR_DOCTOR_VERSIONS_FILE:-${PR_ROOT:-.}/docs/verified-versions.txt}"
   if [[ ! -f "$file" ]]; then
     pr_d_warn "no verified-versions file at $file; skipping drift checks"
@@ -1147,8 +1151,8 @@ pr_doctor_check_versions() {
     # defines that list. Loaded without it the guard reads as "no name is a
     # shipped adapter", which skips nothing -- the safe direction, and the same
     # answer this check gave before the gate existed.
-    if [[ " ${PR_ROSTER_ADAPTERS:-} " == *" $tool "* \
-       && " $roster " != *" $tool "* && "$tool" != "$orch" ]]; then
+    if [[ " ${PR_ROSTER_ADAPTERS:-} " == *" $tool "* ]] \
+       && ! _pr_doctor_wants "$names" "$tool"; then
       continue
     fi
     # Absence is already a FAIL in Tier A. Repeating it here would double-count

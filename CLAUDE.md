@@ -131,7 +131,17 @@ row-L3 tree was measured 2026-08-30; the same tree re-timed on 2026-08-31 — a 
 at `main`, two back-to-back runs, the method every row here uses — came in at 82.17s and
 81.13s. So the host is ~3s slower than it was the day before, and `backlog-clearing-4`'s four
 tests cost **nothing this method can see**: 81.71s and 83.53s against main's 82.17s and 81.13s
-on the same afternoon, the two trees interleaved inside the ~2.5s floor. Measure the baseline
+on the same afternoon, the two trees interleaved inside the ~2.5s floor. The tree is **548**
+after that branch's `/simplify` pass, and that row's clock was deliberately NOT re-read: the
+host went under heavy external load the same afternoon (`/proc/loadavg` swinging 25 → 3.8 → 26
+between adjacent runs on 32 cores) and four interleaved whole-suite runs came back 99s–133s
+against 82s–104s, a ~20s spread that no change in this diff could explain. Per-file timing —
+the technique that found the `test-bootstrap.sh` bug above — settled it instead: all four
+files the pass touched are identical across the two trees (`test-doctor.sh` 6.75s → 6.40s,
+`test-adapter-claude.sh` 2.52s → 2.65s, `test-adapter-agent.sh` 0.97s → 0.96s,
+`test-bootstrap.sh` 9.49s → 9.57s), and it touched no others. **A whole-suite clock read on a
+loaded host is worse than no clock**; per-file is the fallback, and the 548th test is one more
+stub-only preflight case. Measure the baseline
 again rather than diffing against a number from another day — "the host got slower" was the
 wrong answer once in this table and the right one here, and only a same-session control tells
 the two apart. What the four tests are is also why they are free: three doctor unit cases and
@@ -250,7 +260,11 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   spawned `agy`, `claude` and `agent --version` anyway, the last a ~1.5s live account read.
   Two things about the fix are decisions rather than derivations. **The orchestrator's own
   CLI is kept** even though `lib/roster.sh` removes it from every roster: it is the binary
-  running the rounds and nothing else here would report drift on it. And the skip is gated on
+  running the rounds and nothing else here would report drift on it. It arrives as part of
+  one name list rather than as its own argument — `"$shipped $orchestrator"`, read by the
+  same `_pr_doctor_wants` `pr_doctor_check_pins` uses at the same call site, so `lib/doctor.sh`
+  carries no notion of an orchestrator and the two roster-scoped checks cannot drift apart in
+  how they read an empty list. And the skip is gated on
   `PR_ROSTER_ADAPTERS` as well as on the roster, so it applies only to names this repo ships
   an adapter for — a future pins line naming a non-reviewer dependency is in no roster and a
   bare roster test would drop it in silence. `tests/test-doctor.sh`'s "no real CLI" rule

@@ -34,13 +34,7 @@ doctor_run() {
   local path="$1" snippet="$2"
   PATH="$path" "$BASH" -c "set -uo pipefail
 source '$PR_ROOT/lib/paths.sh'
-source '$PR_ROOT/lib/roster.sh'
 source '$PR_ROOT/lib/doctor.sh'
-# roster.sh, even though nothing here calls a pr_roster_* function and
-# lib/doctor.sh sources nothing itself: it defines PR_ROSTER_ADAPTERS, which
-# pr_doctor_check_versions's roster gate reads. Sourced rather than assigned so
-# the gate sees the same list production does, and safe to add to every case
-# because sourcing lib/ is side-effect free by contract.
 $snippet
 printf 'counts %s %s %s\n' \"\$PR_DOCTOR_PASS\" \"\$PR_DOCTOR_WARN\" \"\$PR_DOCTOR_FAIL\"" 2>&1
 }
@@ -739,6 +733,16 @@ pr_doctor_check_versions codex")"
 
 # --- the roster gate on the drift check (2026-08-31) -----------------------
 #
+# Each SOURCES lib/roster.sh in its own snippet rather than having doctor_run do
+# it for the file: PR_ROSTER_ADAPTERS is what the gate reads, and lib/doctor.sh
+# justifies _pr_doctor_wants having no four-adapter default with "this file
+# cannot source it (tests/test-doctor.sh runs with nothing but lib/doctor.sh and
+# a stub PATH)". Sourcing it in the harness would falsify that sentence for
+# every case in this file to serve three, and would leave the gate's own
+# `${PR_ROSTER_ADAPTERS:-}` fallback unreachable here -- the four cases above,
+# which do not source it, are what exercise that branch. Sourced rather than
+# assigned so the gate sees the same list production does.
+#
 # These three assert on the SPAWN, not on the report, because the report was
 # never the cost: the check printing one extra warning line is free, and
 # `agent --version` reading live account state for ~1.5s on a codex-only round
@@ -752,8 +756,9 @@ test_a_cli_outside_the_roster_is_not_spawned_by_the_drift_check() {
   pr_test_mkstub "$d/bin/agy"   "touch '$d/agy-ran'; echo 1.1.22"
   printf 'codex 0.147.0\nagy 1.1.22\n' > "$d/versions.txt"
   local out
-  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
-pr_doctor_check_versions codex none")"
+  out="$(doctor_run "$d/bin" "source '$PR_ROOT/lib/roster.sh'
+PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions 'codex none'")"
   assert_contains "$out" "codex 0.147.0 matches" "the rostered CLI is still checked"
   assert_not_contains "$out" "agy" "and the unrostered one is not reported"
   assert_file_missing "$d/agy-ran" "nor spawned, which is the whole point"
@@ -768,8 +773,9 @@ test_the_orchestrators_own_cli_is_checked_though_it_never_reviews() {
   pr_test_mkstub "$d/bin/claude" 'echo "0.0.1 (Claude Code)"'
   printf 'claude 2.1.251\n' > "$d/versions.txt"
   local out
-  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
-pr_doctor_check_versions 'codex agy' claude")"
+  out="$(doctor_run "$d/bin" "source '$PR_ROOT/lib/roster.sh'
+PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions 'codex agy claude'")"
   assert_contains "$out" "claude is 0.0.1; the adapters were verified against 2.1.251" \
     "drift on the orchestrator's own CLI is still reported"
 }
@@ -783,8 +789,9 @@ test_a_pin_that_is_not_a_reviewer_is_checked_whatever_the_roster_says() {
   pr_test_mkstub "$d/bin/bwrap" 'echo "bubblewrap 0.9.0"'
   printf 'bwrap 0.9.0\n' > "$d/versions.txt"
   local out
-  out="$(doctor_run "$d/bin" "PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
-pr_doctor_check_versions codex none")"
+  out="$(doctor_run "$d/bin" "source '$PR_ROOT/lib/roster.sh'
+PR_DOCTOR_VERSIONS_FILE='$d/versions.txt'
+pr_doctor_check_versions 'codex none'")"
   assert_contains "$out" "bwrap 0.9.0 matches the verified version" "not a reviewer, not gated"
 }
 

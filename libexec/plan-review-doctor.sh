@@ -222,7 +222,7 @@ done
 pr_doctor_check_pins "$shipped"
 
 pr_d_section "Versions"
-pr_doctor_check_versions "$shipped" "$orchestrator"
+pr_doctor_check_versions "$shipped $orchestrator"
 
 if [[ -n "$repo" ]]; then
   pr_d_section "Project config"

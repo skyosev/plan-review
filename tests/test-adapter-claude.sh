@@ -157,10 +157,21 @@ setup() {
 # told otherwise, which would leave every case below unrunnable on the Linux
 # hosts they were written on.
 run_adapter_builtin() {
-  local d="$1" session="${2:-}"; shift 2 || shift
+  local d="$1"; shift
   rm -f "$d/bin/bwrap"
   link_min_tools "$d/bin"
   stub_uname_darwin "$d/bin"
+  run_adapter_bare "$d" "$@"
+}
+
+# The invocation alone, with the PATH the caller has already built: run_adapter's
+# counterpart for the cases that must run on min-tools. Split out because three
+# cases now need it and only one of them wants run_adapter_builtin's setup --
+# the two refusals below choose their own (no uname stub is what makes one of
+# them Linux; a kept bwrap is what makes the other the shipped Linux half), and
+# three copies of five positional arguments is three places to miss on a rename.
+run_adapter_bare() {
+  local d="$1" session="${2:-}"; shift 2 || shift
   echo "the actual prompt text" | env -i "$@" \
     PATH="$d/bin" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" SHELL=/bin/bash \
     "$BASH" "$PR_ROOT/adapters/claude.sh" \
@@ -182,11 +193,7 @@ test_no_bwrap_and_not_darwin_refuses_rather_than_running_unconfined() {
   local d rc; d="$(setup claude-sonnet-5 default)"
   rm -f "$d/bin/bwrap"
   link_min_tools "$d/bin"
-  echo "the actual prompt text" | env -i \
-    PATH="$d/bin" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" SHELL=/bin/bash \
-    "$BASH" "$PR_ROOT/adapters/claude.sh" \
-      "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
-  rc=$?
+  run_adapter_bare "$d"; rc=$?
   assert_exit_code "$rc" 1 "refuses"
   assert_file_missing "$d/bin/claude-argv.txt" "and refuses BEFORE spawning the CLI"
   assert_file_missing "$d/r.md" "so no review is produced"
@@ -213,11 +220,7 @@ test_a_missing_tee_is_refused_rather_than_misreported_as_envelope_drift() {
   local d rc; d="$(setup claude-sonnet-5 bypassPermissions)"
   link_min_tools "$d/bin"
   rm -f "$d/bin/tee"
-  echo "the actual prompt text" | env -i \
-    PATH="$d/bin" HOME="$d/home" TMPDIR="$d/work/.pr-tmp" SHELL=/bin/bash \
-    "$BASH" "$PR_ROOT/adapters/claude.sh" \
-      "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > "$d/out.txt" 2>&1
-  rc=$?
+  run_adapter_bare "$d"; rc=$?
   assert_exit_code "$rc" 1 "refuses"
   assert_file_missing "$d/bin/claude-argv.txt" "and refuses BEFORE spawning the CLI"
   assert_file_missing "$d/r.md" "so no review is produced"
