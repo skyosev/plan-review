@@ -120,8 +120,15 @@ fi
 #
 # That is what ships, and it is measured. A private HOME at <sandbox>/cursor-home
 # with the operator's real XDG_CONFIG_HOME pinned FIRST was run live over four
-# paid rounds on 2026-09-01 (docs/process/probes/2026-09-01-cursor-private-home/,
-# agent 2026.08.25-3e8eec8, composer-2.5 throughout). A positive control put the
+# paid rounds on 2026-08-31 (docs/process/probes/2026-09-01-cursor-private-home/
+# -- the directory name is a day ahead of the rounds it holds and is left alone
+# because four files point at it; agent 2026.08.25-3e8eec8, composer-2.5
+# throughout). Those rounds drove `agent -p` DIRECTLY, never through this file:
+# the adapter rm -rf's <workdir>/.cursor, so it cannot be the instrument for a
+# question about what a .cursor path does. The confining configuration -- a
+# private CURSOR_CONFIG_DIR seeded with the cli-config.json pinned below -- was
+# reproduced by hand, byte-for-byte. So what is measured is the MECHANISM these
+# two exports use, not this file's invocation of it. A positive control put the
 # canary in an escape target the sandbox would otherwise deny, using a
 # $HOME-anchored additionalReadwritePaths grant; the identical grant went inert
 # under the relocated HOME, denied by the kernel in its own words, while the round
@@ -193,11 +200,11 @@ export CURSOR_CONFIG_DIR="$cursor_config"
 # Part three -- the operator's ~/.cursor/sandbox.json, which the private config directory
 # above does NOT move. An additionalReadwritePaths grant there was measured widening this
 # reviewer's jail with CURSOR_CONFIG_DIR in force and the sandbox still reporting
-# native/fully_enforced (leg B5, 2026-08-31; reproduced against an isolated escape target
-# 2026-09-01). Our own file cannot go where it would win: CURSOR_CONFIG_DIR does not
-# relocate this path (B3), nor does XDG_CONFIG_HOME (C1), and the repo layer cannot revoke
-# a per-user grant because paths are unioned across sources and the schema has no deny list
-# (B6).
+# native/fully_enforced (leg B5, 2026-08-31; reproduced the same day against an isolated
+# escape target by the private-HOME probe). Our own file cannot go where it would win:
+# CURSOR_CONFIG_DIR does not relocate this path (B3), nor does XDG_CONFIG_HOME (C1), and
+# the repo layer cannot revoke a per-user grant because paths are unioned across sources
+# and the schema has no deny list (B6).
 #
 # HOME is the only thing that moves it, and the ORDER of these two lines is the whole
 # mechanism. ~/.cursor follows HOME; Cursor's credential at ~/.config/cursor/auth.json
@@ -206,12 +213,34 @@ export CURSOR_CONFIG_DIR="$cursor_config"
 # which is this adapter's one real advantage over the other three. Swap the lines and XDG
 # resolves under the empty private home, the round reports "Not logged in", and someone
 # concludes for the second time that moving HOME breaks Cursor's authentication. It does
-# not; measured 2026-09-01, docs/process/probes/2026-09-01-cursor-private-home/.
+# not; measured 2026-08-31, docs/process/probes/2026-09-01-cursor-private-home/.
 #
-# That probe ran on a host where XDG_CONFIG_HOME was UNSET, so only the default half of the
-# expansion below was exercised live. The custom half -- an operator who sets the variable
-# explicitly -- is the same code path and is covered by
-# tests/test-adapter-agent.sh's second case and by nothing else.
+# TWO tests in tests/test-adapter-agent.sh, one per half, and they are NOT redundant:
+#
+#   test_an_unset_xdg_config_home_is_pinned_before_the_home_moves
+#       the ORDERING guard. Fails if and only if these two exports are swapped --
+#       verified by swapping them in a scratch copy of the tree: 26 run, 1 failed,
+#       that case alone. It is the only thing standing between a reordering edit
+#       and a round that reports "Not logged in".
+#   test_the_adapter_runs_cursor_under_a_private_home
+#       the CUSTOM XDG_CONFIG_HOME half. PASSES UNDER EITHER ORDER, so it proves
+#       nothing about the ordering -- what it holds is that an explicitly set
+#       XDG_CONFIG_HOME survives the relocation.
+#
+# Naming them is the point: whoever reads "two cases that both set HOME" and deletes
+# the redundant-looking one has a fifty-fifty chance of deleting the guard.
+#
+# The probe host had XDG_CONFIG_HOME UNSET, so only the default half of the expansion
+# below was exercised against a live CLI. The custom half is the same code path and is
+# covered by test_the_adapter_runs_cursor_under_a_private_home and by nothing else.
+#
+# UNMEASURED ON DARWIN, and not gated on it. All four rounds were Linux; that
+# auth.json is XDG-anchored rather than HOME-anchored on a Mac is vendor documentation,
+# not a measurement, and it is the fact this whole ordering rests on. Left ungated
+# deliberately: a wrong answer there is LOUD -- the round reports "Not logged in" and
+# fails -- never a silent widening, and an $OSTYPE gate would ship a second confinement
+# path for agent that nobody has measured either. Recorded in BACKLOG.md with its
+# reopen trigger instead.
 #
 # Sited beside the repo copy for the reason CODEX_HOME and cursor-config are: it must
 # survive pr_sandbox_refresh's per-round wipe of <sandbox>/repo. NOT under /tmp -- the C2

@@ -657,13 +657,16 @@ write-confined, each by a different thing:
   operator's `XDG_CONFIG_HOME` pinned first — `~/.cursor` follows `HOME`, Cursor's credential
   at `~/.config/cursor/auth.json` follows XDG, and pinning one before moving the other takes
   the policy out of scope while the login stays in it. Measured over four paid rounds on
-  2026-09-01: a positive control escaped, the same grant went inert under the relocation with
+  2026-08-31: a positive control escaped, the same grant went inert under the relocation with
   the kernel denying the write, the round still authenticated with **no credential copied**,
-  and a resumed chat reproduced a token it could only have carried. The operator's per-user
-  policy no longer reaches this reviewer, and their `~/.cursor/projects/` no longer collects
-  its transcripts — those land in the session cache beside the repo copy and live as long as
-  it does. What it costs: the reviewer runs without your `HOME`-anchored tool configuration,
-  so it has no git identity from `~/.gitconfig` and no `~/.ssh`. That cost is inferred from
+  and a resumed chat reproduced a token it could only have carried. Those rounds used
+  *synthetic* homes, never yours — so "your own home is not special-cased" is a cheap
+  inference from them rather than something they tested, and it is the price of a probe that
+  touches nothing of yours. On that inference the operator's per-user policy no longer
+  reaches this reviewer, and their `~/.cursor/projects/` no longer collects its transcripts
+  — those land in the session cache beside the repo copy and live as long as it does.
+  What it costs: the reviewer runs without your `HOME`-anchored tool configuration, so it
+  has no git identity from `~/.gitconfig` and no `~/.ssh`. That cost is inferred from
   where those files live rather than measured against an unmoved baseline; it is accepted, not
   gated, and a reviewer that reads code and writes a critique does not need either.
 
@@ -827,11 +830,12 @@ A reviewer's private state directory is also what keeps the *operator's* own con
 out of its reach — `~/.claude`, `~/.gemini`, `~/.codex` and now `~/.cursor`, each of which
 defines hooks, rules or skills that run in the operator's later interactive sessions.
 Cursor's is the cheapest of the four: an empty `CURSOR_CONFIG_DIR` is still authenticated,
-so nothing is copied or bound in. It is also the only one that is **partial**, and the
-saving is why: because the variable moves a config file rather than a home,
-`~/.cursor/sandbox.json` is still read (see above) and per-project state —
-`.workspace-trusted`, and the full transcript of every round — is still written under
-`~/.cursor/projects/`.
+so nothing is copied or bound in. It used to be the only **partial** one, because the
+variable moves a config file rather than a home — `~/.cursor/sandbox.json` was still read,
+and per-project state (`.workspace-trusted`, and the full transcript of every round) was
+still written under `~/.cursor/projects/`. A private `HOME` closed both (see above): the
+reviewer now runs with `HOME` pointed at `<sandbox>/cursor-home`, so neither path resolves
+into your home at all, and the transcript lands in the session cache instead.
 
 ## Tests
 

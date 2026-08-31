@@ -637,7 +637,7 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   at `<sandbox>/cursor-config`, which is the cheapest of the four because an *empty*
   `CURSOR_CONFIG_DIR` is still authenticated: no credential is copied or bound in, and the
   operator's `~/.cursor` hooks, plugins, rules and skills fall out of scope for free.
-  It stopped being the only **partial** one on 2026-09-01, and what completed it was a
+  It stopped being the only **partial** one on 2026-08-31, and what completed it was a
   second variable rather than a second directory: the variable moves a config file, not a
   home, so `~/.cursor/sandbox.json` was still read — an `additionalReadwritePaths` grant
   there widened the reviewer's jail to the operator's home with the private directory in
@@ -647,7 +647,7 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `XDG_CONFIG_HOME` moves `cli-config.json` without moving this.
 
   **A private `HOME` closes both, and it ships; the cost is measured and accepted**
-  (2026-09-01, `docs/process/probes/2026-09-01-cursor-private-home/` — four paid rounds,
+  (2026-08-31, `docs/process/probes/2026-09-01-cursor-private-home/` — four paid rounds,
   `agent 2026.08.25-3e8eec8`, `composer-2.5`, Linux). The claim that `HOME` relocation breaks
   Cursor's authentication is **wrong** and was written into three files here before it was
   checked: the credential is at `~/.config/cursor/auth.json`, XDG-anchored rather than under
@@ -656,11 +656,19 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `HOME="$(dirname "$workdir")/cursor-home"`. **The order of those two lines is the whole
   mechanism** — reverse them and XDG resolves under the empty private home, the round reports
   `Not logged in`, and someone concludes for the third time that a private `HOME` costs the
-  credential. `tests/test-adapter-agent.sh` has one case that fails if and only if they are
-  reversed, and it is also the only coverage of the *custom* `XDG_CONFIG_HOME` case: the probe
-  host had the variable unset, so only the default half of the expansion ran live. What the
-  probe measured: a positive control escaped to an isolated target, the identical grant went
-  inert under the relocation with the kernel itself denying the write, the round still
+  credential. Two cases in `tests/test-adapter-agent.sh` hold the two halves and they are
+  **not** interchangeable — the ordering guard is
+  `test_an_unset_xdg_config_home_is_pinned_before_the_home_moves`, which fails if and only if
+  the exports are reversed (verified by swapping them in a scratch copy: `26 run, 1 failed`,
+  that case alone), while `test_the_adapter_runs_cursor_under_a_private_home` is the *custom*
+  `XDG_CONFIG_HOME` coverage and **passes under either order**. Delete the first as "the
+  redundant one" and the mechanism goes unguarded. That custom case is also the only coverage
+  of its half at all: the probe host had the variable unset, so only the default branch of the
+  expansion ran live. What the probe measured — through `agent -p` **directly**, never through
+  this adapter, because the adapter deletes `<workdir>/.cursor` and so cannot be the instrument
+  for a question about what a `.cursor` path does; the confining configuration was reproduced
+  by hand, byte-for-byte: a positive control escaped to an isolated target, the identical
+  grant went inert under the relocation with the kernel itself denying the write, the round still
   authenticated with **nothing copied** — so Cursor is still not a credential at rest, and the
   adapter keeps its one real advantage over the other three — and two rounds proved resume
   carries context across it, judged on a reproduced token because `agent --resume` returns
@@ -676,9 +684,14 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   rather than a differential measurement — both of its legs ran with `HOME` already moved, so
   none of them ever showed the unmoved baseline. The remedy for a workflow that needs one of
   those files is not to start copying dotfiles in; that is a policy inventory of the
-  operator's environment, maintained forever, one file at a time. The transition round is the
-  one thing still unmeasured, exactly as codex's is: every round the runner starts mints and
-  resumes inside the private home.
+  operator's environment, maintained forever, one file at a time. Two things are still
+  unmeasured. The transition round, exactly as codex's is: every round the runner starts mints
+  and resumes inside the private home. And **every one of those four rounds was Linux** — on
+  Darwin nothing here has been run, and the XDG anchoring of `auth.json` that the whole
+  ordering rests on is vendor-documented rather than measured there. It is deliberately **not**
+  gated on `$OSTYPE`: a wrong answer on a Mac is loud (`Not logged in`, a round that fails),
+  never a silent widening, and gating would ship a second confinement path nobody has measured
+  either. `BACKLOG.md` carries the reopen trigger.
   `<sandbox>/config` for claude,
   `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
   *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
