@@ -14,7 +14,7 @@ capability nobody ran is not a capability this repo knows about.
 
 Versions the rows were measured at are the pins in `docs/verified-versions.txt`:
 `codex 0.150.1`, `agent 2026.08.25-3e8eec8`, `agy 1.1.22`, `claude 2.1.251` — with one
-row excepted. §3's "agy's own `--sandbox` was measured inert" predates the pin and
+row excepted. §3's "the CLI's own `--sandbox` was measured inert" predates the pin and
 `docs/verified-versions.txt` disclaims it in as many words: the early probes established
 what that flag does not confine but **never recorded the version they ran against**, so
 that cell is not "measured at 1.1.22" and nothing here should be read as saying it is.
