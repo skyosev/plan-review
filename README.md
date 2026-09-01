@@ -856,6 +856,12 @@ suite runs offline in a couple of seconds.
 
 `docs/adapter-contract.md` — how to add a reviewer.
 
+`docs/feature-matrix.md` — what each reviewer CLI offers in the shape this app runs it,
+and which of those features a round actually depends on. It marks the difference
+between a feature that is used, one that is merely offered, one that is absent from the
+format the adapter runs, and one nobody has measured — so a row is never read as
+evidence it is not.
+
 The decision record — what was tried, what each CLI was measured doing, and why a call
 went the way it did — is kept as process notes in a separate repository, and is not
 published with the code. Comments that rest on one cite it by date and title rather

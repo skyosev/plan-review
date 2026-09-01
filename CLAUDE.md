@@ -241,7 +241,11 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   invoked as `<workdir> <session_id> <review_out> <meta_out> <reason_out>`, prompt on
   **stdin**, review only into `<review_out>`, four fixed lines into `<meta_out>`. Adding
   a reviewer = a new adapter plus its key in `PR_ROSTER_ADAPTERS` (`lib/roster.sh`);
-  nothing else derives the roster.
+  nothing else derives the roster. Its companion is `docs/feature-matrix.md`, which
+  records what the four CLIs *offer* in the invocation shape each adapter builds, and
+  which of it a round depends on. It is the file to update when a pin moves in
+  `docs/verified-versions.txt`, and the place to look before assuming a CLI cannot do
+  something — several of its rows say "nobody has run it", which is not the same answer.
 - **The version on meta line 4 must name the binary that wrote the review.** Take it
   from the run's own output where the CLI offers one — `codex` off its banner,
   `claude` off the `init` frame — and otherwise read it **before** the run.
