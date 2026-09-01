@@ -88,11 +88,15 @@ fi
 # arbitrary code execution on every LATER agy round of the operator's own,
 # outliving the jail. The channel is that hook route, not a reviewer write: leg
 # C asked the reviewer to create ~/.gemini/config/hooks.json with a shell
-# command and agy's OWN terminal sandbox refused it read-only -- with bwrap
-# binding that directory read-WRITE on purpose and the CLI process itself
-# writing into it in the same run, so the split is tool call versus CLI, not
-# jail versus host. DENIED there is "this route was refused", not "the
-# directory is unreachable": one command, one shape, one model, one platform.
+# command and the file never appeared. WHAT refused it is NOT established --
+# the quotes naming agy's own terminal sandbox were read live from a state
+# directory that no longer exists, so that attribution is a hypothesis worth
+# testing, not a measured property of 1.1.22. What IS auditable in the probe's
+# raw/ is the negative: bwrap did not deny it. The jail bound that directory
+# read-WRITE on purpose and the leg's own listing shows the CLI process
+# creating four entries inside it in the same run. DENIED there is "this route
+# was refused", not "the directory is unreachable": one command, one shape, one
+# model, one platform, and no control run.
 # The bind therefore stays private on leg B's evidence rather than on C's. Same
 # argument, same shape, as adapters/claude.sh's private CLAUDE_CONFIG_DIR;
 # adapters source nothing, so the reasoning is restated here by convention.

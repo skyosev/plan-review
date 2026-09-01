@@ -550,11 +550,15 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   above: its read-write bind of the operator's real `~/.gemini` would be arbitrary code
   execution in *their* later sessions, and that argument now rests on a measurement
   rather than on the vendor's documentation. It does **not** rest on the reviewer
-  writing that file itself — leg C asked for exactly that and `agy`'s **own** terminal
-  sandbox refused it read-only, with bwrap binding the directory read-**write** on
-  purpose and the CLI process writing into it in the same run. The split is tool call
-  versus CLI, not jail versus host, and `DENIED` there is "this route was refused" from
-  one command in one shape, not "the directory is unreachable".
+  writing that file itself — leg C asked for exactly that and the file never appeared.
+  **What refused it is not established**: the quotes naming `agy`'s own terminal sandbox
+  were read live from a state directory that no longer exists, so that attribution is a
+  hypothesis worth testing rather than a measured property of 1.1.22. The **negative**
+  half is auditable in the probe's `raw/` and does stand — **bwrap did not deny it**: the
+  jail bound that directory read-**write** on purpose, and the leg's own listing shows
+  the CLI process creating four entries inside it in the same run. `DENIED` there is
+  "this route was refused" from one command in one shape with no control run, not "the
+  directory is unreachable".
 
   **`claude` stopped being the second such adapter on 2026-08-30 and now switches
   mechanism per host**, chosen once at a `$confinement` variable and reported by
