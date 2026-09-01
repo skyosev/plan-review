@@ -118,8 +118,9 @@ fi
 # (agy 1.1.22, Linux, 2026-09-01). Removed rather than sanitised because the
 # measurement is narrower than the surface: .agents/ also carries custom agents
 # and other workspace customisation that no leg touched. adapters/agent.sh:400
-# and adapters/claude.sh:366 do the identical thing to .cursor and .claude; this
-# is the third copy of one rule, not a new idea. Adapters source nothing, so it
+# does the identical thing to .cursor, and adapters/claude.sh:366 to .claude --
+# that one on its BUILT-IN half only, since the bwrap half contains the process
+# instead. This is the third copy of one rule, not a new idea. Adapters source nothing, so it
 # is restated here by convention.
 #
 # Safe because <workdir> is a disposable per-round copy, never the operator's
@@ -127,7 +128,7 @@ fi
 #
 # chmod first, and CHECKED after, for adapters/agent.sh's measured reasons:
 # `rsync -a` preserves the target's permissions and `rm -rf` cannot descend a
-# mode-555 directory (lib/sandbox.sh:70), which vendored dependencies really do
+# mode-555 directory (lib/sandbox.sh:67), which vendored dependencies really do
 # ship -- so a repo wanting its hooks to survive need only ship one mode 555
 # inside .agents. The `[[ -e ]]` is the evidence, not rm's exit status.
 #

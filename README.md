@@ -89,7 +89,8 @@ write barrier that held — including against a detached grandchild — and foun
 a single directory. `agy`'s Linux jail mounts a private state directory over `~/.gemini`, macOS
 has no bind mount to do that with, and `HOME` relocation was measured failing to authenticate even
 with the whole directory copied. So a macOS `agy` would run with the operator's own `~/.gemini`
-writable, which its workspace hooks make a persistence channel out of the sandbox. Nobody has
+writable, and its `config/hooks.json` there was measured **executing** an arbitrary
+command, which makes that directory a persistence channel out of the sandbox. Nobody has
 decided to pay that; the probe exists so the decision can be taken on evidence.
 
 Two things macOS loses for every reviewer. The pid fence: with no `bwrap` there, the runner's

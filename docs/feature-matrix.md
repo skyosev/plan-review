@@ -13,7 +13,13 @@ some other mode; unless a row says otherwise, nobody here has run that mode, and
 capability nobody ran is not a capability this repo knows about.
 
 Versions the rows were measured at are the pins in `docs/verified-versions.txt`:
-`codex 0.150.1`, `agent 2026.08.25-3e8eec8`, `agy 1.1.22`, `claude 2.1.251`.
+`codex 0.150.1`, `agent 2026.08.25-3e8eec8`, `agy 1.1.22`, `claude 2.1.251` — with one
+row excepted. §3's "agy's own `--sandbox` was measured inert" predates the pin and
+`docs/verified-versions.txt` disclaims it in as many words: the early probes established
+what that flag does not confine but **never recorded the version they ran against**, so
+that cell is not "measured at 1.1.22" and nothing here should be read as saying it is.
+It is also the one row nothing rests on — the jail `adapters/agy.sh` builds is what
+confines agy, not the flag.
 
 ## How to read the marks
 
@@ -81,7 +87,7 @@ Nothing in this column group reaches `round.json`. See §7.
 | Mechanism | env var | env vars | bind mount | env var + bind |
 | Credential cost | **copied** — `auth.json`, once | **none copied** — an empty config dir is already authenticated | ro-bound by path | ro-bound (bwrap) / **copied** (Darwin, incl. from the Keychain) |
 | Repo-supplied config neutralised | `-c features.hooks=false` | `rm -rf <workdir>/.cursor` | `rm -rf <workdir>/.agents` | `rm -rf <workdir>/.claude` (built-in half only) |
-| Environment rebuilt from a whitelist | no | no | no | **used** — `env -i`, eight variables |
+| Environment rebuilt from a whitelist | no | no | no | **used** — `env -i`, seven variables |
 | Survives the per-round repo wipe | yes — sibling of `<sandbox>/repo` | yes | yes | yes |
 
 ---

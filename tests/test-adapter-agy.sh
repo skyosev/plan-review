@@ -306,6 +306,56 @@ test_a_mode_555_agents_directory_is_still_removed() {
   assert_file_missing "$d/work/.agents" "and the whole directory is gone"
 }
 
+# `rsync -a` copies symlinks as symlinks, so `.agents` in the workdir can be a
+# link the TARGET REPO chose the destination of. GNU `chmod -R` dereferences the
+# symlink named on its command line, so an unguarded chmod here would add
+# owner-write across whatever that link points at -- the operator's home, if the
+# repo says so. Measured on the sibling path 2026-08-28: 444 came back 644, 555
+# came back 755. This is the case that pins `[[ -L ... ]] ||`; without it the
+# guard can be deleted and the suite still passes.
+test_an_agents_symlink_is_unlinked_and_never_followed() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  if [[ "$(id -u)" == 0 ]]; then pr_test_skip "root ignores the write bit, so the damage is invisible"; return 0; fi
+  mkdir -p "$d/work" "$d/victim"
+  echo "the operator's file" > "$d/victim/f"
+  chmod 444 "$d/victim/f"
+  ln -s "$d/victim" "$d/work/.agents"
+  echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  rc=$?
+  # -w rather than a mode read: it is the property the dereferencing chmod would
+  # have changed, and it needs no GNU/BSD stat spelling.
+  [[ -w "$d/victim/f" ]] && pr_fail "chmod followed the symlink and made the target writable"
+  assert_file_exists "$d/victim/f" "the link target still exists"
+  assert_eq "$(cat "$d/victim/f")" "the operator's file" "and is unchanged"
+  assert_file_missing "$d/work/.agents" "while the link itself is gone"
+  assert_exit_code "$rc" 0 "and the round still runs"
+  chmod -R u+w "$d/victim" 2>/dev/null
+}
+
+# The post-check tests `-L` as well as `-e` because `-e` is FALSE for a dangling
+# symlink -- so a `.agents` link whose target does not exist, and which the rm
+# failed to unlink, would read as "successfully removed" on `-e` alone. An
+# unwritable workdir is how the rm is made to fail; the repo cannot choose that
+# directly, but the guard is not conditional on how the failure arose. Drop the
+# `|| -L` and the adapter runs the review with that path still in place, which
+# is exactly what this case catches.
+test_a_dangling_agents_symlink_that_survives_is_refused() {
+  local d rc out; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  if [[ "$(id -u)" == 0 ]]; then pr_test_skip "root unlinks inside an unwritable directory anyway"; return 0; fi
+  mkdir -p "$d/work"
+  ln -s "$d/no-such-target" "$d/work/.agents"
+  chmod 555 "$d/work"
+  out="$(echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" 2>&1)"
+  rc=$?
+  chmod 755 "$d/work" 2>/dev/null
+  assert_exit_code "$rc" 1 "refuses rather than reviewing with the path in place"
+  assert_contains "$out" "could not remove" "and says which path"
+  assert_file_missing "$d/bin/agy-argv.txt" "the review never ran"
+  [[ -L "$d/work/.agents" ]] || pr_fail "the dangling link was expected to survive the rm"
+}
+
 test_workdir_is_targeted_with_add_dir() {
   local d argv; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
   echo "prompt" | PATH="$d/bin:$PATH" \
