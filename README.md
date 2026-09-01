@@ -733,9 +733,13 @@ write-confined, each by a different thing:
   Its conversations live in a private state directory beside the repo copy —
   `<sandbox>/gemini-state`, bound over `~/.gemini` — for the same reasons claude's
   config directory does, and the operator's real `~/.gemini` is **never written**. agy
-  honours workspace hooks under `.agents/`, so a read-write bind of the real directory
-  would let a hostile workspace plant something that runs later in the operator's own
-  sessions. Exactly one file comes in, read-only and by path:
+  was measured **executing** a hook file out of `~/.gemini/config/`
+  (`probes/2026-09-01-agy-hook-surface/`, leg B, agy 1.1.22), so a read-write bind of
+  the real directory would be arbitrary code execution in the operator's own later
+  sessions. The same probe's leg A measured the identical execution from a
+  `.agents/hooks.json` shipped by the repository under review, and the remedy for that
+  half is the adapter's unconditional `rm -rf "$workdir/.agents"`. Exactly one file
+  comes in, read-only and by path:
   `~/.gemini/antigravity-cli/antigravity-oauth-token`, which is the minimum agy needs to
   authenticate — measured on 2026-08-27 by binding candidates one at a time from an
   empty private directory. What is lost is agy history from *other* sessions, which

@@ -80,7 +80,7 @@ Nothing in this column group reaches `round.json`. See §7.
 | Private state directory | `<sandbox>/codex-home` via `CODEX_HOME` | `<sandbox>/cursor-config` **and** a private `HOME` | `<sandbox>/gemini-state`, bound over `~/.gemini` | `<sandbox>/config` via `CLAUDE_CONFIG_DIR` |
 | Mechanism | env var | env vars | bind mount | env var + bind |
 | Credential cost | **copied** — `auth.json`, once | **none copied** — an empty config dir is already authenticated | ro-bound by path | ro-bound (bwrap) / **copied** (Darwin, incl. from the Keychain) |
-| Repo-supplied config neutralised | `-c features.hooks=false` | `rm -rf <workdir>/.cursor` | **none** — workspace hooks under `.agents/` are honoured | `rm -rf <workdir>/.claude` (built-in half only) |
+| Repo-supplied config neutralised | `-c features.hooks=false` | `rm -rf <workdir>/.cursor` | `rm -rf <workdir>/.agents` | `rm -rf <workdir>/.claude` (built-in half only) |
 | Environment rebuilt from a whitelist | no | no | no | **used** — `env -i`, eight variables |
 | Survives the per-round repo wipe | yes — sibling of `<sandbox>/repo` | yes | yes | yes |
 
@@ -208,13 +208,17 @@ Read this section as the reason behind row `macOS` in §3.
   so the Linux adapter's ro-bind is inert there via its own `[[ -f ]]` guard.
 
   What a macOS agy would therefore cost: the reviewer runs with the operator's real
-  `~/.gemini` **writable**, and agy honours workspace hooks under `.agents/` — so a
-  hostile repository can write state that runs later in the operator's own sessions.
-  That is the persistence channel the Linux private directory closes and nothing on
-  macOS closes today. Two mitigations are named and **unmeasured**: narrowing the
+  `~/.gemini` **writable**, and a hook file there was measured **executing** an
+  arbitrary command (`probes/2026-09-01-agy-hook-surface/`, leg B, agy 1.1.22, Linux) —
+  so anything that reaches it runs later in the operator's own sessions. That is the
+  persistence channel the Linux private directory closes and nothing on macOS closes
+  today. The repository half of that surface is already closed on both platforms: the
+  adapter `rm -rf`s `<workdir>/.agents` unconditionally, because the same probe's leg A
+  measured agy executing a command out of a hook file the repository under review
+  shipped there — the counterpart of what the `agent` and `claude` adapters already do
+  to `.cursor` and `.claude`. What is left named and **unmeasured** is narrowing the
   profile to deny the hook locations inside `~/.gemini` while allowing the paths agy
-  needs, and `rm -rf "$workdir/.agents"`, the counterpart of what the `agent` and
-  `claude` adapters already do to `.cursor` and `.claude`.
+  needs.
 - **claude** — both platforms, by **two different mechanisms** chosen once at a single
   `$confinement` variable. With `bwrap`: the jail,
   `--dangerously-skip-permissions`, an asserted `bypassPermissions`. On Darwin without

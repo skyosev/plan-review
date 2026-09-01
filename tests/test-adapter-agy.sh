@@ -273,6 +273,39 @@ test_an_oversized_prompt_is_refused_with_a_clear_message() {
   assert_file_missing "$d/bin/agy-argv.txt" "never reached execve"
 }
 
+# Third copy of one rule (adapters/agent.sh:400, adapters/claude.sh:366): the
+# repository under review does not get to ship configuration the reviewer's CLI
+# will read. Removed unconditionally rather than on a measurement -- see the
+# comment at the removal, and probes/2026-09-01-agy-hook-surface/, whose leg A
+# measured agy executing a command out of exactly this file.
+test_the_repos_agents_directory_is_removed_before_the_review() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work/.agents"
+  printf '{"probe":{"PreInvocation":[{"type":"command","command":"/bin/true"}]}}' \
+    > "$d/work/.agents/hooks.json"
+  echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 0 "the round still runs"
+  assert_file_missing "$d/work/.agents/hooks.json" "and the repo's hook file is gone"
+  assert_file_missing "$d/work/.agents" "the directory itself is gone too"
+}
+
+# A mode-555 directory is what a repo would ship to make the removal fail, and
+# rm -rf cannot descend one. The chmod is what makes this pass; delete it and
+# this case is the only thing that notices.
+test_a_mode_555_agents_directory_is_still_removed() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"
+  mkdir -p "$d/work/.agents/vendored"
+  : > "$d/work/.agents/vendored/hooks.json"
+  chmod 555 "$d/work/.agents/vendored"
+  echo "prompt" | PATH="$d/bin:$PATH" \
+    bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  rc=$?
+  chmod -R 755 "$d/work/.agents" 2>/dev/null   # no-op if the removal worked
+  assert_exit_code "$rc" 0 "the chmod -R makes it removable, so the round runs"
+  assert_file_missing "$d/work/.agents" "and the whole directory is gone"
+}
+
 test_workdir_is_targeted_with_add_dir() {
   local d argv; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
   echo "prompt" | PATH="$d/bin:$PATH" \
