@@ -118,6 +118,9 @@ fi
 # is the third copy of one rule, not a new idea. Adapters source nothing, so it
 # is restated here by convention.
 #
+# Safe because <workdir> is a disposable per-round copy, never the operator's
+# checkout (lib/sandbox.sh; docs/adapter-contract.md says the same).
+#
 # chmod first, and CHECKED after, for adapters/agent.sh's measured reasons:
 # `rsync -a` preserves the target's permissions and `rm -rf` cannot descend a
 # mode-555 directory (lib/sandbox.sh:70), which vendored dependencies really do

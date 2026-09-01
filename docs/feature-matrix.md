@@ -208,17 +208,20 @@ Read this section as the reason behind row `macOS` in §3.
   so the Linux adapter's ro-bind is inert there via its own `[[ -f ]]` guard.
 
   What a macOS agy would therefore cost: the reviewer runs with the operator's real
-  `~/.gemini` **writable**, and a hook file there was measured **executing** an
-  arbitrary command (`probes/2026-09-01-agy-hook-surface/`, leg B, agy 1.1.22, Linux) —
-  so anything that reaches it runs later in the operator's own sessions. That is the
+  `~/.gemini` **writable**, and one hook file there — `config/hooks.json`, the only one
+  tried — was measured **executing** an arbitrary command
+  (`probes/2026-09-01-agy-hook-surface/`, leg B, agy 1.1.22, Linux), so whatever can
+  write *that file* gets a command run in the operator's own later sessions. That is the
   persistence channel the Linux private directory closes and nothing on macOS closes
-  today. The repository half of that surface is already closed on both platforms: the
-  adapter `rm -rf`s `<workdir>/.agents` unconditionally, because the same probe's leg A
-  measured agy executing a command out of a hook file the repository under review
-  shipped there — the counterpart of what the `agent` and `claude` adapters already do
-  to `.cursor` and `.claude`. What is left named and **unmeasured** is narrowing the
-  profile to deny the hook locations inside `~/.gemini` while allowing the paths agy
-  needs.
+  today. The repository half of the surface is closed in the adapter
+  **unconditionally** — it `rm -rf`s `<workdir>/.agents` on every host, because the same
+  probe's leg A measured agy executing a command out of a hook file the repository under
+  review shipped there, the counterpart of what the `agent` and `claude` adapters
+  already do to `.cursor` and `.claude`. It is not platform-gated, so a macOS port
+  inherits it — but no Mac reaches it **today**: the adapter refuses a host without
+  `bwrap` many lines earlier, so there is no macOS round for the removal to run in. What
+  is left named and **unmeasured** is narrowing the profile to deny the hook locations
+  inside `~/.gemini` while allowing the paths agy needs.
 - **claude** — both platforms, by **two different mechanisms** chosen once at a single
   `$confinement` variable. With `bwrap`: the jail,
   `--dangerously-skip-permissions`, an asserted `bypassPermissions`. On Darwin without
@@ -234,7 +237,11 @@ reverses something that reads as obvious:
   is why that half must run at `permissionMode: default`, where the unsandboxed Write
   and Edit tools are denied outright.
 - The repository under review is a configuration surface that **outranks the flags we
-  pass**, on both Cursor and claude — hence the two `rm -rf` rows in §4.
+  pass**, on both Cursor and claude — hence *their* two `rm -rf` cells in §4's
+  "Repo-supplied config neutralised" row. That row now holds a third, agy's, and it
+  rests on a different measurement: not a repo file outranking a flag, but a repo file
+  the CLI simply **executed** (`probes/2026-09-01-agy-hook-surface/`, leg A). Three
+  cells, two reasons.
 - `failIfUnavailable` **does not refuse to start** on Darwin. With Seatbelt made
   unavailable the CLI started, denied every command, and ended `is_error: false` with a
   non-empty review. It fails safe, not closed. What makes that half shippable is the

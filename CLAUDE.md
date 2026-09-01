@@ -529,6 +529,32 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   not. `agy` is
   wrapped in bubblewrap by its adapter and
   **fails closed** when `bwrap` is missing. Never add an unconfined fallback for it.
+  It is also the **third** adapter to `rm -rf` the repository's own configuration
+  directory — `<workdir>/.agents`, beside `agent.sh`'s `.cursor` and `claude.sh`'s
+  `.claude` — and unlike codex's `-c features.hooks=false`, whose non-execution was
+  measured but whose *gate* is inferred, this one closes a path that was measured
+  **firing**. A `$work/.agents/hooks.json` carrying a `PreInvocation` command was
+  executed by agy in this adapter's own invocation shape
+  (`--sandbox --dangerously-skip-permissions -p`), with no prompting and **no trace at
+  all on the `--output-format json` transcript** — a clean `"status":"SUCCESS"` and an
+  unrelated model answer; the evidence is a marker file on the host and the CLI's own
+  log inside the state directory, which is the transferable lesson (a probe that judges
+  `agy` by its JSON envelope alone is reading the wrong stream). Measured 2026-09-01 at
+  `agy 1.1.22` on Linux, leg A of
+  `docs/process/probes/2026-09-01-agy-hook-surface/`. The whole directory goes rather
+  than the one file **because the measurement is narrower than the surface**: `.agents/`
+  also carries custom agents and other workspace customisation that no leg touched, and
+  nothing here establishes which other events fire or what the `flat` hook shape does.
+  The same probe's leg B measured the identical execution from
+  `~/.gemini/config/hooks.json`, which is what re-prices the private state directory
+  above: its read-write bind of the operator's real `~/.gemini` would be arbitrary code
+  execution in *their* later sessions, and that argument now rests on a measurement
+  rather than on the vendor's documentation. It does **not** rest on the reviewer
+  writing that file itself — leg C asked for exactly that and `agy`'s **own** terminal
+  sandbox refused it read-only, with bwrap binding the directory read-**write** on
+  purpose and the CLI process writing into it in the same run. The split is tool call
+  versus CLI, not jail versus host, and `DENIED` there is "this route was refused" from
+  one command in one shape, not "the directory is unreachable".
 
   **`claude` stopped being the second such adapter on 2026-08-30 and now switches
   mechanism per host**, chosen once at a `$confinement` variable and reported by

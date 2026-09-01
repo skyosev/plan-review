@@ -331,6 +331,15 @@ meant.
   non-execution was measured; the gate is inferred from the binary's own strings and the
   once-trusted path was never attempted. It closes a read, ahead of an execution path that
   is codex's to open.
+- **The repository's `.agents/` is deleted from agy's sandbox copy** before the review
+  (`rm -rf <workdir>/.agents`), and this one is not a precaution: a `.agents/hooks.json`
+  shipped by the repository under review was measured *executing* an arbitrary command,
+  in the adapter's own invocation shape and with nothing about it on agy's JSON
+  transcript (agy 1.1.22, Linux, 2026-09-01). Unlike the codex bullet above, describing
+  this as a closed execution path is fair. Two caveats to pass on: the deletion is
+  wider than the measurement — `.agents/` also holds custom agents and other workspace
+  customisation nobody tested — and it hits the **disposable per-round copy**, never the
+  user's checkout, which is the question they will actually ask.
 - A reviewer's recorded model reads `<something> (requested: <pin>)`: the CLI swapped the
   model out mid-run and the adapter caught it. The pin did not answer. Say so when
   reporting verdicts — that round is not comparable to one run on the pinned model.

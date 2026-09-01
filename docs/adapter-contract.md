@@ -204,8 +204,9 @@ Every adapter — real or fake — is invoked identically:
   operator's own `~/.claude/settings.json` — which defines hooks that run in
   *their* interactive sessions — outside the reviewer's reach, and the same
   argument applies to `~/.gemini`, whose hook file agy was measured *executing*
-  (`probes/2026-09-01-agy-hook-surface/`; the adapter removes the repository's own
-  `.agents/` for the same measured reason), and to
+  (`probes/2026-09-01-agy-hook-surface/`; the adapter also removes the repository's
+  own `.agents/`, on that measurement **plus** the rest of that directory, which no
+  leg touched), and to
   `~/.codex`, whose ambient configuration had already taken a reviewer out.
 
   Auth material comes in **read-only and by path**, one file at a time, measured
