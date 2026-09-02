@@ -21,6 +21,13 @@ that cell is not "measured at 1.1.22" and nothing here should be read as saying 
 It is also the one row nothing rests on — the jail `adapters/agy.sh` builds is what
 confines agy, not the flag.
 
+**A second exception, and this one is drift rather than a gap in the record.** §9's three
+closed-route bullets for macOS `agy` were measured at **`agy 1.1.24`**, not the pinned
+1.1.22: the binary self-updated mid-probe on 2026-09-02, between the free legs and the paid
+ones. The pin is deliberately not bumped — its own convention is to re-run the probes first —
+so those bullets say 1.1.24 where they stand, and `docs/process/BACKLOG.md` carries the
+re-pin as Actionable. Everything else about `agy` here is still 1.1.22's.
+
 ## How to read the marks
 
 | Mark | Meaning |
@@ -310,6 +317,18 @@ The ran-a-command assertion has a stated cost rather than a hidden one: a review
 legitimately needed no command fails its reviewer too. That is the intended direction —
 `lib/prompt.sh` tells every reviewer to run things, and a confident review that checked
 nothing is worse than a missing one.
+
+**`agy` has no counterpart to it, and that is a structural gap rather than an omission.**
+Read its row above narrowly: "the envelope carries a response" catches an *empty* response,
+and nothing more. On 2026-09-02 a leg came back `rc=0`, `status: SUCCESS`, `num_turns: 1`
+and a real 12-character response having run **no tool call at all** — every attempt denied,
+four times at the same path, with the evidence in neither stream nor envelope but in `agy`'s
+own brain store (`docs/process/probes/2026-09-01-agy-macos-routes/`). §2 is why the
+assertion cannot be built the way claude's is: `agy` reports **absent** for both denied tool
+calls and per-tool-call visibility, so there is nothing in the format this repo runs to
+count. Nothing is broken today — that leg was a deliberately starved macOS profile, and on
+Linux `agy`'s tool layer has the private state directory it needs — but anyone who reads
+this table as "all four are covered" is reading one row wider than it goes.
 
 ---
 
