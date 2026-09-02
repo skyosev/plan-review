@@ -431,7 +431,7 @@ test_a_missing_workdir_is_refused_before_any_path_is_composed() {
 
 # The removal is the half that closes the two measured escapes, so it is checked
 # like its two siblings (the private config dir, the pinned cli-config.json) and
-# not left to fail open in silence. lib/sandbox.sh:70 records the failure it is
+# not left to fail open in silence. lib/sandbox.sh:67 records the failure it is
 # exposed to: rsync preserves the target's permissions and `rm -rf` cannot
 # descend a mode-555 directory, which vendored dependencies really do ship -- and
 # which a repo that wanted its policy to survive would only have to imitate. The

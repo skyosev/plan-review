@@ -370,7 +370,7 @@ fi
 # chmod first, and CHECKED after, for the same reason its two siblings above are
 # checked: this is the half that closes the two measured escapes, and a silent
 # failure here leaves cli.json in place and runs the review anyway. The failure
-# is not hypothetical -- lib/sandbox.sh:70 records it: `rsync -a` preserves the
+# is not hypothetical -- lib/sandbox.sh:67 records it: `rsync -a` preserves the
 # target's permissions and `rm -rf` cannot descend a mode-555 directory, which
 # vendored dependencies really do ship. A repo that wanted its policy to survive
 # would only have to ship one mode 555 inside `.cursor`. The `[[ -e ]]` is the

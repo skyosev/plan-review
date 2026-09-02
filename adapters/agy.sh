@@ -81,10 +81,23 @@ fi
 # ~/.gemini so agy still finds its state at the path it expects.
 #
 # Isolating it also keeps the operator's real ~/.gemini out of the reviewer's
-# reach. agy honours workspace hooks under .agents/, so a hostile workspace
-# can make the reviewer write into its state directory -- and a read-write
-# bind of the real one would hand that write a persistence channel that
-# outlives the jail, running later in the operator's own sessions. Same
+# reach. agy was measured EXECUTING workspace hooks under .agents/
+# (probes/2026-09-01-agy-hook-surface/, leg A, agy 1.1.22, Linux) -- the remedy
+# for THAT half is the removal below, and leg B measured the same execution out
+# of ~/.gemini/config/hooks.json, so a read-write bind of the real directory is
+# arbitrary code execution on every LATER agy round of the operator's own,
+# outliving the jail. The channel is that hook route, not a reviewer write: leg
+# C asked the reviewer to create ~/.gemini/config/hooks.json with a shell
+# command and the file never appeared. WHAT refused it is NOT established --
+# the quotes naming agy's own terminal sandbox were read live from a state
+# directory that no longer exists, so that attribution is a hypothesis worth
+# testing, not a measured property of 1.1.22. What IS auditable in the probe's
+# raw/ is the negative: bwrap did not deny it. The jail bound that directory
+# read-WRITE on purpose and the leg's own listing shows the CLI process
+# creating four entries inside it in the same run. DENIED there is "this route
+# was refused", not "the directory is unreachable": one command, one shape, one
+# model, one platform, and no control run.
+# The bind therefore stays private on leg B's evidence rather than on C's. Same
 # argument, same shape, as adapters/claude.sh's private CLAUDE_CONFIG_DIR;
 # adapters source nothing, so the reasoning is restated here by convention.
 # What is lost is agy history from OTHER sessions, which nothing here ever
@@ -93,6 +106,46 @@ fi
 state="$(dirname "$workdir")/gemini-state"
 if ! mkdir -p "$state" 2>/dev/null; then
   echo "agy adapter: cannot create the private state dir at $state" >&2
+  exit 1
+fi
+
+# The repository under review ships .agents/, and agy reads hooks from there --
+# MEASURED, not inferred: probes/2026-09-01-agy-hook-surface/ leg A seeded
+# $work/.agents/hooks.json with a PreInvocation command and agy EXECUTED it, in
+# this adapter's own invocation shape (--sandbox --dangerously-skip-permissions
+# -p), with no prompting and no trace whatsoever on the --output-format json
+# transcript -- the evidence is a marker file on the host and the CLI's own log
+# (agy 1.1.22, Linux, 2026-09-01). Removed rather than sanitised because the
+# measurement is narrower than the surface: .agents/ also carries custom agents
+# and other workspace customisation that no leg touched. adapters/agent.sh:400
+# does the identical thing to .cursor, and adapters/claude.sh:366 to .claude --
+# that one on its BUILT-IN half only, since the bwrap half contains the process
+# instead. This is the third copy of one rule, not a new idea. Adapters source nothing, so it
+# is restated here by convention.
+#
+# Safe because <workdir> is a disposable per-round copy, never the operator's
+# checkout (lib/sandbox.sh; docs/adapter-contract.md says the same).
+#
+# chmod first, and CHECKED after, for adapters/agent.sh's measured reasons:
+# `rsync -a` preserves the target's permissions and `rm -rf` cannot descend a
+# mode-555 directory (lib/sandbox.sh:67), which vendored dependencies really do
+# ship -- so a repo wanting its hooks to survive need only ship one mode 555
+# inside .agents. The `[[ -e ]]` is the evidence, not rm's exit status.
+#
+# The -L branch is not tidiness. GNU `chmod -R` DEREFERENCES the symlink named on
+# its command line, and `rsync -a` copies symlinks as symlinks, so a target repo
+# shipping `.agents -> /home/<operator>` would arrive here as exactly that and an
+# unguarded chmod would add owner-write across the operator's home (measured
+# 2026-08-28 on the sibling path). Unlinking a symlink IS the clean outcome: what
+# the CLI would have read is gone from the workdir either way. `-L` is tested
+# again below because `-e` is false for a DANGLING symlink.
+[[ -L "$workdir/.agents" ]] || chmod -R u+w "$workdir/.agents" 2>/dev/null
+rm -rf "$workdir/.agents"
+if [[ -e "$workdir/.agents" || -L "$workdir/.agents" ]]; then
+  echo "agy adapter: could not remove $workdir/.agents" >&2
+  echo "That path can supply hooks and agent definitions agy may execute, so the" >&2
+  echo "review is refused rather than run with it in place." >&2
+  pr_reason "The target repo's .agents path could not be removed; refusing to run with it in place"
   exit 1
 fi
 

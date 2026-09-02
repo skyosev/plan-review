@@ -241,7 +241,11 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   invoked as `<workdir> <session_id> <review_out> <meta_out> <reason_out>`, prompt on
   **stdin**, review only into `<review_out>`, four fixed lines into `<meta_out>`. Adding
   a reviewer = a new adapter plus its key in `PR_ROSTER_ADAPTERS` (`lib/roster.sh`);
-  nothing else derives the roster.
+  nothing else derives the roster. Its companion is `docs/feature-matrix.md`, which
+  records what the four CLIs *offer* in the invocation shape each adapter builds, and
+  which of it a round depends on. It is the file to update when a pin moves in
+  `docs/verified-versions.txt`, and the place to look before assuming a CLI cannot do
+  something — several of its rows say "nobody has run it", which is not the same answer.
 - **The version on meta line 4 must name the binary that wrote the review.** Take it
   from the run's own output where the CLI offers one — `codex` off its banner,
   `claude` off the `init` frame — and otherwise read it **before** the run.
@@ -525,6 +529,71 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   not. `agy` is
   wrapped in bubblewrap by its adapter and
   **fails closed** when `bwrap` is missing. Never add an unconfined fallback for it.
+  It is the one adapter that did **not** grow a second engine on Darwin, and that is a
+  measured outcome rather than an unexplored gap
+  (`docs/process/probes/2026-09-01-agy-macos-routes/`, 2026-09-02, `agy 1.1.24`). The write
+  barrier ports — a `sandbox-exec` profile held, and `agy` authenticated and reached its model
+  behind one — but the **private state directory** does not: it is a bind over `~/.gemini` and
+  there is no bind without `bwrap`. All three replacements are closed. `GEMINI_HOME` and
+  `XDG_CONFIG_HOME` are both ignored (`agy` composes `$HOME/.gemini` and dies at
+  `installation_id`), and `agy --help` has no state-directory flag. A private `HOME` has **no
+  login keychain in its search list at all** — `security default-keychain` answers "A default
+  keychain could not be found" — so the Safe Storage key that Mac authenticates with is
+  unreachable by mechanism; that also *explains* row 9's legs A–C, which is an attribution and
+  not a measurement, since row 9 was not re-run. And a profile narrowed to deny the
+  configuration paths is a **correct** narrowing that `agy` cannot run behind: its shell tool
+  layer must write `~/.gemini/antigravity-cli/bin/agentapi` before a tool call can run — four
+  attempts, four denials, no tool call, all under `rc=0` and a confident
+  `"status":"SUCCESS"`, with the decisive evidence in neither stream nor envelope but in
+  `agy`'s own brain store. So the price is **irreducible and worse than a state directory**:
+  write access to a path that already holds executables, in the operator's real tree,
+  surviving the round. The write is measured; that `agy` then *executes* it is inference —
+  never write "write-then-execute" unhedged. `specs/2026-09-01-agy-macos-port/00.plan.md:166`'s
+  "R4 is not a shippable variant" is **superseded**: it was derived from a ship gate aimed at
+  `agy`'s *configuration* paths and decided before the price was known.
+
+  **That exposure was accepted by the operator on 2026-09-02**, price in hand, on the stated
+  condition that declining costs nothing but not naming `agy` in a macOS roster. **Nothing has
+  been built**, and the four `bwrap` gates stay exactly as they are until it is — do not take
+  one down alone. The condition is the reason: `pr_roster_default_map` (`lib/roster.sh`) is the
+  shipped adapters minus the orchestrator and knows nothing about platforms, so the derived
+  default on a Mac already names `agy`, and today only `pr_init_needs_jail` and the adapter's
+  own refusal keep it out. Remove the refusal by itself and macOS `agy` is **opt-out**, which
+  is not the decision that was taken. A port owes an explicit-opt-in rule, platform-awareness
+  in `pr_init_needs_jail` and preflight's jail list, a `sandbox-exec` engine chosen at one
+  `$confinement` variable on `adapters/claude.sh`'s pattern, a doctor check naming the half,
+  and a paid acceptance round **on a Mac** — none of it is verifiable from Linux.
+  `docs/process/BACKLOG.md` carries that list.
+  It is also the **third** adapter to `rm -rf` the repository's own configuration
+  directory — `<workdir>/.agents`, beside `agent.sh`'s `.cursor` and `claude.sh`'s
+  `.claude` — and unlike codex's `-c features.hooks=false`, whose non-execution was
+  measured but whose *gate* is inferred, this one closes a path that was measured
+  **firing**. A `$work/.agents/hooks.json` carrying a `PreInvocation` command was
+  executed by agy in this adapter's own invocation shape
+  (`--sandbox --dangerously-skip-permissions -p`), with no prompting and **no trace at
+  all on the `--output-format json` transcript** — a clean `"status":"SUCCESS"` and an
+  unrelated model answer; the evidence is a marker file on the host and the CLI's own
+  log inside the state directory, which is the transferable lesson (a probe that judges
+  `agy` by its JSON envelope alone is reading the wrong stream). Measured 2026-09-01 at
+  `agy 1.1.22` on Linux, leg A of
+  `docs/process/probes/2026-09-01-agy-hook-surface/`. The whole directory goes rather
+  than the one file **because the measurement is narrower than the surface**: `.agents/`
+  also carries custom agents and other workspace customisation that no leg touched, and
+  nothing here establishes which other events fire or what the `flat` hook shape does.
+  The same probe's leg B measured the identical execution from
+  `~/.gemini/config/hooks.json`, which is what re-prices the private state directory
+  above: its read-write bind of the operator's real `~/.gemini` would be arbitrary code
+  execution in *their* later sessions, and that argument now rests on a measurement
+  rather than on the vendor's documentation. It does **not** rest on the reviewer
+  writing that file itself — leg C asked for exactly that and the file never appeared.
+  **What refused it is not established**: the quotes naming `agy`'s own terminal sandbox
+  were read live from a state directory that no longer exists, so that attribution is a
+  hypothesis worth testing rather than a measured property of 1.1.22. The **negative**
+  half is auditable in the probe's `raw/` and does stand — **bwrap did not deny it**: the
+  jail bound that directory read-**write** on purpose, and the leg's own listing shows
+  the CLI process creating four entries inside it in the same run. `DENIED` there is
+  "this route was refused" from one command in one shape with no control run, not "the
+  directory is unreachable".
 
   **`claude` stopped being the second such adapter on 2026-08-30 and now switches
   mechanism per host**, chosen once at a `$confinement` variable and reported by
