@@ -76,7 +76,7 @@ Nothing in this column group reaches `round.json`. See §7.
 | Behaviour with no `bwrap` | unaffected | runs unwrapped; loses only the pid fence | **refuses to run** | Darwin: built-in sandbox. Anything else: **refuses to run** |
 | Process containment | its own `--as-pid-1` (Linux) | `bwrap --unshare-pid`, behind a trial-run gate | `bwrap --unshare-pid` | `bwrap --unshare-pid` (bwrap half only) |
 | Linux | **measured** | **measured** | **measured** | **measured** |
-| macOS | **measured** | **measured**, minus the pid fence | **not shipped** — priced, not blocked; see §9 | **measured**, built-in half |
+| macOS | **measured** | **measured**, minus the pid fence | **not shipped** — the price is **measured** and the decision is **open**; see §9 | **measured**, built-in half |
 | Network | **used** — `network_access=true` | default-deny with a host allowlist | inherited (no `--unshare-net`) | inherited |
 
 ## 4. Isolation of the operator's environment
@@ -189,7 +189,11 @@ Read this section as the reason behind row `macOS` in §3.
 - **agy** — **Linux only as shipped**, because its adapter fails closed without `bwrap`
   and macOS has none. Read that as a priced decision rather than a capability gap: it
   was measured, and the parts that port and the part that does not are different parts
-  (`docs/process/probes/2026-08-30-claude-macos-row9-agy`, 2026-08-30, `agy 1.1.22`).
+  (`docs/process/probes/2026-08-30-claude-macos-row9-agy`, 2026-08-30, `agy 1.1.22`; then
+  `docs/process/probes/2026-09-01-agy-macos-routes/`, 2026-09-02, `agy 1.1.24`, which
+  closed all three confining routes). **The price is measured; the decision is open.**
+  Do not read this row as "agy cannot be used on macOS" — it runs there behind a real
+  Seatbelt write barrier. What no route achieves is confinement of `~/.gemini` itself.
 
   The **write barrier ports.** A `sandbox-exec` Seatbelt profile supplied it — workdir
   wrote, the real `$HOME` and `/Users/Shared` were denied with the file absent on the
@@ -204,17 +208,42 @@ Read this section as the reason behind row `macOS` in §3.
   operator's home, against a repository nobody here wrote.
 
   The **private state directory does not port**, and that is the whole cost. It is a
-  bind over `~/.gemini`; there is no bind without bwrap, and the only remaining lever
-  was measured failing — a private `HOME` did not authenticate empty, did not
-  authenticate with the entire 24 MB `~/.gemini` copied into it, and did not
-  authenticate with no sandbox in the picture at all. That third leg is the bisect: the
-  failure is `HOME` relocation, not Seatbelt. The reason is visible in the surrounding
-  evidence rather than proven by it — the auth file `adapters/agy.sh` ro-binds does not
-  exist on that Mac, which authenticates out of the login Keychain the way `claude` does,
-  so the Linux adapter's ro-bind is inert there via its own `[[ -f ]]` guard.
+  bind over `~/.gemini`; there is no bind without bwrap, and all three replacements are
+  now closed by measurement.
 
-  What a macOS agy would therefore cost: the reviewer runs with the operator's real
-  `~/.gemini` **writable**, and one hook file there — `config/hooks.json`, the only one
+  - **A state-directory variable.** Neither `GEMINI_HOME` nor `XDG_CONFIG_HOME` is
+    honoured: `agy` composed the real `$HOME/.gemini` both times and died at startup on
+    `open …/antigravity-cli/installation_id`. `agy --help` has no state-directory or
+    config-directory flag, only `--log-file`. Scope, because the record insists on it:
+    **two names were tried, not "every name"** — the `strings` enumeration behind the
+    wider claim is line-anchored and is a floor.
+  - **A private `HOME`.** It did not authenticate empty, with the entire 24 MB
+    `~/.gemini` copied in, or with no sandbox in the picture at all — so the failure is
+    `HOME` relocation, not Seatbelt. The 2026-09-02 probe found the mechanism, free and
+    without spending its run: a relocated `HOME` has **no login keychain in its search
+    list at all** (`security default-keychain` → "A default keychain could not be
+    found"), and that Mac's credential is a Chromium-style Safe Storage key in the login
+    keychain — the auth file `adapters/agy.sh` ro-binds does not exist there, so the
+    Linux ro-bind is inert via its own `[[ -f ]]` guard. That this is *also* what
+    defeated the row-9 legs is an explanation, not a measurement: row 9 was not re-run.
+  - **A narrowed profile under the real `HOME`.** The narrowing is *correct* — 40 touched
+    paths, none with a deny-class first component, and the one path it denied
+    (`bin/agentapi`) byte-identical and three days old afterwards — and `agy` **cannot
+    run behind it**. Its shell tool layer must write
+    `~/.gemini/antigravity-cli/bin/agentapi` before a tool call can run: four attempts,
+    four denials, no tool call, under `rc=0` and a confident `"status":"SUCCESS"`. §2 is
+    what makes that possible: `agy` reports **absent** for both denied tool calls and
+    per-tool-call visibility, so an envelope cannot show a reviewer that ran nothing. The
+    decisive evidence was in neither stream nor envelope but in `agy`'s own brain store,
+    at `antigravity-cli/brain/<conversation_id>/.system_generated/steps/<n>/output.txt`.
+
+  What a macOS agy would therefore cost, and the cost is **final rather than
+  reducible**, because narrowing is what R2 just failed at: the reviewer runs with the
+  operator's real `~/.gemini` **writable** — including `antigravity-cli/bin/`, a
+  directory that already holds executables, which is narrower and worse than the "one
+  directory" row 9 priced. That `agy` *writes* `bin/agentapi` is measured four times
+  over; that it then *executes* it is inference, and no `exec` was observed. Beside it,
+  one hook file — `config/hooks.json`, the only one
   tried — was measured **executing** an arbitrary command
   (`probes/2026-09-01-agy-hook-surface/`, leg B, agy 1.1.22, Linux), so whatever can
   write *that file* gets a command run in the operator's own later sessions. That is the
@@ -225,9 +254,11 @@ Read this section as the reason behind row `macOS` in §3.
   review shipped there, the counterpart of what the `agent` and `claude` adapters
   already do to `.cursor` and `.claude`. It is not platform-gated, so a macOS port
   inherits it — but no Mac reaches it **today**: the adapter refuses a host without
-  `bwrap` many lines earlier, so there is no macOS round for the removal to run in. What
-  is left named and **unmeasured** is narrowing the profile to deny the hook locations
-  inside `~/.gemini` while allowing the paths agy needs.
+  `bwrap` many lines earlier, so there is no macOS round for the removal to run in.
+  Narrowing the profile to deny the hook locations inside `~/.gemini` while allowing the
+  paths agy needs was, until 2026-09-02, the thing left named and unmeasured. **It is
+  measured, and it fails** — see the third bullet above. Nobody has decided to pay the
+  remainder, and this file records the price rather than the decision.
 - **claude** — both platforms, by **two different mechanisms** chosen once at a single
   `$confinement` variable. With `bwrap`: the jail,
   `--dangerously-skip-permissions`, an asserted `bypassPermissions`. On Darwin without

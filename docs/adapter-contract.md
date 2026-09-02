@@ -136,7 +136,19 @@ Every adapter — real or fake — is invoked identically:
   `agy` never did: its
   `--sandbox` was measured to allow a write to `/tmp` while reporting itself
   enabled, so its adapter wraps the CLI in `bubblewrap` instead and **fails
-  closed** when `bwrap` is unavailable. `claude` used to be the second such
+  closed** when `bwrap` is unavailable — on every host, macOS included. That
+  last clause is the one that has been re-examined and kept: `agy` is the
+  adapter that did **not** grow a second engine, because on macOS no route
+  confines it. A Seatbelt write barrier holds for the process, but `agy`'s state
+  lives in the operator's real `~/.gemini` and cannot be moved (no honoured
+  state-directory variable, no flag, and a private `HOME` loses the login
+  keychain the credential is in), while a profile narrowed to deny only the
+  configuration paths there is one `agy` cannot run behind at all — its shell
+  tool layer must write an executable into `~/.gemini/antigravity-cli/bin/`
+  before any tool call runs (`docs/process/probes/2026-09-01-agy-macos-routes/`,
+  2026-09-02, `agy 1.1.24`). Refusing is therefore the contract's own rule
+  applied, not a gap: the alternative is not a weaker barrier but no
+  confinement of the state directory at all. `claude` used to be the second such
   adapter and is not any more: since 2026-08-30 it **switches mechanism per
   host** rather than refusing, taking bubblewrap where `bwrap` exists and Claude
   Code's own sandbox where it does not, chosen once at a single `$confinement`

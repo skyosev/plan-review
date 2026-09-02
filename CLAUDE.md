@@ -529,6 +529,30 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   not. `agy` is
   wrapped in bubblewrap by its adapter and
   **fails closed** when `bwrap` is missing. Never add an unconfined fallback for it.
+  It is the one adapter that did **not** grow a second engine on Darwin, and that is a
+  measured outcome rather than an unexplored gap
+  (`docs/process/probes/2026-09-01-agy-macos-routes/`, 2026-09-02, `agy 1.1.24`). The write
+  barrier ports — a `sandbox-exec` profile held, and `agy` authenticated and reached its model
+  behind one — but the **private state directory** does not: it is a bind over `~/.gemini` and
+  there is no bind without `bwrap`. All three replacements are closed. `GEMINI_HOME` and
+  `XDG_CONFIG_HOME` are both ignored (`agy` composes `$HOME/.gemini` and dies at
+  `installation_id`), and `agy --help` has no state-directory flag. A private `HOME` has **no
+  login keychain in its search list at all** — `security default-keychain` answers "A default
+  keychain could not be found" — so the Safe Storage key that Mac authenticates with is
+  unreachable by mechanism; that also *explains* row 9's legs A–C, which is an attribution and
+  not a measurement, since row 9 was not re-run. And a profile narrowed to deny the
+  configuration paths is a **correct** narrowing that `agy` cannot run behind: its shell tool
+  layer must write `~/.gemini/antigravity-cli/bin/agentapi` before a tool call can run — four
+  attempts, four denials, no tool call, all under `rc=0` and a confident
+  `"status":"SUCCESS"`, with the decisive evidence in neither stream nor envelope but in
+  `agy`'s own brain store. So the price is **irreducible and worse than a state directory**:
+  write access to a path that already holds executables, in the operator's real tree,
+  surviving the round. The write is measured; that `agy` then *executes* it is inference —
+  never write "write-then-execute" unhedged. Nobody has decided to pay it, the four `bwrap`
+  gates stay as they are, and `specs/2026-09-01-agy-macos-port/00.plan.md:166`'s
+  "R4 is not a shippable variant" is
+  **superseded**: it was derived from a ship gate aimed at `agy`'s *configuration* paths and
+  decided before the price was known.
   It is also the **third** adapter to `rm -rf` the repository's own configuration
   directory — `<workdir>/.agents`, beside `agent.sh`'s `.cursor` and `claude.sh`'s
   `.claude` — and unlike codex's `-c features.hooks=false`, whose non-execution was

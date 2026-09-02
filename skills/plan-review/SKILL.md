@@ -282,8 +282,12 @@ meant.
 - `agy` or `claude` fails with a `bwrap` error: that is the adapter refusing to run a
   reviewer whose CLI does not confine its own writes. This is correct behaviour, not a
   bug. Report it and continue with the other reviewers; do not work around it by editing
-  the adapter. `agent` never fails this way — its bubblewrap supplies only a pid
-  namespace, not a write barrier, so with no working `bwrap` it runs unwrapped by design.
+  the adapter. On a Mac that refusal is `agy`'s every time, and it is **measured, not an
+  unexplored gap**: three routes to confining `agy` there are closed
+  (`docs/process/probes/2026-09-01-agy-macos-routes/NOTES.md`), and the fourth is a price
+  nobody has decided to pay. Do not offer to "just" relax it. `agent` never fails this
+  way — its bubblewrap supplies only a pid namespace, not a write barrier, so with no
+  working `bwrap` it runs unwrapped by design.
   The doctor warns for that case rather than failing; report the warning, and do not
   treat it as a reason to drop the reviewer.
 - The doctor's jail check now says "bwrap jail **contains** a detached process". It
@@ -295,7 +299,9 @@ meant.
   user asks why agy cannot see a conversation from their own interactive session, that is
   why, and it is deliberate: a writable bind of their state directory would be a
   persistence channel out of the jail. Round-to-round resume is unaffected — the session
-  map carries the handles.
+  map carries the handles. That holds wherever `agy` reviews at all, which is Linux only:
+  the private directory is a bind, and macOS has nothing to bind with — which is why `agy`
+  is not on the macOS roster rather than being on it without one.
 - **`codex` no longer reads the user's `~/.codex` either.** It runs under a private
   `CODEX_HOME` beside the disposable repo copy, holding a copy of `auth.json` and nothing
   else the operator put there. This closes a real failure: an obsolete field in the

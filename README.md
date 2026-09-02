@@ -83,15 +83,30 @@ which confine their own writes, Cursor's barrier having been re-measured working
 `2026.08.25-3e8eec8` once the adapter stopped reading the operator's `~/.cursor`, and Claude
 Code's measured denying a `$HOME` write through the shipped adapter on 2026-08-30 (see *What the
 sandbox is and is not* below). `agy` is the one reviewer that cannot review on a Mac as the code
-stands. That is a **choice with a measured price**, not a platform limit:
-`docs/process/probes/2026-08-30-claude-macos-row9-agy` ran `agy` on macOS behind a `sandbox-exec`
-write barrier that held — including against a detached grandchild — and found the real cost to be
-a single directory. `agy`'s Linux jail mounts a private state directory over `~/.gemini`, macOS
-has no bind mount to do that with, and `HOME` relocation was measured failing to authenticate even
-with the whole directory copied. So a macOS `agy` would run with the operator's own `~/.gemini`
-writable, and its `config/hooks.json` there was measured **executing** an arbitrary
-command, which makes that directory a persistence channel out of the sandbox. Nobody has
-decided to pay that; the probe exists so the decision can be taken on evidence.
+stands. That is a **choice with a measured price**, not a platform limit — and since 2026-09-02
+the price is exact and **cannot be reduced**
+(`docs/process/probes/2026-08-30-claude-macos-row9-agy`, then
+`docs/process/probes/2026-09-01-agy-macos-routes/NOTES.md`).
+
+The **write barrier ports**: a `sandbox-exec` profile held on macOS, including against a detached
+grandchild, and `agy` authenticated and reached its model behind one. What does not port is the
+**private state directory**. That is a bind over `~/.gemini`, there is no bind without `bwrap`,
+and all three routes to replacing it are now closed by measurement. Neither `GEMINI_HOME` nor
+`XDG_CONFIG_HOME` is honoured, and `agy --help` has no equivalent flag. A private `HOME` has no
+login keychain in its search list at all, and that Mac's credential is a Keychain item. And a
+profile narrowed to deny only the configuration paths is a *correct* narrowing that `agy` cannot
+run behind: its shell tool layer must write `~/.gemini/antigravity-cli/bin/agentapi` before any
+tool call runs — four attempts, four denials, no tool call, all under a clean
+`"status":"SUCCESS"` envelope.
+
+So the only remaining option is to accept the exposure, and it costs more than a directory of
+conversations and logs. It is write access to a path that already holds **executables**, in the
+operator's real state tree, surviving the round; and `~/.gemini/config/hooks.json` there was
+measured **executing** an arbitrary command on the next round, which makes that directory a
+persistence channel out of the sandbox. (`agy` *writing* `bin/agentapi` is measured four times
+over; that it then *executes* what it wrote is inference — no `exec` was observed, and observing
+one means allowing the path.) Nobody has decided to pay that; the probes exist so the decision
+can be taken on evidence.
 
 Two things macOS loses for every reviewer. The pid fence: with no `bwrap` there, the runner's
 best-effort descendant sweep is the only bound on a
@@ -281,16 +296,20 @@ revision, so run `npx skills@1.5.18 update` when you update the checkout, or `pl
 again. The pin is the same one `plan-review skill` passes and it is deliberate everywhere: an
 unpinned `npx` floats to whatever the registry serves that day and no doctor check watches it.
 
-On macOS, `agy` cannot review (see Requirements), and `plan-review init` treats a
-reviewer that cannot review as a refusal rather than a silent omission. So name the roster — and
-pin Cursor, which refuses to run without a model because it reports none, so `round.json` could
-not otherwise say what reviewed the plan (`agent --list-models`, or export `PR_AGENT_MODEL`):
+On macOS, `agy` cannot review — a measured refusal rather than a platform limit, priced in
+*Requirements* above and in `docs/process/probes/2026-09-01-agy-macos-routes/NOTES.md` — and
+`plan-review init` treats a reviewer that cannot review as a refusal rather than a silent
+omission. So name the roster — and pin Cursor, which refuses to run without a model because it
+reports none, so `round.json` could not otherwise say what reviewed the plan
+(`agent --list-models`, or export `PR_AGENT_MODEL`):
 
     PR_ORCHESTRATOR=claude plan-review init --repo <dir> \
-        --reviewers codex,agent,claude --pin agent=<model-id>
+        --reviewers <the macOS three, minus your own> --pin agent=<model-id>
 
-Drop `claude` from that list when the orchestrating session is itself Claude Code: putting it in
-the roster is then self-review, which is why it is absent from the derived default.
+There is no paste-able roster there on purpose. A *stated* roster is obeyed exactly
+(`lib/roster.sh`), so copying one that names the CLI you are orchestrating with puts it into its
+own round — self-review, which is why it is absent from the derived default. The macOS three are
+`codex`, `agent` and `claude`; drop whichever one is running the session.
 
 ## Use
 
