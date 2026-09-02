@@ -548,11 +548,22 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `agy`'s own brain store. So the price is **irreducible and worse than a state directory**:
   write access to a path that already holds executables, in the operator's real tree,
   surviving the round. The write is measured; that `agy` then *executes* it is inference —
-  never write "write-then-execute" unhedged. Nobody has decided to pay it, the four `bwrap`
-  gates stay as they are, and `specs/2026-09-01-agy-macos-port/00.plan.md:166`'s
-  "R4 is not a shippable variant" is
-  **superseded**: it was derived from a ship gate aimed at `agy`'s *configuration* paths and
-  decided before the price was known.
+  never write "write-then-execute" unhedged. `specs/2026-09-01-agy-macos-port/00.plan.md:166`'s
+  "R4 is not a shippable variant" is **superseded**: it was derived from a ship gate aimed at
+  `agy`'s *configuration* paths and decided before the price was known.
+
+  **That exposure was accepted by the operator on 2026-09-02**, price in hand, on the stated
+  condition that declining costs nothing but not naming `agy` in a macOS roster. **Nothing has
+  been built**, and the four `bwrap` gates stay exactly as they are until it is — do not take
+  one down alone. The condition is the reason: `pr_roster_default_map` (`lib/roster.sh`) is the
+  shipped adapters minus the orchestrator and knows nothing about platforms, so the derived
+  default on a Mac already names `agy`, and today only `pr_init_needs_jail` and the adapter's
+  own refusal keep it out. Remove the refusal by itself and macOS `agy` is **opt-out**, which
+  is not the decision that was taken. A port owes an explicit-opt-in rule, platform-awareness
+  in `pr_init_needs_jail` and preflight's jail list, a `sandbox-exec` engine chosen at one
+  `$confinement` variable on `adapters/claude.sh`'s pattern, a doctor check naming the half,
+  and a paid acceptance round **on a Mac** — none of it is verifiable from Linux.
+  `docs/process/BACKLOG.md` carries that list.
   It is also the **third** adapter to `rm -rf` the repository's own configuration
   directory — `<workdir>/.agents`, beside `agent.sh`'s `.cursor` and `claude.sh`'s
   `.claude` — and unlike codex's `-c features.hooks=false`, whose non-execution was

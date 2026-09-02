@@ -148,7 +148,14 @@ Every adapter — real or fake — is invoked identically:
   before any tool call runs (`docs/process/probes/2026-09-01-agy-macos-routes/`,
   2026-09-02, `agy 1.1.24`). Refusing is therefore the contract's own rule
   applied, not a gap: the alternative is not a weaker barrier but no
-  confinement of the state directory at all. `claude` used to be the second such
+  confinement of the state directory at all. **The operator accepted that
+  exposure on 2026-09-02 and it is still not built**, which is the shape to
+  keep in mind if you touch this: the decision moves the question from
+  "should an adapter ever run with an unconfined state directory" to "what
+  does one owe when the answer is yes" — an explicit opt-in, so no derived
+  default hands it to someone who never read this, and a barrier around
+  everything else. Until that exists the refusal stands, on every host.
+  `claude` used to be the second such
   adapter and is not any more: since 2026-08-30 it **switches mechanism per
   host** rather than refusing, taking bubblewrap where `bwrap` exists and Claude
   Code's own sandbox where it does not, chosen once at a single `$confinement`

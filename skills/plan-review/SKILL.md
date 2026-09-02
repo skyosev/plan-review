@@ -284,8 +284,10 @@ meant.
   bug. Report it and continue with the other reviewers; do not work around it by editing
   the adapter. On a Mac that refusal is `agy`'s every time, and it is **measured, not an
   unexplored gap**: three routes to confining `agy` there are closed
-  (`docs/process/probes/2026-09-01-agy-macos-routes/NOTES.md`), and the fourth is a price
-  nobody has decided to pay. Do not offer to "just" relax it. `agent` never fails this
+  (`docs/process/probes/2026-09-01-agy-macos-routes/NOTES.md`). The operator accepted the
+  fourth — the exposure — on 2026-09-02, but **nothing has been built**, so the refusal is
+  still correct and still the right thing to report. Do not offer to "just" relax it: what
+  the decision needs is an engine and an explicit opt-in, not a deleted guard. `agent` never fails this
   way — its bubblewrap supplies only a pid namespace, not a write barrier, so with no
   working `bwrap` it runs unwrapped by design.
   The doctor warns for that case rather than failing; report the warning, and do not

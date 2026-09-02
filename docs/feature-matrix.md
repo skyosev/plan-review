@@ -76,7 +76,7 @@ Nothing in this column group reaches `round.json`. See §7.
 | Behaviour with no `bwrap` | unaffected | runs unwrapped; loses only the pid fence | **refuses to run** | Darwin: built-in sandbox. Anything else: **refuses to run** |
 | Process containment | its own `--as-pid-1` (Linux) | `bwrap --unshare-pid`, behind a trial-run gate | `bwrap --unshare-pid` | `bwrap --unshare-pid` (bwrap half only) |
 | Linux | **measured** | **measured** | **measured** | **measured** |
-| macOS | **measured** | **measured**, minus the pid fence | **not shipped** — the price is **measured** and the decision is **open**; see §9 | **measured**, built-in half |
+| macOS | **measured** | **measured**, minus the pid fence | **not shipped** — price **measured**, exposure **accepted** 2026-09-02, engine **unwritten**; see §9 | **measured**, built-in half |
 | Network | **used** — `network_access=true` | default-deny with a host allowlist | inherited (no `--unshare-net`) | inherited |
 
 ## 4. Isolation of the operator's environment
@@ -191,9 +191,12 @@ Read this section as the reason behind row `macOS` in §3.
   was measured, and the parts that port and the part that does not are different parts
   (`docs/process/probes/2026-08-30-claude-macos-row9-agy`, 2026-08-30, `agy 1.1.22`; then
   `docs/process/probes/2026-09-01-agy-macos-routes/`, 2026-09-02, `agy 1.1.24`, which
-  closed all three confining routes). **The price is measured; the decision is open.**
-  Do not read this row as "agy cannot be used on macOS" — it runs there behind a real
-  Seatbelt write barrier. What no route achieves is confinement of `~/.gemini` itself.
+  closed all three confining routes). **The price is measured and the exposure was accepted
+  on 2026-09-02; the engine is unwritten.** Do not read this row as "agy cannot be used on
+  macOS" — it runs there behind a real Seatbelt write barrier, and what no route achieves is
+  confinement of `~/.gemini` itself. Do not read it as "agy works on macOS" either: the
+  adapter still refuses every host without `bwrap`, so `Linux only as shipped` is the
+  operative half of this bullet until someone writes the other one.
 
   The **write barrier ports.** A `sandbox-exec` Seatbelt profile supplied it — workdir
   wrote, the real `$HOME` and `/Users/Shared` were denied with the file absent on the
@@ -257,8 +260,13 @@ Read this section as the reason behind row `macOS` in §3.
   `bwrap` many lines earlier, so there is no macOS round for the removal to run in.
   Narrowing the profile to deny the hook locations inside `~/.gemini` while allowing the
   paths agy needs was, until 2026-09-02, the thing left named and unmeasured. **It is
-  measured, and it fails** — see the third bullet above. Nobody has decided to pay the
-  remainder, and this file records the price rather than the decision.
+  measured, and it fails** — see the third bullet above.
+
+  The remainder is what the operator accepted on 2026-09-02, on the condition that a Mac
+  operator who does not want it pays nothing but not naming `agy`. That condition is not
+  satisfied by removing the adapter's refusal on its own: `pr_roster_default_map` has no
+  platform awareness, so the derived default on a Mac already names `agy`. The port owes the
+  opt-in rule and the engine together, and `docs/process/BACKLOG.md` lists both.
 - **claude** — both platforms, by **two different mechanisms** chosen once at a single
   `$confinement` variable. With `bwrap`: the jail,
   `--dangerously-skip-permissions`, an asserted `bypassPermissions`. On Darwin without

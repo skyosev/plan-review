@@ -105,8 +105,14 @@ operator's real state tree, surviving the round; and `~/.gemini/config/hooks.jso
 measured **executing** an arbitrary command on the next round, which makes that directory a
 persistence channel out of the sandbox. (`agy` *writing* `bin/agentapi` is measured four times
 over; that it then *executes* what it wrote is inference — no `exec` was observed, and observing
-one means allowing the path.) Nobody has decided to pay that; the probes exist so the decision
-can be taken on evidence.
+one means allowing the path.)
+
+**That exposure was accepted on 2026-09-02**, with the price above in front of the decision and
+on one condition: that declining costs nothing but not naming `agy` in a macOS roster. **It is
+not implemented.** `adapters/agy.sh` still refuses every host without `bwrap`, so `agy` cannot
+review on a Mac today, and the Seatbelt engine plus the opt-in rule that condition requires are
+an unwritten task that has to be done on a Mac — `docs/process/BACKLOG.md` lists what it owes.
+Until then the sentence above this paragraph is the operative one.
 
 Two things macOS loses for every reviewer. The pid fence: with no `bwrap` there, the runner's
 best-effort descendant sweep is the only bound on a
