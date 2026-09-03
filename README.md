@@ -83,14 +83,36 @@ which confine their own writes, Cursor's barrier having been re-measured working
 `2026.08.25-3e8eec8` once the adapter stopped reading the operator's `~/.cursor`, and Claude
 Code's measured denying a `$HOME` write through the shipped adapter on 2026-08-30 (see *What the
 sandbox is and is not* below). `agy` is the one reviewer that cannot review on a Mac as the code
-stands. That is a **choice with a measured price**, not a platform limit:
-`docs/process/probes/2026-08-30-claude-macos-row9-agy` ran `agy` on macOS behind a `sandbox-exec`
-write barrier that held — including against a detached grandchild — and found the real cost to be
-a single directory. `agy`'s Linux jail mounts a private state directory over `~/.gemini`, macOS
-has no bind mount to do that with, and `HOME` relocation was measured failing to authenticate even
-with the whole directory copied. So a macOS `agy` would run with the operator's own `~/.gemini`
-writable, which its workspace hooks make a persistence channel out of the sandbox. Nobody has
-decided to pay that; the probe exists so the decision can be taken on evidence.
+stands. That is a **choice with a measured price**, not a platform limit — and since 2026-09-02
+the price is exact and **cannot be reduced**
+(`docs/process/probes/2026-08-30-claude-macos-row9-agy`, then
+`docs/process/probes/2026-09-01-agy-macos-routes/NOTES.md`).
+
+The **write barrier ports**: a `sandbox-exec` profile held on macOS, including against a detached
+grandchild, and `agy` authenticated and reached its model behind one. What does not port is the
+**private state directory**. That is a bind over `~/.gemini`, there is no bind without `bwrap`,
+and all three routes to replacing it are now closed by measurement. Neither `GEMINI_HOME` nor
+`XDG_CONFIG_HOME` is honoured, and `agy --help` has no equivalent flag. A private `HOME` has no
+login keychain in its search list at all, and that Mac's credential is a Keychain item. And a
+profile narrowed to deny only the configuration paths is a *correct* narrowing that `agy` cannot
+run behind: its shell tool layer must write `~/.gemini/antigravity-cli/bin/agentapi` before any
+tool call runs — four attempts, four denials, no tool call, all under a clean
+`"status":"SUCCESS"` envelope.
+
+So the only remaining option is to accept the exposure, and it costs more than a directory of
+conversations and logs. It is write access to a path that already holds **executables**, in the
+operator's real state tree, surviving the round; and `~/.gemini/config/hooks.json` there was
+measured **executing** an arbitrary command on the next round, which makes that directory a
+persistence channel out of the sandbox. (`agy` *writing* `bin/agentapi` is measured four times
+over; that it then *executes* what it wrote is inference — no `exec` was observed, and observing
+one means allowing the path.)
+
+**That exposure was accepted on 2026-09-02**, with the price above in front of the decision and
+on one condition: that declining costs nothing but not naming `agy` in a macOS roster. **It is
+not implemented.** `adapters/agy.sh` still refuses every host without `bwrap`, so `agy` cannot
+review on a Mac today, and the Seatbelt engine plus the opt-in rule that condition requires are
+an unwritten task that has to be done on a Mac — `docs/process/BACKLOG.md` lists what it owes.
+Until then the sentence above this paragraph is the operative one.
 
 Two things macOS loses for every reviewer. The pid fence: with no `bwrap` there, the runner's
 best-effort descendant sweep is the only bound on a
@@ -280,16 +302,20 @@ revision, so run `npx skills@1.5.18 update` when you update the checkout, or `pl
 again. The pin is the same one `plan-review skill` passes and it is deliberate everywhere: an
 unpinned `npx` floats to whatever the registry serves that day and no doctor check watches it.
 
-On macOS, `agy` cannot review (see Requirements), and `plan-review init` treats a
-reviewer that cannot review as a refusal rather than a silent omission. So name the roster — and
-pin Cursor, which refuses to run without a model because it reports none, so `round.json` could
-not otherwise say what reviewed the plan (`agent --list-models`, or export `PR_AGENT_MODEL`):
+On macOS, `agy` cannot review — a measured refusal rather than a platform limit, priced in
+*Requirements* above and in `docs/process/probes/2026-09-01-agy-macos-routes/NOTES.md` — and
+`plan-review init` treats a reviewer that cannot review as a refusal rather than a silent
+omission. So name the roster — and pin Cursor, which refuses to run without a model because it
+reports none, so `round.json` could not otherwise say what reviewed the plan
+(`agent --list-models`, or export `PR_AGENT_MODEL`):
 
     PR_ORCHESTRATOR=claude plan-review init --repo <dir> \
-        --reviewers codex,agent,claude --pin agent=<model-id>
+        --reviewers <the macOS three, minus your own> --pin agent=<model-id>
 
-Drop `claude` from that list when the orchestrating session is itself Claude Code: putting it in
-the roster is then self-review, which is why it is absent from the derived default.
+There is no paste-able roster there on purpose. A *stated* roster is obeyed exactly
+(`lib/roster.sh`), so copying one that names the CLI you are orchestrating with puts it into its
+own round — self-review, which is why it is absent from the derived default. The macOS three are
+`codex`, `agent` and `claude`; drop whichever one is running the session.
 
 ## Use
 
@@ -638,9 +664,45 @@ write-confined, each by a different thing:
   `additionalReadwritePaths` to the operator's `$HOME`, and a repo-supplied `cli.json`
   allowlisting a shell command, were each measured putting the canary on the host — the
   first by widening the jail, the second by switching it off. With both closed the `$HOME`
-  canary is denied and the sandbox reports itself `native`/`fully_enforced`. `/tmp` stays
-  writable, which is the sandbox's documented default. The bubblewrap remains a pid fence
-  and is deliberately not the write barrier.
+  canary is denied and the sandbox reports itself `native`/`fully_enforced`. Only the repo
+  *root* `.cursor` is read: the same escape planted one directory down is inert, and a
+  `rules/` file that fires from the root never fires from a subdirectory (measured
+  2026-08-31). `/tmp` stays writable, which is the sandbox's documented default; closing
+  it is available — `disableTmpWrite: true` in a `.cursor/sandbox.json` the adapter would
+  write back after deleting the repo's — but it costs Cursor's own Bash tool layer its
+  temp file, and nobody has decided to pay that. The bubblewrap remains a pid fence and is
+  deliberately not the write barrier.
+
+  **The last user-level surface is closed, by moving `HOME`.** `CURSOR_CONFIG_DIR` moves
+  `cli-config.json`; it does *not* move `~/.cursor/sandbox.json`, and an
+  `additionalReadwritePaths` grant there widened the reviewer's jail to the operator's home
+  with the private directory in force — the `unrestricted` failure mode, one file over
+  (measured 2026-08-31). No file the adapter writes can subtract that grant: path lists are
+  unioned across sources, and `XDG_CONFIG_HOME` moves `cli-config.json` without moving this.
+  So the reviewer runs under a private `HOME` at `<sandbox>/cursor-home` instead, with the
+  operator's `XDG_CONFIG_HOME` pinned first — `~/.cursor` follows `HOME`, Cursor's credential
+  at `~/.config/cursor/auth.json` follows XDG, and pinning one before moving the other takes
+  the policy out of scope while the login stays in it. Measured over four paid rounds on
+  2026-08-31: a positive control escaped, the same grant went inert under the relocation with
+  the kernel denying the write, the round still authenticated with **no credential copied**,
+  and a resumed chat reproduced a token it could only have carried. Those rounds used
+  *synthetic* homes, never yours — so "your own home is not special-cased" is a cheap
+  inference from them rather than something they tested, and it is the price of a probe that
+  touches nothing of yours. On that inference the operator's per-user policy no longer
+  reaches this reviewer, and their `~/.cursor/projects/` no longer collects its transcripts
+  — those land in the session cache beside the repo copy and live as long as that cache
+  does, which is to say until you delete it: nothing collects `~/.cache/plan-review`.
+  What it costs: the reviewer runs without your `HOME`-anchored tool configuration, so it
+  has no git identity from `~/.gitconfig` and no `~/.ssh`. That cost is inferred from
+  where those files live rather than measured against an unmoved baseline; it is accepted, not
+  gated, and a reviewer that reads code and writes a critique does not need either.
+  **All four rounds were Linux.** On macOS none of this has been run: the mechanism assumes
+  Cursor keeps its credential at the XDG path there too, and if a Mac keeps it under
+  `~/.cursor` or in the login Keychain instead, the private `HOME` takes it along and the
+  reviewer cannot authenticate. That shows up as a refusal — an `agent` round that publishes
+  nothing, or one whose "review" is the CLI saying it is not logged in — never as a widened
+  sandbox, because the private `HOME` is in force on every platform either way. If you see
+  that on a Mac, say so; one round settles it.
 
   **Whether a plan that was mid-loop when this landed loses a round is unknown** — unlike
   codex below, where it is measured and certain. The obvious check said no: an id minted
@@ -697,9 +759,13 @@ write-confined, each by a different thing:
   Its conversations live in a private state directory beside the repo copy —
   `<sandbox>/gemini-state`, bound over `~/.gemini` — for the same reasons claude's
   config directory does, and the operator's real `~/.gemini` is **never written**. agy
-  honours workspace hooks under `.agents/`, so a read-write bind of the real directory
-  would let a hostile workspace plant something that runs later in the operator's own
-  sessions. Exactly one file comes in, read-only and by path:
+  was measured **executing** a hook file out of `~/.gemini/config/`
+  (`probes/2026-09-01-agy-hook-surface/`, leg B, agy 1.1.22), so a read-write bind of
+  the real directory would be arbitrary code execution in the operator's own later
+  sessions. The same probe's leg A measured the identical execution from a
+  `.agents/hooks.json` shipped by the repository under review, and the remedy for that
+  half is the adapter's unconditional `rm -rf "$workdir/.agents"`. Exactly one file
+  comes in, read-only and by path:
   `~/.gemini/antigravity-cli/antigravity-oauth-token`, which is the minimum agy needs to
   authenticate — measured on 2026-08-27 by binding candidates one at a time from an
   empty private directory. What is lost is agy history from *other* sessions, which
@@ -802,7 +868,12 @@ A reviewer's private state directory is also what keeps the *operator's* own con
 out of its reach — `~/.claude`, `~/.gemini`, `~/.codex` and now `~/.cursor`, each of which
 defines hooks, rules or skills that run in the operator's later interactive sessions.
 Cursor's is the cheapest of the four: an empty `CURSOR_CONFIG_DIR` is still authenticated,
-so nothing is copied or bound in.
+so nothing is copied or bound in. It used to be the only **partial** one, because the
+variable moves a config file rather than a home — `~/.cursor/sandbox.json` was still read,
+and per-project state (`.workspace-trusted`, and the full transcript of every round) was
+still written under `~/.cursor/projects/`. A private `HOME` closed both (see above): the
+reviewer now runs with `HOME` pointed at `<sandbox>/cursor-home`, so neither path resolves
+into your home at all, and the transcript lands in the session cache instead.
 
 ## Tests
 
@@ -814,6 +885,12 @@ suite runs offline in a couple of seconds.
 ## Design
 
 `docs/adapter-contract.md` — how to add a reviewer.
+
+`docs/feature-matrix.md` — what each reviewer CLI offers in the shape this app runs it,
+and which of those features a round actually depends on. It marks the difference
+between a feature that is used, one that is merely offered, one that is absent from the
+format the adapter runs, and one nobody has measured — so a row is never read as
+evidence it is not.
 
 The decision record — what was tried, what each CLI was measured doing, and why a call
 went the way it did — is kept as process notes in a separate repository, and is not

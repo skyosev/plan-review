@@ -431,7 +431,7 @@ test_a_missing_workdir_is_refused_before_any_path_is_composed() {
 
 # The removal is the half that closes the two measured escapes, so it is checked
 # like its two siblings (the private config dir, the pinned cli-config.json) and
-# not left to fail open in silence. lib/sandbox.sh:70 records the failure it is
+# not left to fail open in silence. lib/sandbox.sh:67 records the failure it is
 # exposed to: rsync preserves the target's permissions and `rm -rf` cannot
 # descend a mode-555 directory, which vendored dependencies really do ship -- and
 # which a repo that wanted its policy to survive would only have to imitate. The
@@ -528,6 +528,49 @@ STUB
     bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
   assert_eq "$(sed -n '4p' "$d/m.txt")" "2026.08.11-e8db854" \
     "line 4 names the binary that answered, not the one installed after it"
+}
+
+
+# The private home is a sibling of the repo copy, so `$(dirname "$workdir")` is the sandbox
+# root in both of these -- the same derivation cursor-config already uses.
+_install_env_recording_stub() {
+  local bindir="$1"
+  cat > "$bindir/agent" <<STUB
+#!/usr/bin/env bash
+printf 'HOME=%s XDG_CONFIG_HOME=%s\n' "\$HOME" "\${XDG_CONFIG_HOME:-unset}" >> "$bindir/env.txt"
+if [[ "\$1" == "create-chat" ]]; then echo "chat-uuid-123"; exit 0; fi
+if [[ "\$1" == "--version" ]]; then echo "2026.08.11-e8db854"; exit 0; fi
+cat > /dev/null
+printf '# Cursor review\n<!-- VERDICT: MINOR -->\n'
+exit 0
+STUB
+  chmod +x "$bindir/agent"
+}
+
+test_the_adapter_runs_cursor_under_a_private_home() {
+  local d; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0
+  _install_env_recording_stub "$d/bin"
+  mkdir -p "$d/work" "$d/realhome/.cursor" "$d/xdg"
+  echo "prompt" | env PATH="$d/bin:$PATH" HOME="$d/realhome" XDG_CONFIG_HOME="$d/xdg" \
+    PR_AGENT_MODEL=stub-model-high \
+    bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  assert_contains "$(cat "$d/bin/env.txt")" "HOME=$d/cursor-home" \
+    "Cursor runs under the private home beside the repo copy, not the operator's"
+  assert_contains "$(cat "$d/bin/env.txt")" "XDG_CONFIG_HOME=$d/xdg" \
+    "a CUSTOM XDG_CONFIG_HOME is preserved -- that is where auth.json lives"
+}
+
+test_an_unset_xdg_config_home_is_pinned_before_the_home_moves() {
+  local d; d="$(pr_test_tmpdir)"; install_stub "$d/bin" 0
+  _install_env_recording_stub "$d/bin"
+  mkdir -p "$d/work" "$d/realhome/.config"
+  echo "prompt" | env -u XDG_CONFIG_HOME PATH="$d/bin:$PATH" HOME="$d/realhome" \
+    PR_AGENT_MODEL=stub-model-high \
+    bash "$PR_ROOT/adapters/agent.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
+  # The ordering test. Move HOME first and this reads $d/cursor-home/.config, which is
+  # empty, and the round cannot authenticate.
+  assert_contains "$(cat "$d/bin/env.txt")" "XDG_CONFIG_HOME=$d/realhome/.config" \
+    "XDG defaults off the REAL home, resolved before the relocation"
 }
 
 pr_run_tests

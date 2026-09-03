@@ -96,6 +96,69 @@ fi
 # and the approvalMode that made --sandbox enabled inert above -- is out of the
 # reviewer's reach.
 #
+# That list is exhaustive, and it used to be written as though it generalised.
+# CURSOR_CONFIG_DIR moves cli-config.json and chats/. It does NOT move
+# ~/.cursor/sandbox.json, which is a SECOND user-level file that can switch the
+# write barrier off: an additionalReadwritePaths: ["$HOME"] there puts the
+# reviewer's canary in the operator's home with this private directory in force
+# and the sandbox still reporting native/fully_enforced (measured 2026-08-31,
+# docs/process/probes/2026-08-31-cursor-write-barrier-gaps/, leg B5). That is
+# the same failure mode approvalMode: "unrestricted" was, one file over, and
+# there is no in-band answer to it: our own copy is not read from this directory
+# (leg B3), the repo layer cannot revoke a per-user path grant because paths are
+# UNIONED across sources (leg B6, and the vendor's own merge table), and
+# XDG_CONFIG_HOME relocates cli-config.json without relocating this (leg C1).
+#
+# What DOES close it is moving HOME, and the first version of this comment said
+# that breaks authentication. It does not, and the correction matters because it
+# is the difference between a shut door and an open one: `agent status` under a
+# relocated HOME reports "Not logged in" only because Cursor's credential lives
+# at ~/.config/cursor/auth.json -- XDG-anchored, not in ~/.cursor -- so moving
+# HOME moves XDG_CONFIG_HOME with it to an empty .config. Copy that one file and
+# a private HOME authenticates, the operator's real ~/.cursor/sandbox.json goes
+# inert, and projects/ follows the private home too (leg C2).
+#
+# That is what ships, and it is measured. A private HOME at <sandbox>/cursor-home
+# with the operator's real XDG_CONFIG_HOME pinned FIRST was run live over four
+# paid rounds on 2026-08-31 (docs/process/probes/2026-09-01-cursor-private-home/
+# -- the directory name is a day ahead of the rounds it holds and is left alone
+# because four files point at it; agent 2026.08.25-3e8eec8, composer-2.5
+# throughout). Those rounds drove `agent -p` DIRECTLY, never through this file:
+# the adapter rm -rf's <workdir>/.cursor, so it cannot be the instrument for a
+# question about what a .cursor path does. The confining configuration -- a
+# private CURSOR_CONFIG_DIR seeded with the cli-config.json pinned below -- was
+# reproduced by hand, byte-for-byte. So what is measured is the MECHANISM these
+# two exports use, not this file's invocation of it. A positive control put the
+# canary in an escape target the sandbox would otherwise deny, using a
+# $HOME-anchored additionalReadwritePaths grant; the identical grant went inert
+# under the relocated HOME, denied by the kernel in its own words, while the round
+# still authenticated and NOTHING was copied into the private home. So the cost
+# argument the C2 leg raised evaporated: auth.json is XDG-anchored, the policy is
+# HOME-anchored, and moving one without the other moves exactly the file we wanted
+# moved. Cursor is still not a credential at rest here.
+#
+# Resume survives it: two rounds through that same environment, and round 2
+# reproduced a token round 1 was told to hold and never to write down -- absent
+# from round 1's published review and from round 2's prompt, so the chat carried
+# it. Judged on content, because `agent --resume` returns rc=0 for a UUID that was
+# never a chat id and rc therefore discriminates nothing.
+#
+# The cost, recorded and accepted rather than gated: the reviewer runs without the
+# operator's HOME-anchored tool configuration -- no ~/.gitconfig, so no git
+# identity, and no ~/.ssh. The probe records that as an INFERENCE from where those
+# files live, not as a differential measurement: both of its legs ran with HOME
+# already moved, so no leg ever showed the unmoved baseline. See the block beside
+# the export below for why the answer to a workflow that needs one of them is not
+# to start copying dotfiles in.
+#
+# The per-project state moves with it, which the earlier version of this paragraph
+# said it did not. ~/.cursor/projects/<slugged-workdir>/ -- .workspace-trusted and
+# the full agent-transcripts/*.jsonl of every round -- now lands under the private
+# home beside the repo copy. Measured by slug, not by clock: after four rounds the
+# operator's real ~/.cursor/projects/ held no entry naming any path the probe used.
+# It is relocated, not eliminated; the record of the review is still on the host,
+# and it now lives as long as the session cache does.
+#
 # What this costs in transition rounds is UNKNOWN, and the attempt to measure it
 # is worth recording because it failed in an instructive way. BACKLOG.md
 # pre-registered the price of moving a CLI's state home, and codex really paid
@@ -133,6 +196,98 @@ if ! mkdir -p "$cursor_config" 2>/dev/null; then
   exit 1
 fi
 export CURSOR_CONFIG_DIR="$cursor_config"
+
+# Part three -- the operator's ~/.cursor/sandbox.json, which the private config directory
+# above does NOT move. An additionalReadwritePaths grant there was measured widening this
+# reviewer's jail with CURSOR_CONFIG_DIR in force and the sandbox still reporting
+# native/fully_enforced (leg B5, 2026-08-31; reproduced the same day against an isolated
+# escape target by the private-HOME probe). Our own file cannot go where it would win:
+# CURSOR_CONFIG_DIR does not relocate this path (B3), nor does XDG_CONFIG_HOME (C1), and
+# the repo layer cannot revoke a per-user grant because paths are unioned across sources
+# and the schema has no deny list (B6).
+#
+# HOME is the only thing that moves it, and the ORDER of these two lines is the whole
+# mechanism. ~/.cursor follows HOME; Cursor's credential at ~/.config/cursor/auth.json
+# follows XDG. Pin XDG off the REAL home first and the operator's per-user policy goes out
+# of scope while their login stays in it -- nothing copied, no third credential at rest,
+# which is this adapter's one real advantage over the other three. Swap the lines and XDG
+# resolves under the empty private home, the round reports "Not logged in", and someone
+# concludes for the second time that moving HOME breaks Cursor's authentication. It does
+# not; measured 2026-08-31, docs/process/probes/2026-09-01-cursor-private-home/.
+#
+# TWO tests in tests/test-adapter-agent.sh, one per half, and they are NOT redundant:
+#
+#   test_an_unset_xdg_config_home_is_pinned_before_the_home_moves
+#       the ORDERING guard. Fails if and only if these two exports are swapped --
+#       verified by swapping them in a scratch copy of the tree: 26 run, 1 failed,
+#       that case alone. It is the only thing standing between a reordering edit
+#       and a round that reports "Not logged in".
+#   test_the_adapter_runs_cursor_under_a_private_home
+#       the CUSTOM XDG_CONFIG_HOME half. PASSES UNDER EITHER ORDER, so it proves
+#       nothing about the ordering -- what it holds is that an explicitly set
+#       XDG_CONFIG_HOME survives the relocation.
+#
+# Naming them is the point: whoever reads "two cases that both set HOME" and deletes
+# the redundant-looking one has a fifty-fifty chance of deleting the guard.
+#
+# The probe host had XDG_CONFIG_HOME UNSET, so only the default half of the expansion
+# below was exercised against a live CLI. The custom half is the same code path and is
+# covered by test_the_adapter_runs_cursor_under_a_private_home and by nothing else.
+#
+# UNMEASURED ON DARWIN, and not gated on it. All four rounds were Linux; that
+# auth.json is XDG-anchored rather than HOME-anchored on a Mac is an ASSUMPTION -- not
+# a measurement, and not a citation either: nothing under docs/process/probes/ cites a
+# vendor page for it. It is the fact this whole ordering rests on.
+#
+# Left ungated deliberately, and the justification is narrower than the first draft of
+# this comment claimed. What a credential-less run does HERE is not measured: the only
+# "Not logged in" anyone has seen came out of `agent status`
+# (probes/2026-08-31-cursor-write-barrier-gaps/), never out of `agent -p`, so any claim
+# that the failure is loud is inferred from a different command. Both shapes it could
+# take are safe anyway, and they are different. Either the CLI writes nothing and this
+# adapter exits 1 with the empty-output reason below -- or it prints its refusal on
+# STDOUT, which is exactly where the probe's own pass condition looked for that string,
+# and then the round publishes it: `[[ -s "$review_out" ]]` is the whole publication
+# gate here, and lib/reviewer-runner.sh accepts UNPARSEABLE as a legal verdict on an
+# `ok` reviewer. So a Darwin credential problem can land as `status: ok` with the CLI's
+# refusal quoted in the round's own artifact. Not silent, but not a failed round
+# either -- say so rather than promising an exit code that may not come.
+#
+# NEITHER SHAPE IS A SILENT WIDENING, and that is the property the gate turns on: these
+# two exports run before the CLI starts on every platform, so wherever a Mac keeps its
+# credential, the operator's per-user policy is already out of scope. An $OSTYPE gate
+# would instead ship a second confinement path for agent that nobody has measured
+# either. Recorded in BACKLOG.md with its reopen trigger instead.
+#
+# Sited beside the repo copy for the reason CODEX_HOME and cursor-config are: it must
+# survive pr_sandbox_refresh's per-round wipe of <sandbox>/repo. NOT under /tmp -- the C2
+# leg worked there only because Cursor grants /tmp by default, which proves nothing about
+# this placement, and lib/sandbox.sh puts TMPDIR inside the repo copy for the sibling
+# reason.
+#
+# Accepted cost, stated rather than solved: this moves the reviewer's WHOLE environment,
+# not just Cursor's state lookup. ~/.gitconfig, ~/.npmrc, ~/.ssh and everything else
+# HOME-anchored go with it, and no other adapter here does that -- codex moves CODEX_HOME,
+# agy binds a private directory over $HOME/.gemini, claude keeps HOME in its whitelist. A
+# reviewer reads code and writes a critique, so the delta is affordable; the probe recorded
+# exactly what it was -- as an INFERENCE from where those files live, not as a differential
+# measurement, since both of its legs ran with HOME already moved and none of them ever
+# showed the unmoved baseline. The answer to a workflow that turns out to need one of those
+# files is NOT to start copying dotfiles in -- that is a policy inventory of the operator's
+# environment, maintained forever, one file at a time.
+#
+# What this does NOT do is isolate the reviewer's user state: XDG_CONFIG_HOME still points
+# at the operator's real ~/.config, deliberately, because the credential is there. And the
+# transcripts are relocated, not eliminated -- ~/.cursor/projects/<slug>/ now lands in the
+# session cache and lives as long as it does.
+export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+cursor_home="$(dirname "$workdir")/cursor-home"
+if ! mkdir -p "$cursor_home" 2>/dev/null; then
+  echo "agent adapter: cannot create $cursor_home" >&2
+  pr_reason "Could not create Cursor's private home; refusing to run under the operator's per-user sandbox policy"
+  exit 1
+fi
+export HOME="$cursor_home"
 
 # Pin the settings the measurement turned on rather than inheriting a fresh
 # install's defaults. They happen to agree today -- a fresh directory comes up
@@ -197,13 +352,25 @@ fi
 # was measured widening the sandbox, and hiding a file from a reviewer is a
 # weaker attack than writing to the operator's home.
 #
+# One directory is the WHOLE boundary, not the root of one that needs walking:
+# both surfaces are read from the workspace root and nowhere below it. The leg-3
+# grant that escapes from <repo>/.cursor/sandbox.json is inert at
+# <repo>/sub/.cursor/sandbox.json, twice, with the write denied by the kernel;
+# and a rules/injected.mdc planted one directory down never fires while the same
+# file at the root does -- the review comes back carrying its token (measured
+# 2026-08-31, docs/process/probes/2026-08-31-cursor-write-barrier-gaps/, legs
+# A1/A2). That rules half is also the first time the surface was witnessed doing
+# anything at all: leg 3 planted the file and only ever checked the canary. This
+# adapter always runs from the workspace root (`cd "$workdir"` below), which is
+# the CWD those legs measured.
+#
 # Safe because <workdir> is a disposable per-round copy, never the operator's
 # checkout (lib/sandbox.sh; docs/adapter-contract.md says the same).
 #
 # chmod first, and CHECKED after, for the same reason its two siblings above are
 # checked: this is the half that closes the two measured escapes, and a silent
 # failure here leaves cli.json in place and runs the review anyway. The failure
-# is not hypothetical -- lib/sandbox.sh:70 records it: `rsync -a` preserves the
+# is not hypothetical -- lib/sandbox.sh:67 records it: `rsync -a` preserves the
 # target's permissions and `rm -rf` cannot descend a mode-555 directory, which
 # vendored dependencies really do ship. A repo that wanted its policy to survive
 # would only have to ship one mode 555 inside `.cursor`. The `[[ -e ]]` is the

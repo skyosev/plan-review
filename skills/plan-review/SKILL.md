@@ -282,8 +282,14 @@ meant.
 - `agy` or `claude` fails with a `bwrap` error: that is the adapter refusing to run a
   reviewer whose CLI does not confine its own writes. This is correct behaviour, not a
   bug. Report it and continue with the other reviewers; do not work around it by editing
-  the adapter. `agent` never fails this way — its bubblewrap supplies only a pid
-  namespace, not a write barrier, so with no working `bwrap` it runs unwrapped by design.
+  the adapter. On a Mac that refusal is `agy`'s every time, and it is **measured, not an
+  unexplored gap**: three routes to confining `agy` there are closed
+  (`docs/process/probes/2026-09-01-agy-macos-routes/NOTES.md`). The operator accepted the
+  fourth — the exposure — on 2026-09-02, but **nothing has been built**, so the refusal is
+  still correct and still the right thing to report. Do not offer to "just" relax it: what
+  the decision needs is an engine and an explicit opt-in, not a deleted guard. `agent` never fails this
+  way — its bubblewrap supplies only a pid namespace, not a write barrier, so with no
+  working `bwrap` it runs unwrapped by design.
   The doctor warns for that case rather than failing; report the warning, and do not
   treat it as a reason to drop the reviewer.
 - The doctor's jail check now says "bwrap jail **contains** a detached process". It
@@ -295,7 +301,9 @@ meant.
   user asks why agy cannot see a conversation from their own interactive session, that is
   why, and it is deliberate: a writable bind of their state directory would be a
   persistence channel out of the jail. Round-to-round resume is unaffected — the session
-  map carries the handles.
+  map carries the handles. That holds wherever `agy` reviews at all, which is Linux only:
+  the private directory is a bind, and macOS has nothing to bind with — which is why `agy`
+  is not on the macOS roster rather than being on it without one.
 - **`codex` no longer reads the user's `~/.codex` either.** It runs under a private
   `CODEX_HOME` beside the disposable repo copy, holding a copy of `auth.json` and nothing
   else the operator put there. This closes a real failure: an obsolete field in the
@@ -331,6 +339,15 @@ meant.
   non-execution was measured; the gate is inferred from the binary's own strings and the
   once-trusted path was never attempted. It closes a read, ahead of an execution path that
   is codex's to open.
+- **The repository's `.agents/` is deleted from agy's sandbox copy** before the review
+  (`rm -rf <workdir>/.agents`), and this one is not a precaution: a `.agents/hooks.json`
+  shipped by the repository under review was measured *executing* an arbitrary command,
+  in the adapter's own invocation shape and with nothing about it on agy's JSON
+  transcript (agy 1.1.22, Linux, 2026-09-01). Unlike the codex bullet above, describing
+  this as a closed execution path is fair. Two caveats to pass on: the deletion is
+  wider than the measurement — `.agents/` also holds custom agents and other workspace
+  customisation nobody tested — and it hits the **disposable per-round copy**, never the
+  user's checkout, which is the question they will actually ask.
 - A reviewer's recorded model reads `<something> (requested: <pin>)`: the CLI swapped the
   model out mid-run and the adapter caught it. The pin did not answer. Say so when
   reporting verdicts — that round is not comparable to one run on the pinned model.

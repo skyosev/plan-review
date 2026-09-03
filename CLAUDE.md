@@ -44,6 +44,7 @@ a `git worktree` per revision — every row but the last, which is 2026-08-28 in
 | **+ the row-L3 fix** | **543** | **78.38s** | **78.38s** |
 | `main` re-timed 2026-08-31, same tree as the row above | 543 | 82.17s | 81.13s |
 | **+ `backlog-clearing-4`** | **547** | **81.71s** | **83.53s** |
+| **+ `cursor-peruser-policy`** | **550** | **83.73s** | **82.68s** |
 
 So ~62s was still right for `main` at the time: the whole delta was
 `reviewer-isolation-hardening`'s, not host drift —
@@ -123,8 +124,8 @@ tests it added are stub-only. It is still not a licence. The one thing on this b
 real per-round cost is the Keychain read, which is one `security` fork per `claude` round on
 the builtin half and never runs on Linux at all. The row below it is the same tree plus row L3's fix, and its 543rd test — the
 adapter's Linux refusal — is likewise free (two runs identical to the centisecond).
-**Budget against 547/~82s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
-fix and nobody has re-timed a Mac since.
+**Budget against 550/~83s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
+row-L3 fix and the private-`HOME` branch both, and nobody has re-timed a Mac since.
 
 **The last two rows are a pair and only mean anything read together.** The ~78s of the
 row-L3 tree was measured 2026-08-30; the same tree re-timed on 2026-08-31 — a `git worktree`
@@ -149,6 +150,17 @@ one adapter refusal that exits before spawning anything. The Debian-container ru
 `docs/process/probes/2026-08-30-claude-macos-row8/` is superseded: its 14 failures were the
 container's PID view and seccomp profile and did **not** reproduce on a real host
 (`docs/process/FINDINGS-2026-08-30-linux.md`).
+
+**The last row is `cursor-peruser-policy`, and it is two more stub-only cases.** 550 tests in
+83.73s and 82.68s, measured 2026-08-31 on this host (32 cores, load ~1.1 at both ends, checked
+rather than assumed after the row above), two back-to-back runs on the same tree, the method
+every row here uses. Read against the 547/81.71s–83.53s directly above it — same host, same
+afternoon — the two trees interleave, so the branch's cost is **nothing this method can see**.
+That is the expected answer and not a surprising one: the branch's whole diff is two exports
+in `adapters/agent.sh` and two cases in `tests/test-adapter-agent.sh` that drive the shipped
+stub. What it does **not** license is the next per-round fork. The one thing here with a
+production cost is a single `mkdir -p` per `agent` round, which is below anything this table
+can resolve; a Keychain read or a `ps` poll would not be, and the rows above price those.
 
 **Every row but the Darwin one is Linux.** The suite first ran on **Darwin on 2026-08-29** and cost
 **4m36.6s** for the 519 of the `backlog-clearing-3` row — ~3.4x, spread evenly across files rather than concentrated
@@ -229,7 +241,11 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   invoked as `<workdir> <session_id> <review_out> <meta_out> <reason_out>`, prompt on
   **stdin**, review only into `<review_out>`, four fixed lines into `<meta_out>`. Adding
   a reviewer = a new adapter plus its key in `PR_ROSTER_ADAPTERS` (`lib/roster.sh`);
-  nothing else derives the roster.
+  nothing else derives the roster. Its companion is `docs/feature-matrix.md`, which
+  records what the four CLIs *offer* in the invocation shape each adapter builds, and
+  which of it a round depends on. It is the file to update when a pin moves in
+  `docs/verified-versions.txt`, and the place to look before assuming a CLI cannot do
+  something — several of its rows say "nobody has run it", which is not the same answer.
 - **The version on meta line 4 must name the binary that wrote the review.** Take it
   from the run's own output where the CLI offers one — `codex` off its banner,
   `claude` off the `init` frame — and otherwise read it **before** the run.
@@ -513,6 +529,71 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   not. `agy` is
   wrapped in bubblewrap by its adapter and
   **fails closed** when `bwrap` is missing. Never add an unconfined fallback for it.
+  It is the one adapter that did **not** grow a second engine on Darwin, and that is a
+  measured outcome rather than an unexplored gap
+  (`docs/process/probes/2026-09-01-agy-macos-routes/`, 2026-09-02, `agy 1.1.24`). The write
+  barrier ports — a `sandbox-exec` profile held, and `agy` authenticated and reached its model
+  behind one — but the **private state directory** does not: it is a bind over `~/.gemini` and
+  there is no bind without `bwrap`. All three replacements are closed. `GEMINI_HOME` and
+  `XDG_CONFIG_HOME` are both ignored (`agy` composes `$HOME/.gemini` and dies at
+  `installation_id`), and `agy --help` has no state-directory flag. A private `HOME` has **no
+  login keychain in its search list at all** — `security default-keychain` answers "A default
+  keychain could not be found" — so the Safe Storage key that Mac authenticates with is
+  unreachable by mechanism; that also *explains* row 9's legs A–C, which is an attribution and
+  not a measurement, since row 9 was not re-run. And a profile narrowed to deny the
+  configuration paths is a **correct** narrowing that `agy` cannot run behind: its shell tool
+  layer must write `~/.gemini/antigravity-cli/bin/agentapi` before a tool call can run — four
+  attempts, four denials, no tool call, all under `rc=0` and a confident
+  `"status":"SUCCESS"`, with the decisive evidence in neither stream nor envelope but in
+  `agy`'s own brain store. So the price is **irreducible and worse than a state directory**:
+  write access to a path that already holds executables, in the operator's real tree,
+  surviving the round. The write is measured; that `agy` then *executes* it is inference —
+  never write "write-then-execute" unhedged. `specs/2026-09-01-agy-macos-port/00.plan.md:166`'s
+  "R4 is not a shippable variant" is **superseded**: it was derived from a ship gate aimed at
+  `agy`'s *configuration* paths and decided before the price was known.
+
+  **That exposure was accepted by the operator on 2026-09-02**, price in hand, on the stated
+  condition that declining costs nothing but not naming `agy` in a macOS roster. **Nothing has
+  been built**, and the four `bwrap` gates stay exactly as they are until it is — do not take
+  one down alone. The condition is the reason: `pr_roster_default_map` (`lib/roster.sh`) is the
+  shipped adapters minus the orchestrator and knows nothing about platforms, so the derived
+  default on a Mac already names `agy`, and today only `pr_init_needs_jail` and the adapter's
+  own refusal keep it out. Remove the refusal by itself and macOS `agy` is **opt-out**, which
+  is not the decision that was taken. A port owes an explicit-opt-in rule, platform-awareness
+  in `pr_init_needs_jail` and preflight's jail list, a `sandbox-exec` engine chosen at one
+  `$confinement` variable on `adapters/claude.sh`'s pattern, a doctor check naming the half,
+  and a paid acceptance round **on a Mac** — none of it is verifiable from Linux.
+  `docs/process/BACKLOG.md` carries that list.
+  It is also the **third** adapter to `rm -rf` the repository's own configuration
+  directory — `<workdir>/.agents`, beside `agent.sh`'s `.cursor` and `claude.sh`'s
+  `.claude` — and unlike codex's `-c features.hooks=false`, whose non-execution was
+  measured but whose *gate* is inferred, this one closes a path that was measured
+  **firing**. A `$work/.agents/hooks.json` carrying a `PreInvocation` command was
+  executed by agy in this adapter's own invocation shape
+  (`--sandbox --dangerously-skip-permissions -p`), with no prompting and **no trace at
+  all on the `--output-format json` transcript** — a clean `"status":"SUCCESS"` and an
+  unrelated model answer; the evidence is a marker file on the host and the CLI's own
+  log inside the state directory, which is the transferable lesson (a probe that judges
+  `agy` by its JSON envelope alone is reading the wrong stream). Measured 2026-09-01 at
+  `agy 1.1.22` on Linux, leg A of
+  `docs/process/probes/2026-09-01-agy-hook-surface/`. The whole directory goes rather
+  than the one file **because the measurement is narrower than the surface**: `.agents/`
+  also carries custom agents and other workspace customisation that no leg touched, and
+  nothing here establishes which other events fire or what the `flat` hook shape does.
+  The same probe's leg B measured the identical execution from
+  `~/.gemini/config/hooks.json`, which is what re-prices the private state directory
+  above: its read-write bind of the operator's real `~/.gemini` would be arbitrary code
+  execution in *their* later sessions, and that argument now rests on a measurement
+  rather than on the vendor's documentation. It does **not** rest on the reviewer
+  writing that file itself — leg C asked for exactly that and the file never appeared.
+  **What refused it is not established**: the quotes naming `agy`'s own terminal sandbox
+  were read live from a state directory that no longer exists, so that attribution is a
+  hypothesis worth testing rather than a measured property of 1.1.22. The **negative**
+  half is auditable in the probe's `raw/` and does stand — **bwrap did not deny it**: the
+  jail bound that directory read-**write** on purpose, and the leg's own listing shows
+  the CLI process creating four entries inside it in the same run. `DENIED` there is
+  "this route was refused" from one command in one shape with no control run, not "the
+  directory is unreachable".
 
   **`claude` stopped being the second such adapter on 2026-08-30 and now switches
   mechanism per host**, chosen once at a `$confinement` variable and reported by
@@ -637,6 +718,70 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   at `<sandbox>/cursor-config`, which is the cheapest of the four because an *empty*
   `CURSOR_CONFIG_DIR` is still authenticated: no credential is copied or bound in, and the
   operator's `~/.cursor` hooks, plugins, rules and skills fall out of scope for free.
+  It stopped being **partial** on 2026-08-31, and what completed it was a
+  second variable rather than a second directory: the variable moves a config file, not a
+  home, so `~/.cursor/sandbox.json` was still read — an `additionalReadwritePaths` grant
+  there widened the reviewer's jail to the operator's home with the private directory in
+  force, the `approvalMode: "unrestricted"` failure mode one file over (measured 2026-08-31,
+  `docs/process/probes/2026-08-31-cursor-write-barrier-gaps/`). Nothing *in band* fixes it:
+  path lists are unioned across sources so no file the adapter writes can subtract one, and
+  `XDG_CONFIG_HOME` moves `cli-config.json` without moving this.
+
+  **A private `HOME` closes both, and it ships; the cost is measured and accepted**
+  (2026-08-31, `docs/process/probes/2026-09-01-cursor-private-home/` — four paid rounds,
+  `agent 2026.08.25-3e8eec8`, `composer-2.5`, Linux). The claim that `HOME` relocation breaks
+  Cursor's authentication is **wrong** and was written into three files here before it was
+  checked: the credential is at `~/.config/cursor/auth.json`, XDG-anchored rather than under
+  `~/.cursor`, so moving `HOME` merely drags `XDG_CONFIG_HOME` to an empty `.config`. The
+  adapter therefore pins `XDG_CONFIG_HOME` off the **real** home and *then* exports
+  `HOME="$(dirname "$workdir")/cursor-home"`. **The order of those two lines is the whole
+  mechanism** — reverse them and XDG resolves under the empty private home, the round reports
+  `Not logged in`, and someone concludes for the second time that a private `HOME` costs the
+  credential. Two cases in `tests/test-adapter-agent.sh` hold the two halves and they are
+  **not** interchangeable — the ordering guard is
+  `test_an_unset_xdg_config_home_is_pinned_before_the_home_moves`, which fails if and only if
+  the exports are reversed (verified by swapping them in a scratch copy: `26 run, 1 failed`,
+  that case alone), while `test_the_adapter_runs_cursor_under_a_private_home` is the *custom*
+  `XDG_CONFIG_HOME` coverage and **passes under either order**. Delete the first as "the
+  redundant one" and the mechanism goes unguarded. That custom case is also the only coverage
+  of its half at all: the probe host had the variable unset, so only the default branch of the
+  expansion ran live. What the probe measured — through `agent -p` **directly**, never through
+  this adapter, because the adapter deletes `<workdir>/.cursor` and so cannot be the instrument
+  for a question about what a `.cursor` path does; the confining configuration was reproduced
+  by hand, byte-for-byte: a positive control escaped to an isolated target, the identical
+  grant went inert under the relocation with the kernel itself denying the write, the round still
+  authenticated with **nothing copied** — so Cursor is still not a credential at rest, and the
+  adapter keeps its one real advantage over the other three — and two rounds proved resume
+  carries context across it, judged on a reproduced token because `agent --resume` returns
+  rc=0 for a UUID that was never a chat id. Per-project state moved with the policy, which is
+  more than the brief asked for: `~/.cursor/projects/<slug>/` — `.workspace-trusted` plus the
+  full transcript of every round — now lands under the private home, and after four rounds the
+  operator's real `projects/` held no entry naming any path the probe used (argued from the
+  slug, not from mtime). The cost, **recorded rather than gated**: the reviewer runs without
+  the operator's `HOME`-anchored tool configuration — no `~/.gitconfig`, so no git identity at
+  all, and no `~/.ssh`. It is the only adapter here that moves a whole `HOME` (codex moves
+  `CODEX_HOME`, agy binds one directory over `~/.gemini`, claude keeps `HOME` in its
+  whitelist), and the probe states that cost as an **inference** from where those files live
+  rather than a differential measurement — both of its legs ran with `HOME` already moved, so
+  none of them ever showed the unmoved baseline. The remedy for a workflow that needs one of
+  those files is not to start copying dotfiles in; that is a policy inventory of the
+  operator's environment, maintained forever, one file at a time. Two things are still
+  unmeasured. The transition round, exactly as codex's is: every round the runner starts mints
+  and resumes inside the private home. And **every one of those four rounds was Linux** — on
+  Darwin nothing here has been run, and the XDG anchoring of `auth.json` that the whole
+  ordering rests on is an **assumption** there — not a measurement, and not a citation either:
+  nothing under `docs/process/probes/` cites a vendor page for it. It is deliberately **not**
+  gated on `$OSTYPE`, and the justification is narrower than it first read here. What a
+  credential-less `agent -p` does is unmeasured — the only `Not logged in` anyone has seen came
+  from `agent status` — so "the round fails loudly" is inferred from a different command. Both
+  shapes are safe and they differ: the CLI writes nothing and the adapter exits 1, **or** it
+  prints its refusal on stdout and the round publishes that as `status: ok` /
+  `UNPARSEABLE`, since `[[ -s "$review_out" ]]` is the whole publication gate and
+  `lib/reviewer-runner.sh` accepts `UNPARSEABLE` on an `ok` reviewer. **Neither is a silent
+  widening** — the two exports run before the CLI starts on every platform, so wherever a Mac
+  keeps its credential the per-user policy is already out of scope — and that, not the exit
+  code, is what decides the gate. Gating would ship a second confinement path nobody has
+  measured either. `BACKLOG.md` carries the reopen trigger.
   `<sandbox>/config` for claude,
   `<sandbox>/gemini-state` for agy — with the one auth file each needs bound in read-only
   *by path*. Only agy's is a mount over the real location: it is bound at `~/.gemini`
