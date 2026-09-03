@@ -49,7 +49,7 @@ chat client cares about have no expression here at all. Those rows are `offered`
 | --- | --- | --- | --- | --- |
 | Resume a conversation by id | **used** — `exec resume <id>` | **used** — `--resume <id>` | **used** — `--conversation <id>` | **used** — `--resume <id>` |
 | Where the id comes from | banner `session id:` | `agent create-chat`, minted before round 1 | envelope `.conversation_id` | result frame `.session_id` |
-| Prompt on stdin | **used** — trailing `-` | **used** | **absent** — `-p` takes the prompt as an argv value | **used** |
+| Prompt on stdin | **used** — trailing `-` | **used** | **absent** — `-p` takes the prompt as an argv value; a stream-input route exists and caps far below the argv limit, see §2 | **used** |
 | Effective model reported | **used** — banner `model:` | **absent** — pin is required, and a mid-run swap shows only as prose | **absent** — pin is required | **used** — `init` line, resolves aliases |
 | Effective reasoning effort reported | **used** — banner `reasoning effort:`, and asserted against the pin | **absent** — folded into the model id | **absent** — folded into the model id | **absent** — `--effort` is a real axis and is reported nowhere |
 | Version off the run's own output | **used** — banner | **absent** — read before the run | **absent** — read before the run | **used** — `init` line |
@@ -73,6 +73,26 @@ Nothing in this column group reaches `round.json`. See §7.
 | Per-tool-call visibility | **absent** | **absent** | **absent** | **used** — the stream's `tool_use` / `tool_result` pairs |
 | Why the session ended | **absent** | **absent** | partial — `.status` / `.error` | **used** — `.terminal_reason`, echoed verbatim |
 | Compaction | **unmeasured** | **unmeasured** | **unmeasured** | **unmeasured** |
+
+**Four of `agy`'s cells above are a property of the format this repo chose, not of the
+CLI, and that is now measured rather than assumed** (`agy 1.1.24`, Linux, 2026-09-03,
+`docs/process/probes/2026-09-03-agy-stream-json/`). Under `--output-format stream-json`
+the same run emits NDJSON keyed on `event`: an `init` line (`conversation_id`, model,
+cwd, the tool list, and **`permission_mode`** — an assertable counterpart to claude's
+`permissionMode` that this table records `agy` as having nowhere), one `step_update` per
+step transition carrying `step_type`, `tool_name`, `tool_info.parameters`,
+`tool_info.output` on `DONE` and `tool_info.error` on `ERROR`, plus per-step
+`duration_seconds` and `usage` — and finally a `result` line identical in shape to the
+envelope the adapter already parses. So per-tool-call visibility, denied tool calls and
+per-step timing are **offered there** and `absent` only here. The rows stay as they are
+because they say what the shipped invocation gets; §10 is where the consequence lands.
+
+The same probe measured the stream-input route the §1 cell points at: the prompt does
+arrive on stdin as `{"event":"user","message":{"content":"…"}}` under
+`--input-format stream-json --output-format stream-json -p ""`, and it is **not** a
+fallback for `adapters/agy.sh`'s 128KB argv cap — somewhere between 16KB and 24KB the
+prompt is dropped silently, returning `status: SUCCESS` with an empty response and zero
+`usage`, which is the same signature the adapter reports as auto-deny.
 
 ## 3. Confinement and platform
 
@@ -329,9 +349,17 @@ and nothing more. On 2026-09-02 a leg came back `rc=0`, `status: SUCCESS`, `num_
 and a real 12-character response having run **no tool call at all** — every attempt denied,
 four times at the same path, with the evidence in neither stream nor envelope but in `agy`'s
 own brain store (`docs/process/probes/2026-09-01-agy-macos-routes/`). §2 is why the
-assertion cannot be built the way claude's is: `agy` reports **absent** for both denied tool
-calls and per-tool-call visibility, so there is nothing in the format this repo runs to
-count. Nothing is broken today — that leg was a deliberately starved macOS profile, and on
+assertion cannot be built the way claude's is *in the format this repo runs*: `agy` reports
+**absent** there for both denied tool calls and per-tool-call visibility, so there is nothing
+to count. **That is now known to be the format's limit and not the CLI's** — under
+`--output-format stream-json` the tool steps are on the stream, failures included, so the
+assertion is **buildable and unbuilt** (`probes/2026-09-03-agy-stream-json/`, `agy 1.1.24`,
+Linux; the cost is that the adapter would parse a stream instead of one object, priced in
+`docs/process/BACKLOG.md`). The same probe fixed the assertion's *shape*: with the shell
+tool starved, `agy` fell back to `view_file`, read the file and answered correctly under
+`status: SUCCESS`, so counting *any* tool step would pass a round that ran no command. The
+counterpart to claude's is "at least one `run_command` step reached `state: DONE`" — naming
+the tool, exactly as claude's names `Bash`. Nothing is broken today — that leg was a deliberately starved macOS profile, and on
 Linux `agy`'s tool layer has the private state directory it needs — but anyone who reads
 this table as "all four are covered" is reading one row wider than it goes.
 
