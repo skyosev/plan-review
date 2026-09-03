@@ -64,8 +64,8 @@ Nothing in this column group reaches `round.json`. See §7.
 | --- | --- | --- | --- | --- |
 | Tokens used | **offered** — `tokens used N` on the banner | **absent** | **offered** — `.usage` object | **offered** — `.usage` on the result frame |
 | Prompt-cache counters | **unmeasured** | **unmeasured** | **offered** — `.usage.cache_read_tokens` | **offered** — `cache_read_input_tokens`, `cache_creation_input_tokens`, and a 5m/1h split |
-| Cost | **unmeasured** | **absent** | **unmeasured** | **offered** — `total_cost_usd`, plus per-model `costUSD` |
-| Context window size | **unmeasured** | **absent** | **unmeasured** | **offered** — `modelUsage[].contextWindow` |
+| Cost | **unmeasured** | **absent** | **absent** — no field in the envelope | **offered** — `total_cost_usd`, plus per-model `costUSD` |
+| Context window size | **unmeasured** | **absent** | **absent** — no field in the envelope | **offered** — `modelUsage[].contextWindow` |
 | Context *remaining* | **absent** | **absent** | **absent** | **absent** |
 | Turn count | **unmeasured** | **absent** | **offered** — `.num_turns` | **offered** — `.num_turns` |
 | Wall-clock duration | **unmeasured** | **absent** | **offered** — `.duration_seconds` | **offered** — `.duration_api_ms` |
@@ -154,7 +154,12 @@ notice if it stopped.
 **Nothing here counts tokens, prices a round, or budgets a context window.** The data
 is there for three of the four CLIs — codex prints `tokens used N` on the banner line
 the adapter already parses for the session id; agy's envelope carries a five-field
-`usage` object; claude's result frame carries `usage`, `modelUsage` (with each model's
+`usage` object (`input_tokens`, `output_tokens`, `thinking_tokens`,
+`cache_read_tokens`, `total_tokens`) beside `duration_seconds` and `num_turns` — and
+those seven keys plus `status`, `response`, `conversation_id` and `error` are the whole
+envelope, which is what makes §2's `agy` cost and context-window cells **absent** rather
+than unmeasured (captured at the pin,
+`docs/process/probes/2026-08-30-claude-macos-row9-agy/artifacts/leg{A,B,C,D}.json`); claude's result frame carries `usage`, `modelUsage` (with each model's
 `contextWindow` and `maxOutputTokens`), and `total_cost_usd`. The adapters read none of
 it. `<meta_out>` is four lines by contract, and none of them is a number.
 
