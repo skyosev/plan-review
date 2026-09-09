@@ -599,6 +599,26 @@ test_leg_b_a_starved_shell_tool_fails_the_reviewer() {
     "the reason names the first run_command failure, not just the count"
 }
 
+# Leg N: the case the offline fixtures could not answer until it was paid for --
+# a command that RAN and FAILED. `cat MISSING-FILE.txt` exited non-zero, and the
+# step reached state DONE carrying tool_info keys name/output/parameters: the
+# SAME three leg A's succeeding `pwd` carried, with the shell's diagnostic in
+# `output` and no exit status anywhere in the step. So the format does not
+# distinguish a command that failed from one that finished, and the assertion
+# means "a command executed" because that is all it can mean. It is not "no
+# command ran" -- the shell worked, which is the whole question the assertion
+# asks -- so the review is ACCEPTED. Measured 2026-09-09 at agy 1.1.28;
+# docs/process/probes/2026-09-09-agy-stream-adapter.
+test_a_command_that_ran_and_failed_still_satisfies_the_assertion() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  install_leg_stub "$d/bin" "$PR_ROOT/tests/fixtures/agy/leg-n.ndjson"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 0 "a failed command is still a command that executed"
+  assert_file_exists "$d/r.md" "the review is kept"
+}
+
 # The stream is the first agy output format that says whether
 # --dangerously-skip-permissions took effect. A flag that was ACCEPTED is not a
 # flag that took, and a mode that is neither ours nor an outright denial has no
