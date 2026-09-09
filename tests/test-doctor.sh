@@ -554,8 +554,6 @@ test_agy_progress_line_is_not_counted_as_a_model() {
   assert_contains "$out" "counts 1 0 0" "a pass"
 }
 
-# The adapter passes --print-timeout now, so the doctor asserts the flag still
-# exists rather than reporting a default the adapter no longer relies on.
 # The adapter passes --print-timeout and parses --output-format stream-json, so
 # the doctor asserts both are still there rather than reporting a default the
 # adapter no longer relies on.
@@ -592,6 +590,20 @@ test_stream_json_only_under_input_format_fails() {
   local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_help_flags')"
   assert_contains "$out" "no longer offers stream-json" "reads the right line"
   assert_contains "$out" "counts 1 0 1" "one pass, one failure"
+}
+
+# The other direction of the same read, and the one that costs a healthy host: a
+# synopsis line naming the flag must not shadow the option table. The check FAILS
+# rather than warns, so a first-mention read would exit `make doctor` 1 the day
+# agy's help grows a usage line -- against a CLI still offering stream-json.
+test_a_synopsis_line_naming_output_format_does_not_shadow_the_option_table() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agy" \
+    'printf "Usage: agy -p <prompt> --output-format <fmt>\n\nFlags:\n  --output-format                 Output format for print mode (text, json, stream-json) (default text)\n  --print-timeout                 Timeout for print mode wait (default 5m0s)\n"'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_help_flags')"
+  assert_contains "$out" "still offers stream-json" "read the option table, not the synopsis"
+  assert_contains "$out" "counts 2 0 0" "two passes, as on any healthy 1.1.27"
 }
 
 # No --output-format line at all is the same failure, and the info line has

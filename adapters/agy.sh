@@ -285,11 +285,34 @@ err_file="${TMPDIR:-/tmp}/pr-agy-err.$$"
 # stream -- every step, every tool_info.output -- where a failed assertion can be
 # read back.
 #
-# In the EXIT trap rather than on the line after the run, because that line is not
-# always reached: on the runner's deadline the execution kernel sends TERM, and
-# bash runs the EXIT trap once the foreground CLI has died (measured 2026-09-07,
-# rc=143) while the next statement never runs. Until 2026-09-07 the stderr replay
-# lived there, so a timed-out agy round dropped the CLI's own diagnostics.
+# In the EXIT trap rather than on the line after the run, because that line is
+# not always reached: on the runner's deadline the adapter is killed where it
+# stands and the statement after the run never runs, while a trap can still fire.
+# Until 2026-09-07 the stderr replay lived there, so a timed-out agy round dropped
+# the CLI's own diagnostics.
+#
+# What the trap does NOT reliably survive is the runner's own deadline, and the
+# measurement is worth carrying because the obvious reading of "bash runs the EXIT
+# trap once the foreground CLI has died" is wrong here. GNU `timeout` sends TWO
+# terminating signals -- coreutils' cleanup() does `kill(child, sig)` and then
+# `kill(0, sig)` over its own process group, which the child is in -- and a second
+# terminating signal that lands inside bash's deferral window kills the shell from
+# the default disposition, running no EXIT trap at all. Whether it lands there is
+# shape- and timing-dependent, not a coin with one side: measured 2026-09-09 on
+# bash 5.2.37 under lib/adapter-exec.sh's own shape (`timeout --kill-after=1 -s
+# TERM 1`), the trap ran 1/10 with a nested child -- which is this adapter's shape,
+# bwrap between the shell and the CLI -- and 17/20 with a direct `sleep` as the
+# foreground child. A single TERM, to the group or to the shell alone, ran it 5/5.
+# So a timed-out agy round will USUALLY land a log with neither capture in it.
+#
+# The trap is still strictly better than the post-run placement it replaced: every
+# non-deadline exit reaches it, refusals included, and so does a single-TERM group
+# kill such as lib/adapter-exec.sh's own sweep. It buys nothing on the double
+# signal, and nothing here can -- a shell that dies from SIG_DFL runs no code.
+# tests/test-adapter-agy.sh's case measures the SINGLE-TERM group kill, and says so:
+# that is deliberately not the shape the runner sends, because a test built on the
+# runner's shape would be measuring coreutils' signalling and would pass or fail at
+# random.
 #
 # What this does NOT buy, stated rather than implied: the log fills at exit, so
 # there is no live stream to watch during a stall, and a SIGKILL before or during
@@ -333,7 +356,7 @@ rc=$?
 # reason: one malformed or truncated line (a kill mid-write) must not abort the
 # read and come back as "no init line" or "ran nothing".
 #
-# `response` is LAST because it is the only multi-line value: the five scalars
+# `response` is LAST because it is the only multi-line value: the six scalars
 # come off `read -r` in order and the rest of the pipe is the review. Which makes
 # the FRAMING load-bearing, and it is enforced rather than assumed: every scalar
 # goes through `line`, which squashes newlines, because ONE embedded newline
@@ -381,8 +404,11 @@ if [[ -z "$response" ]]; then
   # substantive review never reaches this branch.
   #
   # The strings are claude-octopus's, measured by them against a different agy
-  # version and a different invocation shape -- their `--print` text mode, not
-  # our --output-format json (scripts/helpers/agy-exec.sh:235). Unverified here,
+  # version and a different invocation shape -- their `--print` text mode, and
+  # not even the `--output-format json` this adapter itself ran until 2026-09-07
+  # (scripts/helpers/agy-exec.sh:235). So the provenance is two shapes removed
+  # from what the classifier reads today, which is the reason to say it rather
+  # than to let the tense imply a match. Unverified here,
   # which is why the fallback below is the generic message rather than a guess;
   # the provenance is in the process notes (2026-08-17, borrowing from
   # claude-octopus).

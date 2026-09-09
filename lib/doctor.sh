@@ -892,12 +892,20 @@ pr_doctor_check_agy_auth() {
 # 1.1.27 the --input-format and --json-schema lines name it too, so a whole-help
 # substring would still pass after output support vanished. Builtins only, per
 # this file's rule -- one walk over the lines, no grep.
+#
+# The line it takes is an OPTION-TABLE line -- indentation, then the flag -- and
+# not merely the first line mentioning the flag. A help text that grows a
+# `Usage: agy -p --output-format <fmt>` synopsis above the table would otherwise
+# hand this check a line that names no formats at all, and since it FAILS rather
+# than warns, `make doctor` would exit 1 against an agy that offers stream-json
+# perfectly well. Anchoring costs one `=~` and the false pass it gives up is a
+# vendor writing the formats into a synopsis and nowhere else.
 pr_doctor_check_agy_help_flags() {
   pr_doctor_have agy || return 0
   local out line ofmt="" rc=0
   out="$(pr_doctor_run 15 agy --help 2>&1)"
   while IFS= read -r line; do
-    [[ "$line" == *"--output-format"* ]] || continue
+    [[ "$line" =~ ^[[:space:]]*--output-format ]] || continue
     ofmt="$line"; break
   done <<< "$out"
 

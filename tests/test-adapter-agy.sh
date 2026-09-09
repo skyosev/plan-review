@@ -11,10 +11,12 @@ source "$PR_ROOT/tests/helpers.sh"
 # --output-format stream-json (probes/2026-09-03-agy-stream-json/raw/A.out, kept
 # verbatim as tests/fixtures/agy/leg-a.ndjson): an `init` line, one `step_update`
 # per step transition, and a `result` line whose `.result` is the json envelope
-# the adapter parsed until 2026-09-07. Every success case therefore needs a
-# run_command step that reaches DONE -- that is the adapter's assertion, not
-# decoration here -- and the fifth and sixth arguments are how a case turns each
-# of the two assertable fields off.
+# the adapter parsed until 2026-09-07. The run_command step that reaches DONE is
+# not decoration: every success case needs one, because it is what the adapter
+# asserts. The fifth argument is how a case turns the OTHER assertable field --
+# the init line's permission_mode -- off. There is no knob for the step itself:
+# the no-command path is covered by leg B and by the hand-built newline legs,
+# which bring their own streams.
 install_stubs() {
   # `${3-...}`, not `${3:-...}`: the empty-response case passes "" deliberately,
   # and the colon form would treat that as "unset" and hand back the default
@@ -23,9 +25,8 @@ install_stubs() {
   # Fourth argument: text the stub writes to stderr before answering. That is
   # where agy puts a quota refusal, and the classifier reads it from there.
   local errtext="${4:-}"
-  # Fifth: the init line's permission_mode. Sixth: 1 to emit a run_command step
-  # that reaches DONE, 0 to emit none. Both default to leg A's healthy shape.
-  local perm="${5:-always-proceed}" ran="${6:-1}"
+  # Fifth: the init line's permission_mode, defaulting to leg A's healthy value.
+  local perm="${5:-always-proceed}"
   mkdir -p "$bindir"
 
   cat > "$bindir/bwrap" <<STUB
@@ -51,10 +52,8 @@ if [[ "\$1" == "--version" ]]; then echo "1.1.13"; exit 0; fi
 printf '%s' '$errtext' >&2
 jq -nc --arg p '$perm' \
   '{event:"init",conversation_id:"conv-abc-123",init:{model:"stub",permission_mode:\$p}}'
-if [[ "$ran" == 1 ]]; then
-  jq -nc '{event:"step_update",step_update:{conversation_id:"conv-abc-123",step_index:2,state:"ACTIVE",step_type:"tool",tool_name:"run_command",tool_info:{name:"run_command",parameters:{CommandLine:"pwd"}}}}'
-  jq -nc '{event:"step_update",step_update:{conversation_id:"conv-abc-123",step_index:2,state:"DONE",step_type:"tool",tool_name:"run_command",duration_seconds:0.5,tool_info:{name:"run_command",parameters:{CommandLine:"pwd"},output:"/work\n"}}}'
-fi
+jq -nc '{event:"step_update",step_update:{conversation_id:"conv-abc-123",step_index:2,state:"ACTIVE",step_type:"tool",tool_name:"run_command",tool_info:{name:"run_command",parameters:{CommandLine:"pwd"}}}}'
+jq -nc '{event:"step_update",step_update:{conversation_id:"conv-abc-123",step_index:2,state:"DONE",step_type:"tool",tool_name:"run_command",duration_seconds:0.5,tool_info:{name:"run_command",parameters:{CommandLine:"pwd"},output:"/work\n"}}}'
 jq -nc --arg s "$status" --arg r "\$(printf '$response')" \
   '{event:"result",result:{conversation_id:"conv-abc-123",status:\$s,response:\$r,duration_seconds:1,num_turns:1}}'
 exit 0
@@ -644,13 +643,52 @@ test_a_malformed_line_does_not_read_as_a_stream_with_nothing_in_it() {
 }
 
 # A newline inside any scalar the single-pass jq emits would shift every field
-# read after it. Measured 2026-09-09 on the unhardened filter: with `status`
-# carrying an embedded newline the conversation id landed in `ran_ok`, the
-# comparison against 0 failed, and this exact stream -- SUCCESS, a response, and
-# not one run_command step -- was ACCEPTED. The `line` def and the digits check
-# are what this pins; it is the malformed-FIELD case beside the malformed-LINE
-# one, and a stream shape that moves must fail, never pass.
-test_a_newline_inside_a_scalar_cannot_shift_the_ran_a_command_count() {
+# read after it, and TWO mechanisms in adapters/agy.sh stop that: `line`, which
+# squashes newlines out of every scalar before it is printed, and the
+# `^[0-9]+$` check on the count. They are not interchangeable and neither is
+# redundant, so they are pinned one case each -- a single case covering both
+# passes when either is deleted, which is how a guard rots.
+#
+# THIS ONE PINS `line`, and it pins it alone: the digits check cannot save this
+# stream, because the field that shifts into `ran_ok` is itself digits. Measured
+# 2026-09-09 with `| line` dropped from the scalars and the digits check left in
+# place -- `conv-abc` landed in `session`, `7` in `ran_ok`, `7 != 0` satisfied the
+# ran-a-command clause, and a reviewer that ran NOTHING got exit 0 and a published
+# review, with meta line 1 truncated to `conv-abc`. The other mechanism's case is
+# below.
+test_a_newline_in_the_conversation_id_cannot_shift_a_digit_into_the_count() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  cat > "$d/leg.ndjson" <<'LEG'
+{"event":"init","init":{"permission_mode":"always-proceed"}}
+{"event":"result","result":{"status":"SUCCESS","conversation_id":"conv-abc\n7","response":"a confident review of nothing"}}
+LEG
+  install_leg_stub "$d/bin" "$d/leg.ndjson"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 1 "no run_command step is no run_command step"
+  assert_file_missing "$d/r.md" "and the review is discarded"
+  assert_contains "$(cat "$d/reason.txt")" "ran no command" "with the honest reason"
+  assert_eq "$(sed -n '1p' "$d/m.txt")" "conv-abc 7" \
+    "the whole id reached meta line 1, squashed rather than cut at the newline"
+}
+
+# THIS ONE PINS THE DIGITS CHECK, in the only way a black-box case can: it is the
+# stream that gets ACCEPTED when both mechanisms are gone, and refused when either
+# one stands. With `line` dropped and the digits check kept, `conv-123` lands in
+# `ran_ok`, is not digits, and the check resets it to 0 -- so the check is what
+# stops a shifted read from being taken for "commands ran".
+#
+# It cannot be made to fail by deleting the digits check alone, and that is a
+# property of the code rather than a hole in the case: the count is
+# `[...] | length | tostring`, digits by construction, so nothing an agy stream can
+# carry reaches that branch while `line` stands. A framing move is its only route,
+# which is exactly what the case above prevents -- the digits check is the second
+# line of defence, and this is the case that makes it load-bearing. Measured
+# 2026-09-09: with both dropped, `status` came off as `SUCCESS`, `extra-line` as
+# the session, `conv-123` as the count, `[[ conv-123 == 0 ]]` was false, and this
+# stream -- SUCCESS, a response, and not one run_command step -- was ACCEPTED.
+test_a_shifted_count_that_is_not_digits_is_never_read_as_commands_ran() {
   local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
   cat > "$d/leg.ndjson" <<'LEG'
 {"event":"init","init":{"permission_mode":"always-proceed"}}
@@ -660,7 +698,7 @@ LEG
   echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
     "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
   rc=$?
-  assert_exit_code "$rc" 1 "no run_command step is no run_command step"
+  assert_exit_code "$rc" 1 "a stream shape that moved must fail, never pass"
   assert_file_missing "$d/r.md" "and the review is discarded"
   assert_contains "$(cat "$d/reason.txt")" "ran no command" "with the honest reason"
 }
@@ -712,14 +750,22 @@ LEG
 # ONE TERM, delivered to the adapter's own process GROUP, and deliberately NOT
 # through `timeout -s TERM`: measured 2026-09-09 on bash 5.2.37, a shell that
 # takes a SECOND terminating signal while the first is still deferred dies from
-# the default disposition and runs no EXIT trap at all -- 0/5 replays with two
-# TERMs, 5/5 with one, whether the one goes to the group or to the shell alone.
-# GNU `timeout` sends two (coreutils' cleanup() does `kill(child, sig)` and then
-# `kill(0, sig)` over its own group, which the child is in), so a `timeout -s TERM
-# 1` here would be measuring coreutils' signalling rather than this trap, and
-# would pass or fail at random -- it failed 5/5 in this file. The group TERM is
-# also what reaps the stub's `sleep`, so bash does not sit in `wait` for thirty
-# seconds before reaching its trap.
+# the default disposition and runs no EXIT trap at all. GNU `timeout` sends two
+# (coreutils' cleanup() does `kill(child, sig)` and then `kill(0, sig)` over its
+# own group, which the child is in), and whether the second lands inside that
+# window is shape- and timing-dependent rather than settled: under
+# lib/adapter-exec.sh's own shape the trap ran 1/10 with a nested child -- the
+# adapter's shape, bwrap between the shell and the CLI -- and 17/20 with a direct
+# `sleep`, while a single TERM ran it 5/5 to the group and 5/5 to the shell alone.
+# So `timeout -s TERM 1` here would be measuring coreutils' signalling rather than
+# this trap, at odds that depend on the stub's process shape; it failed 5/5 in
+# this file's shape. The group TERM is also what reaps the stub's `sleep`, so bash
+# does not sit in `wait` for thirty seconds before reaching its trap.
+#
+# What this case therefore does NOT cover, stated because the gap is the
+# interesting part: the runner's real deadline, where the double signal usually
+# skips the trap and a timed-out round lands a log with neither capture.
+# adapters/agy.sh's trap carries that measurement beside the trap itself.
 #
 # `set -m` is what gives the background adapter a group of its own, and stdin
 # comes from a FILE rather than a pipeline because with job control on a
