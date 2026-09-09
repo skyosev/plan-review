@@ -22,11 +22,14 @@ The suite is offline and takes seconds: every test drives the runner with fake a
 from `tests/fixtures/adapters/` via `PR_ADAPTER_MAP`, so nothing costs tokens. **Budget
 against 568 tests on Linux — the count is exact; the seconds read 73-81s across the day it
 moved and are NOT a budget from that session — and 542 / 4m34s on Darwin** (this Mac's
-run-to-run spread is ~7s; nothing smaller is measurable). The Linux seconds climbed
-monotonically as that session's own load grew, which is this file's own "a clock read on a
-loaded host is worse than no clock" firing on the person writing the rule down: treat 568 as
-the thing that regresses visibly, and re-time against a same-session `main` control before
-quoting any second figure. The full record — every row of the
+run-to-run spread is ~7s, Linux's ~2.5s; nothing smaller is measurable). That ~2.5s is a
+measurement FLOOR and survives the absent seconds budget — `docs/test-timing.md` reasons from
+it in four places, and a change under it is invisible to this method either way. The Linux
+seconds climbed monotonically across that session, which is this file's own "a clock read on a
+loaded host is worse than no clock" firing on the person writing the rule down; the session's
+own load is the likeliest reading and **was not measured**, so treat 568 as the thing that
+regresses visibly and re-time against a same-session `main` control before quoting any second
+figure. The full record — every row of the
 timing table, what each branch cost and why — is `docs/test-timing.md`; read it before
 adding a per-adapter fork or an always-waited probe window. The rules it distils to:
 
@@ -135,7 +138,8 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   the last, where the spec written two days earlier expected 1.1.27
   (`docs/process/probes/2026-09-09-agy-stream-adapter/`). That is a discrepancy against this
   repo's own prose, not an observed transition — only the 1.1.28 end is measured, no capture
-  anywhere holds a 1.1.27, and the move off it is *inferred* from two sentences in the spec.
+  *in that probe* holds a 1.1.27, and the move off it is *inferred* from two sentences in the
+  spec.
   Which is the rule's own shape: re-reading closes the far end of the window and can do
   nothing about the near one.
 - **Roster precedence**: `PR_ADAPTER_MAP` > config `reviewers` > shipped adapters minus
@@ -197,8 +201,9 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   every tool's output, and both captures are replayed by an EXIT trap. What that trap reaches
   is every exit **but** the runner's own deadline — every refusal, every ordinary completion,
   every hand-run invocation — and on the deadline it usually does not: GNU `timeout` sends two
-  TERMs and the second kills the shell with no trap, measured 1/10 in this adapter's real
-  shape, so a timed-out round usually lands a log with neither capture. The trap comment in
+  TERMs and the second *can* kill the shell with no trap — shape- and timing-dependent rather
+  than a coin with one side, 1/10 in this adapter's real shape against 17/20 with a direct
+  child — so a timed-out round usually lands a log with neither capture. The trap comment in
   `adapters/agy.sh` carries the measurement and `docs/process/BACKLOG.md` carries what is
   unbuilt; do not shorten either to "a TERM'd round keeps its diagnostics".
 - **`adapters/claude.sh` echoes `terminal_reason`** from the result frame into the

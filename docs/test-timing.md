@@ -116,12 +116,18 @@ figure moved on 2026-09-09 with `backlog-clearing-5`, which took the suite to **
 (the `agy` stream adapter's cases, all stub-only). **The seconds are deliberately gone from
 that budget**, and how they were lost is the point. The readings were ~73-74s repeatedly while
 Tasks 01-02 ran, then 75.0s, 75.6s, 76.9s, 78.2s and 81.2s in Task 03's session with 77s in
-its review -- climbing MONOTONICALLY as that session spawned live `doctor` probes between
-runs. Every widening of the stated range was overtaken by the next run, which is this file's
-own rule ("a whole-suite clock read on a loaded host is worse than no clock") firing on the
-person writing it down. So there is **no row in the table above** and no second figure in the
-budget: nobody ran the same-session `main` control this file's method requires, the delta
-cannot be attributed, and a number that a reader's own run beats is worse than no number.
+its review -- climbing MONOTONICALLY. **The readings are the measurement; the cause is not.**
+That session was spawning live `doctor` probes between suite runs, which is the likeliest
+reading of the climb and is exactly what the 2026-08-31 row two paragraphs below would have
+settled with a `/proc/loadavg` quote -- no load figure was recorded here, and by the time the
+pattern was visible the runs were over. A later run on a quieter host came in at 73.9s, at the
+bottom of the band, which is consistent with load and is n=1 rather than proof. So: every
+widening of the stated range was overtaken by the next run, which is this file's own rule
+("a whole-suite clock read on a loaded host is worse than no clock") firing on the person
+writing it down -- the measurement was of the host and not of the tree. Hence **no row in the
+table above** and no second figure in the budget: nobody ran the same-session `main` control
+this file's method requires, the delta cannot be attributed, and a number that a reader's own
+run beats is worse than no number.
 **568** is exact and is what regresses visibly. Re-time it properly -- a `git worktree` at
 `main`, two back-to-back runs, an otherwise quiet host -- and give it a row then.
 
