@@ -6,6 +6,17 @@ source "$PR_ROOT/tests/helpers.sh"
 # Stubs both binaries. The bwrap stub logs its own argv, then execs the first
 # `agy` it finds in the argument list, so the adapter's real command still runs
 # and the jail flags stay assertable.
+#
+# The agy stub emits a STREAM, in the shape agy 1.1.24 emitted it under
+# --output-format stream-json (probes/2026-09-03-agy-stream-json/raw/A.out, kept
+# verbatim as tests/fixtures/agy/leg-a.ndjson): an `init` line, one `step_update`
+# per step transition, and a `result` line whose `.result` is the json envelope
+# the adapter parsed until 2026-09-09. The run_command step that reaches DONE is
+# not decoration: every success case needs one, because it is what the adapter
+# asserts. The fifth argument is how a case turns the OTHER assertable field --
+# the init line's permission_mode -- off. There is no knob for the step itself:
+# the no-command path is covered by leg B and by the hand-built newline legs,
+# which bring their own streams.
 install_stubs() {
   # `${3-...}`, not `${3:-...}`: the empty-response case passes "" deliberately,
   # and the colon form would treat that as "unset" and hand back the default
@@ -14,6 +25,8 @@ install_stubs() {
   # Fourth argument: text the stub writes to stderr before answering. That is
   # where agy puts a quota refusal, and the classifier reads it from there.
   local errtext="${4:-}"
+  # Fifth: the init line's permission_mode, defaulting to leg A's healthy value.
+  local perm="${5:-always-proceed}"
   mkdir -p "$bindir"
 
   cat > "$bindir/bwrap" <<STUB
@@ -37,11 +50,49 @@ printf '%s\n' "\$@" >> "$bindir/agy-argv.txt"
 cat > "$bindir/agy-stdin.txt"
 if [[ "\$1" == "--version" ]]; then echo "1.1.13"; exit 0; fi
 printf '%s' '$errtext' >&2
+jq -nc --arg p '$perm' \
+  '{event:"init",conversation_id:"conv-abc-123",init:{model:"stub",permission_mode:\$p}}'
+jq -nc '{event:"step_update",step_update:{conversation_id:"conv-abc-123",step_index:2,state:"ACTIVE",step_type:"tool",tool_name:"run_command",tool_info:{name:"run_command",parameters:{CommandLine:"pwd"}}}}'
+jq -nc '{event:"step_update",step_update:{conversation_id:"conv-abc-123",step_index:2,state:"DONE",step_type:"tool",tool_name:"run_command",duration_seconds:0.5,tool_info:{name:"run_command",parameters:{CommandLine:"pwd"},output:"/work\n"}}}'
 jq -nc --arg s "$status" --arg r "\$(printf '$response')" \
-  '{conversation_id: "conv-abc-123", status: \$s, response: \$r, duration_seconds: 1, num_turns: 1}'
+  '{event:"result",result:{conversation_id:"conv-abc-123",status:\$s,response:\$r,duration_seconds:1,num_turns:1}}'
 exit 0
 STUB
   chmod +x "$bindir/bwrap" "$bindir/agy"
+}
+
+# The healthy three-line stream, emitted verbatim by every hand-built stub that
+# needs one: the init line carrying the permission_mode the adapter asserts, one
+# run_command step at DONE, and a result line. Interpolated into the stubs'
+# unquoted heredocs, so a shape change -- a new event, a field the jq filter
+# starts requiring, a rename -- is ONE edit and not three hand-written copies
+# inside heredocs where nothing checks them. install_stubs builds its own with
+# `--arg` because its three values are parameters; these callers assert on the
+# text above and cannot take them.
+AGY_STREAM_OK=$(cat <<'LINES'
+jq -nc '{event:"init",conversation_id:"conv-abc-123",init:{permission_mode:"always-proceed"}}'
+jq -nc '{event:"step_update",step_update:{state:"DONE",step_type:"tool",tool_name:"run_command",tool_info:{name:"run_command",output:"/work\n"}}}'
+jq -nc '{event:"result",result:{conversation_id:"conv-abc-123",status:"SUCCESS",response:"# r\n<!-- VERDICT: MINOR -->"}}'
+LINES
+)
+
+# A stub that replays a captured leg verbatim. Call it AFTER install_stubs, which
+# is what puts the bwrap stub in place; this one only replaces `agy`.
+install_leg_stub() {  # install_leg_stub <bindir> <ndjson-file>
+  local bindir="$1" leg="$2"
+  # Through pr_test_mkstub for its shebang: `#!$BASH` rather than `#!/usr/bin/env
+  # bash`, which needs `bash` on PATH. These callers keep the real PATH, so both
+  # start today -- but an agy case that trims PATH the way test-doctor.sh and
+  # test-init.sh do would inherit a stub that cannot run, for a reason already
+  # written down beside the helper.
+  pr_test_mkstub "$bindir/agy" "$(cat <<STUB
+printf '%s\n' "\$@" >> "$bindir/agy-argv.txt"
+if [[ "\$1" == "--version" ]]; then echo "1.1.24"; exit 0; fi
+cat > /dev/null
+cat "$leg"
+exit 0
+STUB
+)"
 }
 
 export PR_AGY_MODEL=gemini-3.1-pro-high
@@ -254,7 +305,12 @@ test_an_unset_home_is_refused_rather_than_resolved_to_the_filesystem_root() {
   assert_file_missing "$d/bin/agy-argv.txt" "the CLI was never invoked"
 }
 
-test_prompt_is_passed_as_argv_because_agy_cannot_read_stdin() {
+# `--input-format stream-json` DOES read a prompt from stdin, so the cap is not
+# "agy cannot read stdin" — it is that the route drops a prompt SILENTLY somewhere
+# between 16145 and 24145 bytes on the wire (probes/2026-09-03-agy-stream-json/,
+# legs C–K), with the same signature the adapter reports as the auto-deny. So the
+# prompt goes in argv, and this pins that it does.
+test_prompt_is_passed_as_argv_because_the_stdin_route_drops_large_prompts_silently() {
   local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
   echo "the actual prompt text" | PATH="$d/bin:$PATH" \
     bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
@@ -396,13 +452,13 @@ test_existing_session_is_resumed() {
   assert_contains "$argv" "conv-old" "with the stored handle"
 }
 
-test_review_file_holds_the_response_not_the_json_envelope() {
+test_review_file_holds_the_result_lines_response_and_none_of_the_stream() {
   local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
   echo "prompt" | PATH="$d/bin:$PATH" \
     bash "$PR_ROOT/adapters/agy.sh" "$d/work" "" "$d/r.md" "$d/m.txt" > /dev/null 2>&1
   assert_contains "$(cat "$d/r.md")" "<!-- VERDICT: MINOR -->" "review extracted"
   assert_not_contains "$(cat "$d/r.md")" "conversation_id" "envelope stripped"
-  assert_not_contains "$(cat "$d/r.md")" "duration_seconds" "envelope stripped"
+  assert_not_contains "$(cat "$d/r.md")" "step_update" "and the steps with it"
 }
 
 # The auto-deny signature: exit 0, status SUCCESS, empty response. Trusting the
@@ -434,7 +490,7 @@ cat > /dev/null
 # Inherits this process's stdout and keeps it open for five minutes.
 ( sleep 300 ) &
 echo \$! > "$d/child.pid"
-jq -nc '{conversation_id: "conv-abc-123", status: "SUCCESS", response: "# r\n<!-- VERDICT: MINOR -->"}'
+$AGY_STREAM_OK
 exit 0
 STUB
   chmod +x "$d/bin/agy"
@@ -514,7 +570,7 @@ if [[ "\$1" == "--version" ]]; then
   exit 0
 fi
 : > "$d/ran"
-jq -nc '{conversation_id: "conv-abc-123", status: "SUCCESS", response: "# agy review", duration_seconds: 1, num_turns: 1}'
+$AGY_STREAM_OK
 exit 0
 STUB
   chmod +x "$d/bin/agy"
@@ -522,6 +578,268 @@ STUB
     < /dev/null > /dev/null 2>&1
   assert_eq "$(sed -n '4p' "$d/m.txt")" "1.1.16" \
     "line 4 names the binary that answered, not the one installed after it"
+}
+
+# Leg A of probes/2026-09-03-agy-stream-json/, verbatim with home paths redacted:
+# the healthy stream at agy 1.1.24 — init reporting always-proceed, a run_command
+# step ACTIVE then DONE, a result line carrying the answer. Checked in under
+# tests/fixtures/ rather than read from the probe directory because docs/process/
+# is a separate repo a fresh clone does not have.
+test_leg_a_a_healthy_captured_stream_yields_a_review() {
+  local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  install_leg_stub "$d/bin" "$PR_ROOT/tests/fixtures/agy/leg-a.ndjson"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  assert_contains "$(cat "$d/r.md")" "agy-stream-1788437827-12887" \
+    "the result line's response is the review"
+  assert_eq "$(sed -n '1p' "$d/m.txt")" "8dabbe79-785e-40b1-9f3f-526be0ade43f" \
+    "and its conversation id is meta line 1"
+  assert_file_missing "$d/reason.txt" "a healthy leg has nothing to explain"
+}
+
+# Leg B, verbatim: the shell tool starved the way the 2026-09-02 macOS profile
+# starved it (an empty directory --ro-bind'ed over ~/.gemini/antigravity-cli/bin,
+# where agy writes its agentapi), status SUCCESS, a CORRECT answer, and no
+# command — agy fell back to view_file. This is the case that makes "count any
+# tool step" wrong, and the one the assertion exists for.
+test_leg_b_a_starved_shell_tool_fails_the_reviewer() {
+  local d rc out; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  install_leg_stub "$d/bin" "$PR_ROOT/tests/fixtures/agy/leg-b.ndjson"
+  out="$(echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" 2>&1)"; rc=$?
+  assert_exit_code "$rc" 1 "a review that ran nothing is refused"
+  assert_file_missing "$d/r.md" "and no review is written"
+  assert_contains "$out" "ran no command" "says what was wrong"
+  assert_contains "$(cat "$d/reason.txt")" "agentapi" \
+    "the reason names the first run_command failure, not just the count"
+}
+
+# Leg N: the case the offline fixtures could not answer until it was paid for --
+# a command that RAN and FAILED. `cat MISSING-FILE.txt` exited non-zero, and the
+# step reached state DONE carrying tool_info keys name/output/parameters: the
+# SAME three leg A's succeeding `pwd` carried, with the shell's diagnostic in
+# `output` and no exit status anywhere in the step. So the format does not
+# distinguish a command that failed from one that finished, and the assertion
+# means "a command executed" because that is all it can mean. It is not "no
+# command ran" -- the shell worked, which is the whole question the assertion
+# asks -- so the review is ACCEPTED. Measured 2026-09-09 at agy 1.1.28;
+# docs/process/probes/2026-09-09-agy-stream-adapter.
+test_a_command_that_ran_and_failed_still_satisfies_the_assertion() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  install_leg_stub "$d/bin" "$PR_ROOT/tests/fixtures/agy/leg-n.ndjson"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 0 "a failed command is still a command that executed"
+  assert_file_exists "$d/r.md" "the review is kept"
+}
+
+# The stream is the first agy output format that says whether
+# --dangerously-skip-permissions took effect. A flag that was ACCEPTED is not a
+# flag that took, and a mode that is neither ours nor an outright denial has no
+# other signature.
+test_a_permission_mode_we_did_not_ask_for_is_refused() {
+  local d rc out; d="$(pr_test_tmpdir)"; mkdir -p "$d/work"
+  install_stubs "$d/bin" SUCCESS "# r\n<!-- VERDICT: MINOR -->" "" default
+  out="$(echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" 2>&1)"; rc=$?
+  assert_exit_code "$rc" 1 "refused"
+  assert_contains "$out" "permission_mode=default" "quotes what it observed"
+  assert_contains "$(cat "$d/reason.txt")" "not always-proceed" "and the runner is told why"
+  assert_file_missing "$d/r.md" "the review is discarded, not recorded"
+}
+
+# An init line that never arrived is the same refusal, for adapters/claude.sh's
+# reason: nothing downstream can tell a missing envelope from a review.
+test_a_stream_with_no_init_line_is_refused() {
+  local d rc out; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  grep -v '"event":"init"' "$PR_ROOT/tests/fixtures/agy/leg-a.ndjson" > "$d/leg.ndjson"
+  install_leg_stub "$d/bin" "$d/leg.ndjson"
+  out="$(echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" 2>&1)"; rc=$?
+  assert_exit_code "$rc" 1 "refused"
+  assert_contains "$out" "permission_mode=MISSING" "names the absence rather than guessing"
+  assert_file_missing "$d/r.md" "no review"
+}
+
+# A kill mid-write leaves half a line. `fromjson? // empty` on every line is what
+# keeps that from reading as "no init line" or "ran nothing" — the same guard
+# adapters/claude.sh states, for the same reason.
+test_a_malformed_line_does_not_read_as_a_stream_with_nothing_in_it() {
+  local d; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  { head -2 "$PR_ROOT/tests/fixtures/agy/leg-a.ndjson"
+    printf '{"event":"step_update","step_upda\n'
+    tail -n +3 "$PR_ROOT/tests/fixtures/agy/leg-a.ndjson"; } > "$d/leg.ndjson"
+  install_leg_stub "$d/bin" "$d/leg.ndjson"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  assert_contains "$(cat "$d/r.md")" "agy-stream-1788437827-12887" \
+    "the well-formed lines still read"
+}
+
+# A newline inside any scalar the single-pass jq emits would shift every field
+# read after it, and TWO mechanisms in adapters/agy.sh stop that: `line`, which
+# squashes newlines out of every scalar before it is printed, and the
+# `^[0-9]+$` check on the count. They are not interchangeable and neither is
+# redundant, so they are pinned one case each -- a single case covering both
+# passes when either is deleted, which is how a guard rots.
+#
+# THIS ONE PINS `line`, and it pins it alone: the digits check cannot save this
+# stream, because the field that shifts into `ran_ok` is itself digits. Measured
+# 2026-09-09 with `| line` dropped from the scalars and the digits check left in
+# place -- `conv-abc` landed in `session`, `7` in `ran_ok`, `7 != 0` satisfied the
+# ran-a-command clause, and a reviewer that ran NOTHING got exit 0 and a published
+# review, with meta line 1 truncated to `conv-abc`. The other mechanism's case is
+# below.
+test_a_newline_in_the_conversation_id_cannot_shift_a_digit_into_the_count() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  cat > "$d/leg.ndjson" <<'LEG'
+{"event":"init","init":{"permission_mode":"always-proceed"}}
+{"event":"result","result":{"status":"SUCCESS","conversation_id":"conv-abc\n7","response":"a confident review of nothing"}}
+LEG
+  install_leg_stub "$d/bin" "$d/leg.ndjson"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 1 "no run_command step is no run_command step"
+  assert_file_missing "$d/r.md" "and the review is discarded"
+  assert_contains "$(cat "$d/reason.txt")" "ran no command" "with the honest reason"
+  assert_eq "$(sed -n '1p' "$d/m.txt")" "conv-abc 7" \
+    "the whole id reached meta line 1, squashed rather than cut at the newline"
+}
+
+# THIS ONE PINS THE DIGITS CHECK, in the only way a black-box case can: it is the
+# stream that gets ACCEPTED when both mechanisms are gone, and refused when either
+# one stands. With `line` dropped and the digits check kept, `conv-123` lands in
+# `ran_ok`, is not digits, and the check resets it to 0 -- so the check is what
+# stops a shifted read from being taken for "commands ran".
+#
+# It cannot be made to fail by deleting the digits check alone, and that is a
+# property of the code rather than a hole in the case: the count is
+# `[...] | length | tostring`, digits by construction, so nothing an agy stream can
+# carry reaches that branch while `line` stands. A framing move is its only route,
+# which is exactly what the case above prevents -- the digits check is the second
+# line of defence, and this is the case that makes it load-bearing. Measured
+# 2026-09-09: with both dropped, `status` came off as `SUCCESS`, `extra-line` as
+# the session, `conv-123` as the count, `[[ conv-123 == 0 ]]` was false, and this
+# stream -- SUCCESS, a response, and not one run_command step -- was ACCEPTED.
+test_a_shifted_count_that_is_not_digits_is_never_read_as_commands_ran() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  cat > "$d/leg.ndjson" <<'LEG'
+{"event":"init","init":{"permission_mode":"always-proceed"}}
+{"event":"result","result":{"status":"SUCCESS\nextra-line","conversation_id":"conv-123","response":"a review of nothing"}}
+LEG
+  install_leg_stub "$d/bin" "$d/leg.ndjson"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 1 "a stream shape that moved must fail, never pass"
+  assert_file_missing "$d/r.md" "and the review is discarded"
+  assert_contains "$(cat "$d/reason.txt")" "ran no command" "with the honest reason"
+}
+
+# Under --output-format json the classifier's whole input WAS the response. Under
+# stream-json stdout carries every tool_info.output too, so a reviewer that read
+# a file mentioning an upgrade must not be reported as an exhausted account. The
+# inputs are stderr and the result line, and nothing a tool printed.
+test_a_quota_phrase_in_a_tool_output_is_not_read_as_an_exhausted_account() {
+  local d rc; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  cat > "$d/leg.ndjson" <<'LEG'
+{"event":"init","conversation_id":"conv-abc-123","init":{"permission_mode":"always-proceed"}}
+{"event":"step_update","step_update":{"state":"DONE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","output":"NOTICE: please upgrade your subscription\n"}}}
+{"event":"result","result":{"conversation_id":"conv-abc-123","status":"SUCCESS","response":""}}
+LEG
+  install_leg_stub "$d/bin" "$d/leg.ndjson"
+  echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" > /dev/null 2>&1
+  rc=$?
+  assert_exit_code "$rc" 1 "an empty response is still a failure"
+  assert_contains "$(cat "$d/reason.txt")" "auto-deny" "diagnosed as the auto-deny"
+  assert_not_contains "$(cat "$d/reason.txt")" "quota" \
+    "a tool's output is not the classifier's input"
+}
+
+# The other half of the same narrowing: agy's own refusal text on the result line
+# still reaches the classifier, and still separates an exhausted account from an
+# auto-deny.
+test_a_quota_refusal_on_the_result_line_is_told_apart_from_the_auto_deny() {
+  local d rc out; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  cat > "$d/leg.ndjson" <<'LEG'
+{"event":"init","conversation_id":"conv-abc-123","init":{"permission_mode":"always-proceed"}}
+{"event":"result","result":{"conversation_id":"conv-abc-123","status":"ERROR","error":"individual quota reached. Resets in 3h20m","response":""}}
+LEG
+  install_leg_stub "$d/bin" "$d/leg.ndjson"
+  out="$(echo "prompt" | PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" 2>&1)"; rc=$?
+  assert_exit_code "$rc" 1 "nothing was reviewed"
+  assert_contains "$out" "Resets in 3h20m" "the window is surfaced"
+  assert_contains "$(cat "$d/reason.txt")" "quota reached" "and the diagnosis is the account"
+}
+
+# Both captures must reach the log, on the streams they came from, when the
+# adapter is killed where it stands rather than allowed to run its last statement.
+# Until 2026-09-09 the stderr replay lived on the line after the run, which a
+# killed adapter never reaches, so those diagnostics were lost; the EXIT trap is
+# what this pins. What it does NOT pin is the runner's own deadline -- see below,
+# and adapters/agy.sh's trap, which carries the measurement.
+#
+# ONE TERM, delivered to the adapter's own process GROUP, and deliberately NOT
+# through `timeout -s TERM`: measured 2026-09-09 on bash 5.2.37, a shell that
+# takes a SECOND terminating signal while the first is still deferred dies from
+# the default disposition and runs no EXIT trap at all. GNU `timeout` sends two
+# (coreutils' cleanup() does `kill(child, sig)` and then `kill(0, sig)` over its
+# own group, which the child is in), and whether the second lands inside that
+# window is shape- and timing-dependent rather than settled: under
+# lib/adapter-exec.sh's own shape the trap ran 1/10 with a nested child -- the
+# adapter's shape, bwrap between the shell and the CLI -- and 17/20 with a direct
+# `sleep`, while a single TERM ran it 5/5 to the group and 5/5 to the shell alone.
+# So `timeout -s TERM 1` here would be measuring coreutils' signalling rather than
+# this trap, at odds that depend on the stub's process shape; it failed 5/5 in
+# this file's shape. The group TERM is also what reaps the stub's `sleep`, so bash
+# does not sit in `wait` for thirty seconds before reaching its trap.
+#
+# What this case therefore does NOT cover, stated because the gap is the
+# interesting part: the runner's real deadline, where the double signal usually
+# skips the trap and a timed-out round lands a log with neither capture. No caller
+# in this repo sends the single TERM this case does -- lib/adapter-exec.sh's
+# deadline is that two-TERM `timeout` and its own sweep is `kill -KILL` after
+# `wait`, which reaches no trap at all. So what this pins is the trap itself, and
+# the shape is the one that can pin it deterministically rather than the one the
+# runner uses. adapters/agy.sh's trap carries the same measurement beside the code.
+#
+# `set -m` is what gives the background adapter a group of its own, and stdin
+# comes from a FILE rather than a pipeline because with job control on a
+# pipeline's group leader is its FIRST process -- `kill -- -$!` would then
+# address the wrong group. Costs ~0.1s: the handshake is the stub's marker file,
+# the way pr_test_hold_lock's is, not a fixed sleep.
+test_both_captures_are_replayed_when_a_single_group_term_kills_the_adapter() {
+  local d log pid i; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
+  cat > "$d/bin/agy" <<STUB
+#!/usr/bin/env bash
+if [[ "\$1" == "--version" ]]; then echo "1.1.24"; exit 0; fi
+cat > /dev/null
+echo "MARKER-ON-STDOUT"
+echo "MARKER-ON-STDERR" >&2
+: > "$d/running"
+sleep 30
+STUB
+  chmod +x "$d/bin/agy"
+  echo "prompt" > "$d/stdin.txt"
+  set -m
+  PATH="$d/bin:$PATH" bash "$PR_ROOT/adapters/agy.sh" \
+    "$d/work" "" "$d/r.md" "$d/m.txt" "$d/reason.txt" \
+    < "$d/stdin.txt" > "$d/log" 2>&1 &
+  pid=$!
+  set +m
+  for ((i = 0; i < 500; i++)); do
+    [[ -e "$d/running" ]] && break
+    sleep 0.02
+  done
+  kill -TERM -- "-$pid" 2> /dev/null
+  wait "$pid" 2> /dev/null
+  log="$(cat "$d/log")"
+  assert_contains "$log" "MARKER-ON-STDOUT" "the stream capture reached the log"
+  assert_contains "$log" "MARKER-ON-STDERR" "and so did the CLI's diagnostics"
 }
 
 pr_run_tests

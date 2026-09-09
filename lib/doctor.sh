@@ -881,23 +881,71 @@ pr_doctor_check_agy_auth() {
   return 1
 }
 
-# agy carries a deadline of its own INSIDE the runner's. adapters/agy.sh now
-# passes it explicitly, derived from PR_TIMEOUT_SECS, so what matters here is no
-# longer the default -- it is whether the flag we pass is still accepted. A
-# renamed or dropped flag would make agy fall back to its own 5m0s and cut long
-# reviews short with no signal. Offline: `agy --help` makes no network call.
-pr_doctor_check_agy_print_timeout() {
+# agy carries a deadline of its own INSIDE the runner's, and since 2026-09-09 the
+# adapter depends on a second thing this help text names. A renamed or dropped
+# --print-timeout makes agy fall back to its own 5m0s and cut long reviews short
+# with no signal; a dropped stream-json OUTPUT mode takes the init line and the
+# step_updates with it, and with them the permission_mode and ran-a-command
+# assertions. Offline: `agy --help` makes no network call.
+#
+# stream-json is matched on the --output-format LINE, not anywhere in the help: the
+# --input-format and --json-schema lines name it too, so a whole-help substring
+# would still pass after output support vanished. At 1.1.28 that is sharper than a
+# mention -- the --input-format line's own prose contains the LITERAL string
+# `--output-format stream-json` ("it requires --output-format stream-json"), so an
+# unanchored read does not merely find the word somewhere: it PICKS that line as
+# the option-table line and reads stream-json off it. The anchor is load-bearing
+# rather than tidy, and tests/test-doctor.sh pins that live wording as its net. Builtins only, per
+# this file's rule -- one walk over the lines, no grep.
+#
+# BOTH flags are read that way, off the same walk. --print-timeout was a
+# whole-help substring until 2026-09-09 while --output-format was anchored, which
+# taught two standards for one question and left the weaker one guarding the
+# deadline -- the half whose false pass is the SILENT one (agy falls back to its
+# own 5m0s and cuts long reviews short with no signal). A deprecation note naming
+# the flag, or any prose that mentions it, would have kept that half green after
+# support moved. Anchoring both costs one `=~` and no extra `agy --help` spawn.
+#
+# The line each takes is an OPTION-TABLE line -- indentation, then the flag -- and
+# not merely the first line mentioning the flag. A help text that grows a
+# `Usage: agy -p --output-format <fmt>` synopsis above the table would otherwise
+# hand this check a line that names no formats at all, and since it FAILS rather
+# than warns, `make doctor` would exit 1 against an agy that offers stream-json
+# perfectly well. Anchoring costs one `=~` and the false pass it gives up is a
+# vendor writing the formats into a synopsis and nowhere else.
+pr_doctor_check_agy_help_flags() {
   pr_doctor_have agy || return 0
-  local out
+  local out line ofmt="" ptmo="" rc=0
   out="$(pr_doctor_run 15 agy --help 2>&1)"
-  if [[ "$out" == *"--print-timeout"* ]]; then
+  while IFS= read -r line; do
+    if [[ -z "$ofmt" && "$line" =~ ^[[:space:]]*--output-format ]]; then
+      ofmt="$line"
+    elif [[ -z "$ptmo" && "$line" =~ ^[[:space:]]*--print-timeout ]]; then
+      ptmo="$line"
+    fi
+    [[ -n "$ofmt" && -n "$ptmo" ]] && break
+  done <<< "$out"
+
+  if [[ -n "$ptmo" ]]; then
     pr_d_pass "agy still accepts --print-timeout (adapters/agy.sh derives it from PR_TIMEOUT_SECS)"
-    return 0
+  else
+    pr_d_fail "agy no longer lists --print-timeout in its help"
+    pr_d_info "adapters/agy.sh passes that flag. Without it agy falls back to its own"
+    pr_d_info "5m0s default, which silently cuts long reviews short."
+    rc=1
   fi
-  pr_d_fail "agy no longer lists --print-timeout in its help"
-  pr_d_info "adapters/agy.sh passes that flag. Without it agy falls back to its own"
-  pr_d_info "5m0s default, which silently cuts long reviews short."
-  return 1
+
+  if [[ "$ofmt" == *stream-json* ]]; then
+    pr_d_pass "agy --output-format still offers stream-json (adapters/agy.sh parses that stream)"
+  else
+    pr_d_fail "agy --output-format no longer offers stream-json"
+    pr_d_info "adapters/agy.sh reads permission_mode off the stream's init line and counts"
+    pr_d_info "run_command steps to assert the reviewer ran something. Without the stream"
+    pr_d_info "neither assertion can be made at all."
+    [[ -n "$ofmt" ]] && pr_d_info "help says:$ofmt"
+    rc=1
+  fi
+  return "$rc"
 }
 
 # The only reviewer with a structured auth status. Judged on the loggedIn field
@@ -1332,13 +1380,33 @@ pr_doctor_check_rounds() {
 # tests/test-doctor.sh drives it with fake adapters on the real PATH.
 # ---------------------------------------------------------------------------
 
-# Deliberately tiny -- the point is the transport, not the answer -- and
-# explicit that no tools should run, so the reply costs the minimum the vendor
-# bills. The reply's CONTENT is never asserted: alive means "produced output",
-# same as the round; a model that answers in its own words is still alive.
+# Deliberately tiny -- the point is the transport, not the answer -- and it asks
+# for ONE trivial command, because the round's path includes the adapter
+# contract's ran-no-command clause. adapters/claude.sh and adapters/agy.sh both
+# fail a reviewer that ran nothing, so a ping that forbade tools would be a ping
+# those two adapters REJECT, and "the one check that exercises the same path a
+# round does" would stop being true. That contradiction shipped between claude's
+# assertion landing and 2026-09-09; it was found by reading the code, and no
+# doctor --smoke run is on record from that window.
+# `pwd` rather than `true`: it leaves a line in the log that proves which
+# directory the reviewer was standing in, which is the other thing a transport
+# check wants to know. The reply's CONTENT is never asserted: alive means
+# "produced output", same as the round -- a model that answers in its own words
+# is still alive.
+#
+# What this cannot do is ENFORCE the command: the tripwire is satisfied by asking
+# the model nicely, so a reviewer that replies `SMOKE OK` without calling the
+# shell fails the smoke on a perfectly healthy transport, and the failure text
+# names the assertion rather than this prompt as the cause. It is also asymmetric
+# across the roster -- codex and agent have no ran-no-command clause
+# (docs/feature-matrix.md, the "At least one Bash tool call" row). The honest
+# alternative is telling the adapter this invocation is a ping, and the kernel
+# exports exactly PR_TIMEOUT_SECS and TMPDIR by deliberate design: the variadic
+# environment channel was deleted for a measured reason (2026-08-26), so buying
+# enforcement here means re-opening it. Left as prose, with the residual stated.
 PR_DOCTOR_SMOKE_PROMPT='plan-review doctor connectivity check.
-Reply with exactly: SMOKE OK
-Do not read files, run tools, or write anything.'
+Run the shell command `pwd`, then reply with exactly: SMOKE OK
+Read no files and write nothing else.'
 
 # pr_doctor_check_smoke <adapter-map> <deadline-secs>
 #

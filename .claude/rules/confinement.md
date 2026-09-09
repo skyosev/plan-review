@@ -101,7 +101,11 @@ is being edited. The never-rules stay in `CLAUDE.md`; this is the measurement re
   all on the `--output-format json` transcript** — a clean `"status":"SUCCESS"` and an
   unrelated model answer; the evidence is a marker file on the host and the CLI's own
   log inside the state directory, which is the transferable lesson (a probe that judges
-  `agy` by its JSON envelope alone is reading the wrong stream). Measured 2026-09-01 at
+  `agy` by its JSON envelope alone is reading the wrong stream — and since 2026-09-09
+  `adapters/agy.sh` reads `--output-format stream-json`, which narrows that lesson rather
+  than retiring it: whether *that* stream would show the hook is **unmeasured**, nothing
+  has re-run this leg against it, and the marker file plus the state directory's own log
+  are still the only places the evidence was found). Measured 2026-09-01 at
   `agy 1.1.22` on Linux, leg A of
   `docs/process/probes/2026-09-01-agy-hook-surface/`. The whole directory goes rather
   than the one file **because the measurement is narrower than the surface**: `.agents/`

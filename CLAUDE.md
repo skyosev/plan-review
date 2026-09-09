@@ -20,8 +20,16 @@ complete — read the relevant section before changing behaviour it documents.
 
 The suite is offline and takes seconds: every test drives the runner with fake adapters
 from `tests/fixtures/adapters/` via `PR_ADAPTER_MAP`, so nothing costs tokens. **Budget
-against 550 tests / ~83s on Linux and 542 / 4m34s on Darwin** (this Mac's run-to-run spread
-is ~7s, Linux's ~2.5s; nothing smaller is measurable). The full record — every row of the
+against 568 tests on Linux — the count is exact; the seconds read 73-81s across the day it
+moved and are NOT a budget from that session — and 542 / 4m34s on Darwin** (this Mac's
+run-to-run spread is ~7s, Linux's ~2.5s; nothing smaller is measurable). That ~2.5s is a
+measurement FLOOR and survives the absent seconds budget — `docs/test-timing.md` reasons from
+it in four places, and a change under it is invisible to this method either way. The Linux
+seconds climbed monotonically across that session, which is this file's own "a clock read on a
+loaded host is worse than no clock" firing on the person writing the rule down; the session's
+own load is the likeliest reading and **was not measured**, so treat 568 as the thing that
+regresses visibly and re-time against a same-session `main` control before quoting any second
+figure. The full record — every row of the
 timing table, what each branch cost and why — is `docs/test-timing.md`; read it before
 adding a per-adapter fork or an always-waited probe window. The rules it distils to:
 
@@ -119,6 +127,21 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   claim in the probe records. Reading first narrows the window from the whole review
   to the gap between two adjacent commands; it does not close it, and nothing
   detects the remainder.
+  The same hazard has a probe-shaped half, and it is now a rule: **a probe that reads a
+  binary, a config or a version before its first leg re-reads it after the last.** On
+  2026-09-02 a Mac's `agy` went 1.1.22 → 1.1.24 *between two adjacent commands*, before the
+  first leg, invalidating a static read taken ten minutes earlier — that read was re-run and
+  was identical, so nothing was stranded, which is luck rather than a mechanism. The
+  one-binary-per-probe stamp cannot catch an update that lands before leg one; re-reading
+  after the last leg can. The 2026-09-09 `agy` legs are the first probe run under it, and
+  what they establish is the **pin** and nothing more: 1.1.28 before the first leg and after
+  the last, where the spec written two days earlier expected 1.1.27
+  (`docs/process/probes/2026-09-09-agy-stream-adapter/`). That is a discrepancy against this
+  repo's own prose, not an observed transition — only the 1.1.28 end is measured, no capture
+  *in that probe* holds a 1.1.27, and the move off it is *inferred* from two sentences in the
+  spec.
+  Which is the rule's own shape: re-reading closes the far end of the window and can do
+  nothing about the near one.
 - **Roster precedence**: `PR_ADAPTER_MAP` > config `reviewers` > shipped adapters minus
   the orchestrator. A stated roster is obeyed exactly, including one naming the
   orchestrator's own CLI — that check was removed on purpose (see `lib/roster.sh`).
@@ -164,6 +187,27 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   the runner's deadline, in milliseconds so the inner deadline stays strictly below the
   outer one even at `PR_TIMEOUT_SECS=1`. Without it agy applies its own 5m0s default
   inside ours. The doctor asserts the flag still exists.
+- **`adapters/agy.sh` asserts two things off the stream** it has read since
+  `--output-format stream-json` landed (2026-09-09): `init.permission_mode` equals
+  `always-proceed`, and at least one `run_command` `step_update` reached `state: DONE`.
+  Naming the tool is load-bearing — with the shell tool starved, `agy` fell back to
+  `view_file` and answered correctly under `status: SUCCESS`, so counting any tool step would
+  pass a round that ran no command (`probes/2026-09-03-agy-stream-json/`, leg B, pinned
+  offline as `tests/fixtures/agy/leg-b.ndjson`). `DONE` carries the command's output and no
+  exit status, so the assertion means *a command executed* — a failing command satisfies it,
+  measured 2026-09-09 and pinned as `tests/fixtures/agy/leg-n.ndjson` — and
+  `docs/adapter-contract.md` states that exception. The quota classifier's inputs were
+  narrowed to stderr and the `result` line in the same change, because stdout now carries
+  every tool's output, and both captures are replayed by an EXIT trap. What that trap reaches
+  is every exit **but** the runner's own deadline — every refusal *below* the trap (the ones
+  above it exit before it is installed, with nothing captured yet to lose), every ordinary
+  completion, every hand-run invocation — and on the deadline it usually does not: GNU
+  `timeout` sends two TERMs and the second *can* kill the shell with no trap — shape- and
+  timing-dependent rather than a coin with one side: the trap **ran** 1/10 in this adapter's
+  real shape against **ran** 17/20 with a direct child — so a timed-out round usually lands a
+  log with neither capture. The trap comment in
+  `adapters/agy.sh` carries the measurement and `docs/process/BACKLOG.md` carries what is
+  unbuilt; do not shorten either to "a TERM'd round keeps its diagnostics".
 - **`adapters/claude.sh` echoes `terminal_reason`** from the result frame into the
   failure reason. It does not match against a list of values — probe P4 verified the
   field exists on every frame in 2.1.235 but never reproduced `prompt_too_long`, so

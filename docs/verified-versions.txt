@@ -14,7 +14,14 @@
 #   agent   the mid-run model-switch notice, which Cursor emits only as prose
 #           ("Switched to ..."). Reworded, the adapter would record a model that
 #           did not answer.
-#   agy     the --output-format json envelope: status, response, conversation_id.
+#   agy     the --output-format stream-json lines the adapter asserts on: an `init`
+#           line carrying permission_mode, one step_update per step transition with
+#           tool_name and tool_info, and a `result` line with status, response and
+#           conversation_id (the old envelope, unchanged, on one line of the stream).
+#           adapters/agy.sh refuses to record a review when the init line is missing
+#           or names a mode it did not ask for, and when no run_command step reached
+#           DONE -- so a stream change is a failed round, not a wrong one, which is
+#           what claude's entry below already says about its own init line.
 #   claude  the --output-format stream-json `init` line: model, permissionMode,
 #           claude_code_version. adapters/claude.sh refuses to record a review
 #           when that line is missing or reports a permission mode it did not
@@ -79,14 +86,58 @@ codex 0.150.1
 # reach the reviewer.
 agent 2026.08.25-3e8eec8
 
-# Verified 2026-08-28 by the acceptance matrix. The envelope row is the one this
-# line rests on: a direct call with the adapter's own argv came back with
-# `status`, `response` and `conversation_id` all present, and a smoke-scale round
-# through the adapter parsed the conversation id into meta and the response into
-# the review. Provenance is still weaker than codex's for CONFINEMENT: the early
-# probes established what agy's --sandbox does not confine but never recorded the
-# version they ran against, so nothing here is "the version the escape was
-# measured on". The jail adapters/agy.sh builds is what confines it.
+# Verified 2026-09-09 on Linux by docs/process/probes/2026-09-09-agy-stream-adapter/,
+# four agy legs -- the nonzero-exit leg, the smoke's agy, and the resume gate's two
+# rounds -- with the version read before the first and after the last and identical
+# both times (which is now the rule in CLAUDE.md, and is what the 2026-09-02
+# mid-probe self-update earned):
+#   agy-stream        the shipped invocation is --output-format stream-json since
+#                     2026-09-09. The adapter reads permission_mode off the `init`
+#                     line, counts `run_command` steps in state DONE, and takes
+#                     status, conversation_id and response off the `result` line.
+#                     Every field it reads is unmoved from the 1.1.24 fixtures the
+#                     offline suite replays: the `init` line carries
+#                     cwd/model/permission_mode/tools with permission_mode
+#                     "always-proceed", the `result` line carries
+#                     conversation_id/duration_seconds/num_turns/response/status/usage,
+#                     and every step_update carries conversation_id, state,
+#                     step_index and step_type, with tool_name and tool_info on the
+#                     tool steps. Nothing was re-captured, because nothing
+#                     contradicted the fixtures. ONE field it reads is NOT covered
+#                     by that: none of the four legs produced an ERROR step, so all
+#                     four captures hold zero `state: ERROR` and zero
+#                     tool_info.error, and tool_info.error.message -- read on every
+#                     run by the first_fail selector -- still rests on the 1.1.24
+#                     leg B fixture alone. It fails open (no ERROR step, nothing to
+#                     quote), so the cost is the claim and not a round; whether a
+#                     DENIED tool call even surfaces as an ERROR step is its own
+#                     open item in docs/process/BACKLOG.md.
+#   agy-smoke         one doctor --smoke with agy and claude rostered, 16 passed /
+#                     2 warned / 0 failed with BOTH reviewers answering end to end,
+#                     under a ping that now asks for one `pwd` -- which it must,
+#                     because both adapters fail a reviewer that ran nothing. It is
+#                     also the first doctor --smoke record anywhere in this repo.
+#   agy-resume        resume-leg.sh through the rewritten adapter, observables 0-5
+#                     all green and exit 0 -- six checks, numbered 0 through 5,
+#                     which two files in the process notes miscount as five. This
+#                     is a REGRESSION gate rather than a new measurement: agy
+#                     passed the same six at 1.1.22
+#                     (FINDINGS-2026-08-31-resume-probe.md), and the rewrite is
+#                     what could have taken them away.
+#   agy-nonzero-exit  a `run_command` step whose command exited non-zero reached
+#                     state DONE carrying tool_info keys name/output/parameters --
+#                     the same three a succeeding command carries -- with no
+#                     exit_code, no success and no nested status anywhere in the
+#                     step, and the conversation-level status read SUCCESS anyway.
+#                     So the format cannot express "succeeded" and the assertion
+#                     means "a command executed"; this line is what that rests on.
+# What this line does NOT vouch for. The CONFINEMENT provenance is still weaker
+# than codex's: the early probes established what agy's --sandbox does not confine
+# but never recorded the version they ran against, so nothing here is "the version
+# the escape was measured on", and the jail adapters/agy.sh builds is what confines
+# it. And `denied_actions` -- absent from all four legs, from the CLI's own log/ and
+# brain/ trees and from `agy --help` at 1.1.28 -- is branched on nowhere, so the
+# release-notes claim that upstream added it stays unverified either way.
 #
 # --print-timeout IS passed, and the stale paragraph that used to sit here saying
 # otherwise is gone. adapters/agy.sh derives it from the deadline the execution
@@ -98,9 +149,13 @@ agent 2026.08.25-3e8eec8
 # in agy's help. What is NOT re-measured here is agy HONOURING it: the expiry
 # classification -- exit 1 with .status ERROR and .error "timeout waiting for
 # response" -- was measured once, in probe P1 at agy 1.1.15, and has not been
-# re-provoked live since. The matrix proves only that the installed CLI accepts
-# the argv, since a rejected flag would have failed the envelope row outright.
-agy 1.1.22
+# re-provoked live since. What the four legs above prove is only that the
+# installed CLI accepts the argv -- the adapter passes the flag on every run, so a
+# rejected flag would have failed every one of them outright. (This sentence used
+# to point at the 2026-08-28 matrix and its envelope row, both of which the
+# re-pin deleted; repointing a reference is not a re-measurement, and nothing
+# else in this paragraph changed.)
+agy 1.1.28
 
 # Verified 2026-08-31 on Linux, by the L1 set: the repaired resume leg plus the
 # three rows of the 2026-08-30 return leg
