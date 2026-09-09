@@ -12,7 +12,7 @@
 #     and a denied run still exits 0 with an empty response.
 #   - -p/--print takes the prompt as its VALUE. --input-format stream-json DOES
 #     read a prompt from stdin at 1.1.24, so "agy never reads stdin" -- what this
-#     line said until 2026-09-07 -- was false. What stays true is that the route
+#     line said until 2026-09-09 -- was false. What stays true is that the route
 #     is no FALLBACK: somewhere between 16145 and 24145 bytes on the wire it
 #     drops the prompt SILENTLY -- status SUCCESS, num_turns 1, empty response,
 #     usage all zeros, nothing in either stream, in the CLI's log/ or in the
@@ -131,11 +131,15 @@ fi
 # $work/.agents/hooks.json with a PreInvocation command and agy EXECUTED it, in
 # this adapter's own invocation shape (--sandbox --dangerously-skip-permissions
 # -p), with no prompting and no trace whatsoever on the --output-format json
-# transcript -- the evidence is a marker file on the host and the CLI's own log
-# (agy 1.1.22, Linux, 2026-09-01). Removed rather than sanitised because the
-# measurement is narrower than the surface: .agents/ also carries custom agents
-# and other workspace customisation that no leg touched. adapters/agent.sh:400
-# does the identical thing to .cursor, and adapters/claude.sh:366 to .claude --
+# transcript -- which is the format that leg ran under, and NOT the one this
+# adapter runs since 2026-09-09: nothing has re-measured whether a PreInvocation
+# hook leaves a trace on the STREAM, so what the safety rests on is still the
+# removal below, exactly as before. The evidence was a marker file on the host
+# and the CLI's own log (agy 1.1.22, Linux, 2026-09-01). Removed rather than
+# sanitised because the measurement is narrower than the surface: .agents/ also
+# carries custom agents and other workspace customisation that no leg touched.
+# adapters/agent.sh:400 does the identical thing to .cursor, and
+# adapters/claude.sh:366 to .claude --
 # that one on its BUILT-IN half only, since the bwrap half contains the process
 # instead. This is the third copy of one rule, not a new idea. Adapters source nothing, so it
 # is restated here by convention.
@@ -244,7 +248,7 @@ args=(
   --add-dir "$workdir"
   --model "$PR_AGY_MODEL"
   # stream-json, not json. The `result` line at the end of the stream is the
-  # envelope this adapter parsed until 2026-09-07 -- same three fields, same
+  # envelope this adapter parsed until 2026-09-09 -- same three fields, same
   # names -- and what the stream ADDS is the `init` line's permission_mode and
   # one step_update per step transition. Both assertions at the bottom of this
   # file exist only because of that, and neither costs an extra call: same run,
@@ -288,7 +292,7 @@ err_file="${TMPDIR:-/tmp}/pr-agy-err.$$"
 # In the EXIT trap rather than on the line after the run, because that line is
 # not always reached: on the runner's deadline the adapter is killed where it
 # stands and the statement after the run never runs, while a trap can still fire.
-# Until 2026-09-07 the stderr replay lived there, so a timed-out agy round dropped
+# Until 2026-09-09 the stderr replay lived there, so a timed-out agy round dropped
 # the CLI's own diagnostics.
 #
 # What the trap does NOT reliably survive is the runner's own deadline, and the
@@ -411,7 +415,7 @@ if [[ -z "$response" ]]; then
   #
   # The strings are claude-octopus's, measured by them against a different agy
   # version and a different invocation shape -- their `--print` text mode, and
-  # not even the `--output-format json` this adapter itself ran until 2026-09-07
+  # not even the `--output-format json` this adapter itself ran until 2026-09-09
   # (scripts/helpers/agy-exec.sh:235). So the provenance is two shapes removed
   # from what the classifier reads today, which is the reason to say it rather
   # than to let the tense imply a match. Unverified here,
@@ -420,7 +424,7 @@ if [[ -z "$response" ]]; then
   # claude-octopus).
   # Fixed-string matching, deliberately: their equivalent was a regex and they
   # got it wrong twice in production (their issues #516 and #536).
-  # INPUTS NARROWED 2026-09-07, and the narrowing is the point. This used to grep
+  # INPUTS NARROWED 2026-09-09, and the narrowing is the point. This used to grep
   # the whole of $out_file, which under --output-format json WAS the response and
   # nothing else. Under stream-json stdout also carries every tool_info.output, so
   # a reviewer that ran `cat build.log` on a file saying "upgrade your

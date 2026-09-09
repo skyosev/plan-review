@@ -109,9 +109,13 @@ Every adapter — real or fake — is invoked identically:
   a caller to set a second, disagreeing copy. An adapter run by hand must therefore
   set it itself, and refuse a non-positive-integer value the way `adapters/agy.sh`
   does.
-- **stdin is the contract even when the CLI cannot honour it.** `agy` reads no
-  prompt from stdin — its `-p/--print` is a string flag whose value *is* the
-  prompt — so `adapters/agy.sh` consumes stdin and re-passes it as an argv entry.
+- **stdin is the contract even when the CLI will not carry a prompt this size.** `agy`'s
+  `-p/--print` is a string flag whose value *is* the prompt, and its
+  `--input-format stream-json` route does read stdin — but somewhere between 16145 and 24145
+  bytes on the wire it drops the prompt *silently*, returning `status: SUCCESS` with an empty
+  response and zero `usage`, which is the signature the adapter reports as an auto-deny
+  (`docs/process/probes/2026-09-03-agy-stream-json/`, legs C–K, `agy 1.1.24`). So it is no
+  fallback, and `adapters/agy.sh` consumes stdin and re-passes it as an argv entry.
   That reintroduces the 128 KiB `MAX_ARG_STRLEN` cap this contract exists to
   dodge, for that adapter alone, with no fallback path. It must measure the
   prompt and fail with a clear message above the cap rather than let `execve`
@@ -189,7 +193,17 @@ Every adapter — real or fake — is invoked identically:
   while the kernel denies its write. None of them trips an envelope check,
   because in all four the envelope is honest — the CLI did what it was asked.
   Where an adapter's output format makes tool calls visible, it must assert that
-  at least one command succeeded and fail the reviewer otherwise. The cost is
+  at least one command succeeded and fail the reviewer otherwise.
+  What "something" means is per-format. `adapters/agy.sh` cannot assert "succeeded":
+  `agy --output-format stream-json`'s `run_command` step reaches `state: DONE` carrying the
+  command's `output` and no exit status, so the assertion is *at least one command executed*
+  (`docs/process/probes/2026-09-09-agy-stream-adapter/`, where a `cat` of a missing file
+  reached `DONE` with the same `tool_info` keys a succeeding command carries — `name`,
+  `output`, `parameters` — and the conversation-level `status` read `SUCCESS` anyway). That is
+  the exception, and it is deliberate: a command that ran and exited non-zero has proved the
+  reviewer's shell works, which is what this clause exists to establish. No adapter may close
+  the remaining gap with a text heuristic on a command's output — a parser that decided
+  "succeeded" by reading a build log would be a guess dressed as a check. The cost is
   stated rather than hidden: a review that legitimately needed no command fails
   too. That is the intended direction — `lib/prompt.sh` tells every reviewer to
   run things, and a confident review that checked nothing is worse than a missing

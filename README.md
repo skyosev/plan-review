@@ -833,13 +833,23 @@ write-confined, each by a different thing:
   ceiling, a sandbox that starts and denies every call, a command needing an approval a headless
   run cannot grant, and a command that runs while the kernel denies its write. So the adapter
   asserts, on **both** halves, that at least one Bash tool call succeeded, and fails the reviewer
-  otherwise with the first failing tool result quoted into `round.json`'s `detail`. A review that
-  genuinely needed no command fails too; that is the intended direction.
+  otherwise with the first failing tool result quoted into `round.json`'s `detail`. `agy` asserts
+  the same thing in the shape its own stream offers it: at least one `run_command` `step_update`
+  that reached `state: DONE`, with the first `run_command` error quoted into `detail` the same
+  way. Its guarantee is one word narrower, and the word is measured rather than conceded — a
+  `DONE` step carries the command's `output` and no exit status, so a `cat` of a missing file
+  reaches it exactly as a successful command does, under a conversation-level `status` of
+  `SUCCESS` either way (`docs/process/probes/2026-09-09-agy-stream-adapter/`, `agy 1.1.28`). For
+  `agy`, then, the guarantee is that a command *executed*. A review that genuinely needed no
+  command fails either reviewer too; that is the intended direction.
 
 `agy` runs with `--dangerously-skip-permissions`, because headless tool calls are
 auto-denied otherwise and a reviewer that cannot run commands cannot check the plan's claims.
 The jail is what makes that acceptable — which is exactly why `claude` drops the flag on the
 half that has no jail, and why the two flags and the two barriers must always be read as a pair.
+The flag is now asserted rather than assumed: the stream's `init` line reports
+`permission_mode`, and the adapter discards the review unless it reads `always-proceed` — the
+same move `claude`'s `permissionMode` check makes.
 
 **Process containment is a separate axis from writes.** A reviewer that spawns a
 background process can leave it running after the round has returned, still holding the

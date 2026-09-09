@@ -7,26 +7,29 @@ CLIs make possible.
 
 **Scope, stated once so no row is read wider than it is.** Every claim here is about
 the invocation the shipped adapter builds — `codex exec --output-last-message`,
-`agent -p --output-format text`, `agy -p --output-format json`,
+`agent -p --output-format text`, `agy -p --output-format stream-json`,
 `claude -p --output-format stream-json --verbose`. A CLI may well offer a feature in
 some other mode; unless a row says otherwise, nobody here has run that mode, and a
 capability nobody ran is not a capability this repo knows about.
 
 Versions the rows were measured at are the pins in `docs/verified-versions.txt`:
-`codex 0.150.1`, `agent 2026.08.25-3e8eec8`, `agy 1.1.22`, `claude 2.1.251` — with one
+`codex 0.150.1`, `agent 2026.08.25-3e8eec8`, `agy 1.1.28`, `claude 2.1.251` — with one
 row excepted. §3's "the CLI's own `--sandbox` was measured inert" predates the pin and
 `docs/verified-versions.txt` disclaims it in as many words: the early probes established
 what that flag does not confine but **never recorded the version they ran against**, so
-that cell is not "measured at 1.1.22" and nothing here should be read as saying it is.
+that cell is not "measured at 1.1.28" and nothing here should be read as saying it is.
 It is also the one row nothing rests on — the jail `adapters/agy.sh` builds is what
 confines agy, not the flag.
 
-**A second exception, and this one is drift rather than a gap in the record.** §9's three
-closed-route bullets for macOS `agy` were measured at **`agy 1.1.24`**, not the pinned
-1.1.22: the binary self-updated mid-probe on 2026-09-02, between the free legs and the paid
-ones. The pin is deliberately not bumped — its own convention is to re-run the probes first —
-so those bullets say 1.1.24 where they stand, and `docs/process/BACKLOG.md` carries the
-re-pin as Actionable. Everything else about `agy` here is still 1.1.22's.
+**A second exception, and this one is drift inside the record rather than a gap in it.**
+§9's three closed-route bullets for macOS `agy` were measured at **`agy 1.1.24`**, and so
+was §2's account of the stream: 1.1.24 is where the 2026-09-03 probe ran, the binary having
+self-updated mid-probe on 2026-09-02. The pin has since moved past both, to 1.1.28, because
+that is the version the 2026-09-09 acceptance legs exercised — and those legs re-read every
+stream field the adapter parses and found none of them moved, which is what licenses reading
+§2 at the pin. The macOS bullets have no such re-reading: they say 1.1.24 where they stand,
+and a Mac is what it would take to move them. Everything else about `agy` here is still
+1.1.22's, from the 2026-08-28 matrix.
 
 ## How to read the marks
 
@@ -64,28 +67,30 @@ Nothing in this column group reaches `round.json`. See §7.
 | --- | --- | --- | --- | --- |
 | Tokens used | **offered** — `tokens used N` on the banner | **absent** | **offered** — `.usage` object | **offered** — `.usage` on the result frame |
 | Prompt-cache counters | **unmeasured** | **unmeasured** | **offered** — `.usage.cache_read_tokens` | **offered** — `cache_read_input_tokens`, `cache_creation_input_tokens`, and a 5m/1h split |
-| Cost | **unmeasured** | **absent** | **absent** — no field in the envelope | **offered** — `total_cost_usd`, plus per-model `costUSD` |
-| Context window size | **unmeasured** | **absent** | **absent** — no field in the envelope | **offered** — `modelUsage[].contextWindow` |
+| Cost | **unmeasured** | **absent** | **absent** — no field on the `result` line | **offered** — `total_cost_usd`, plus per-model `costUSD` |
+| Context window size | **unmeasured** | **absent** | **absent** — no field on the `result` line | **offered** — `modelUsage[].contextWindow` |
 | Context *remaining* | **absent** | **absent** | **absent** | **absent** |
 | Turn count | **unmeasured** | **absent** | **offered** — `.num_turns` | **offered** — `.num_turns` |
 | Wall-clock duration | **unmeasured** | **absent** | **offered** — `.duration_seconds` | **offered** — `.duration_api_ms` |
-| Denied tool calls | **absent** | **absent** (a denial shows as exit 2) | **absent** | **used** — `.permission_denials`, surfaced as the round's `detail` |
-| Per-tool-call visibility | **absent** | **absent** | **absent** | **used** — the stream's `tool_use` / `tool_result` pairs |
+| Denied tool calls | **absent** | **absent** (a denial shows as exit 2) | **used** — `tool_info.error.message` on an `ERROR` step, quoted into the round's `detail` | **used** — `.permission_denials`, surfaced as the round's `detail` |
+| Per-tool-call visibility | **absent** | **absent** | **used** — one `step_update` per step transition; `run_command` steps in `DONE` are counted | **used** — the stream's `tool_use` / `tool_result` pairs |
 | Why the session ended | **absent** | **absent** | partial — `.status` / `.error` | **used** — `.terminal_reason`, echoed verbatim |
 | Compaction | **unmeasured** | **unmeasured** | **unmeasured** | **unmeasured** |
 
-**Four of `agy`'s cells above are a property of the format this repo chose, not of the
-CLI, and that is now measured rather than assumed** (`agy 1.1.24`, Linux, 2026-09-03,
-`docs/process/probes/2026-09-03-agy-stream-json/`). Under `--output-format stream-json`
-the same run emits NDJSON keyed on `event`: an `init` line (`conversation_id`, model,
-cwd, the tool list, and **`permission_mode`** — an assertable counterpart to claude's
-`permissionMode` that this table records `agy` as having nowhere), one `step_update` per
-step transition carrying `step_type`, `tool_name`, `tool_info.parameters`,
-`tool_info.output` on `DONE` and `tool_info.error` on `ERROR`, plus per-step
-`duration_seconds` and `usage` — and finally a `result` line identical in shape to the
-envelope the adapter already parses. So per-tool-call visibility, denied tool calls and
-per-step timing are **offered there** and `absent` only here. The rows stay as they are
-because they say what the shipped invocation gets; §10 is where the consequence lands.
+**The format this repo chose for `agy` is the stream now, and two of the cells above moved
+with it** (measured at `agy 1.1.24`, Linux, 2026-09-03,
+`docs/process/probes/2026-09-03-agy-stream-json/`, and re-read unchanged in every field the
+adapter parses at 1.1.28 on 2026-09-09, `docs/process/probes/2026-09-09-agy-stream-adapter/`).
+`--output-format stream-json` emits NDJSON keyed on `event`: an `init` line
+(`conversation_id`, model, cwd, the tool list, and **`permission_mode`** — the assertable
+counterpart to claude's `permissionMode`), one `step_update` per step transition carrying
+`step_type`, `tool_name`, `tool_info.parameters`, `tool_info.output` on `DONE` and
+`tool_info.error` on `ERROR`, plus per-step `duration_seconds` and `usage` — and finally a
+`result` line identical in shape to the envelope the adapter used to parse whole.
+`adapters/agy.sh` runs that invocation and reads it, so denied tool calls and per-tool-call
+visibility are **used** where they said `absent`, and §10 is where the two assertions they
+pay for land. Per-step `duration_seconds` and `usage` stay **offered** and unread: the rows
+say what the shipped invocation gets, and nothing here counts a step's timing.
 
 The same probe measured the stream-input route the §1 cell points at: the prompt does
 arrive on stdin as `{"event":"user","message":{"content":"…"}}` under
@@ -333,9 +338,10 @@ matrix because it decides whether a round is recorded at all.
 | --- | --- | --- |
 | The sandbox is the expected one | codex | output produced under a sandbox we did not ask for |
 | The effort is the one requested | codex | a silent backend-side downgrade recorded as the pin |
-| The `init` line exists and names the expected mode | claude | the stream envelope moving, or a permission mode we did not ask for |
-| At least one Bash tool call succeeded | claude | four measured routes to a confident, empty, `status: ok` review |
-| The envelope carries a response | agy | the auto-deny signature, which exits 0 with an empty response |
+| The `init` line exists and names the expected mode | agy, claude | the stream envelope moving, or a permission mode we did not ask for |
+| At least one Bash tool call came back without an error | claude | four measured routes to a confident, empty, `status: ok` review |
+| At least one `run_command` step reached `DONE` | agy | the same four routes, in the shape agy's stream shows them |
+| The `result` line carries a response | agy | the auto-deny signature, which exits 0 with an empty response |
 | A model swap is recorded as `X (requested: Y)` | agent, claude | `round.json` naming a model that never answered |
 
 The ran-a-command assertion has a stated cost rather than a hidden one: a review that
@@ -343,25 +349,26 @@ legitimately needed no command fails its reviewer too. That is the intended dire
 `lib/prompt.sh` tells every reviewer to run things, and a confident review that checked
 nothing is worse than a missing one.
 
-**`agy` has no counterpart to it, and that is a structural gap rather than an omission.**
-Read its row above narrowly: "the envelope carries a response" catches an *empty* response,
-and nothing more. On 2026-09-02 a leg came back `rc=0`, `status: SUCCESS`, `num_turns: 1`
-and a real 12-character response having run **no tool call at all** — every attempt denied,
-four times at the same path, with the evidence in neither stream nor envelope but in `agy`'s
-own brain store (`docs/process/probes/2026-09-01-agy-macos-routes/`). §2 is why the
-assertion cannot be built the way claude's is *in the format this repo runs*: `agy` reports
-**absent** there for both denied tool calls and per-tool-call visibility, so there is nothing
-to count. **That is now known to be the format's limit and not the CLI's** — under
-`--output-format stream-json` the tool steps are on the stream, failures included, so the
-assertion is **buildable and unbuilt** (`probes/2026-09-03-agy-stream-json/`, `agy 1.1.24`,
-Linux; the cost is that the adapter would parse a stream instead of one object, priced in
-`docs/process/BACKLOG.md`). The same probe fixed the assertion's *shape*: with the shell
-tool starved, `agy` fell back to `view_file`, read the file and answered correctly under
-`status: SUCCESS`, so counting *any* tool step would pass a round that ran no command. The
-counterpart to claude's is "at least one `run_command` step reached `state: DONE`" — naming
-the tool, exactly as claude's names `Bash`. Nothing is broken today — that leg was a deliberately starved macOS profile, and on
-Linux `agy`'s tool layer has the private state directory it needs — but anyone who reads
-this table as "all four are covered" is reading one row wider than it goes.
+**`agy`'s counterpart is built, and it is narrower than the wording above by one word.**
+`adapters/agy.sh` requires at least one `step_update` whose `step_type` is `tool`, whose
+`tool_name` is `run_command` and whose `state` is `DONE`. Naming the tool is measured rather
+than tidy: leg B of `probes/2026-09-03-agy-stream-json/` starved the shell tool the way the
+2026-09-02 macOS profile did, and `agy` fell back to `view_file`, read the canary and
+answered correctly under `status: SUCCESS`, so counting *any* tool step would pass a round
+that ran no command. What `DONE` proves is that the shell layer launched a command and the
+step finished, and the nonzero-exit leg of `probes/2026-09-09-agy-stream-adapter/` is what
+bounds it: a `cat` of a missing file reached `DONE` carrying `tool_info` keys
+`name`/`output`/`parameters` — the same three a succeeding command carries — with no
+`exit_code`, no `success` and no nested `status` anywhere in the step, while the
+conversation-level `status` read `SUCCESS` regardless. So the format cannot express
+"succeeded", `agy`'s assertion means *a command executed*, and `docs/adapter-contract.md`
+gained an exception naming it rather than the check being bent towards a field that is not
+there. The row this replaces caught less: "the envelope carries a response" catches an
+*empty* response and nothing more, which is how the 2026-09-02 leg that came back `rc=0`,
+`status: SUCCESS`, `num_turns: 1` and a real 12-character response having run **no tool call
+at all** walked past it — every attempt denied, four times at the same path, with the
+evidence in neither stream nor envelope but in `agy`'s own brain store
+(`docs/process/probes/2026-09-01-agy-macos-routes/`).
 
 ---
 

@@ -881,7 +881,7 @@ pr_doctor_check_agy_auth() {
   return 1
 }
 
-# agy carries a deadline of its own INSIDE the runner's, and since 2026-09-07 the
+# agy carries a deadline of its own INSIDE the runner's, and since 2026-09-09 the
 # adapter depends on a second thing this help text names. A renamed or dropped
 # --print-timeout makes agy fall back to its own 5m0s and cut long reviews short
 # with no signal; a dropped stream-json OUTPUT mode takes the init line and the
@@ -1369,7 +1369,7 @@ pr_doctor_check_rounds() {
 # fail a reviewer that ran nothing, so a ping that forbade tools would be a ping
 # those two adapters REJECT, and "the one check that exercises the same path a
 # round does" would stop being true. That contradiction shipped between claude's
-# assertion landing and 2026-09-07; it was found by reading the code, and no
+# assertion landing and 2026-09-09; it was found by reading the code, and no
 # doctor --smoke run is on record from that window.
 # `pwd` rather than `true`: it leaves a line in the log that proves which
 # directory the reviewer was standing in, which is the other thing a transport

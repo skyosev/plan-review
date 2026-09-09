@@ -11,7 +11,7 @@ source "$PR_ROOT/tests/helpers.sh"
 # --output-format stream-json (probes/2026-09-03-agy-stream-json/raw/A.out, kept
 # verbatim as tests/fixtures/agy/leg-a.ndjson): an `init` line, one `step_update`
 # per step transition, and a `result` line whose `.result` is the json envelope
-# the adapter parsed until 2026-09-07. The run_command step that reaches DONE is
+# the adapter parsed until 2026-09-09. The run_command step that reaches DONE is
 # not decoration: every success case needs one, because it is what the adapter
 # asserts. The fifth argument is how a case turns the OTHER assertable field --
 # the init line's permission_mode -- off. There is no knob for the step itself:
@@ -763,7 +763,7 @@ LEG
 
 # Both captures must reach the log, on the streams they came from, when the
 # adapter is killed where it stands rather than allowed to run its last statement.
-# Until 2026-09-07 the stderr replay lived on the line after the run, which a
+# Until 2026-09-09 the stderr replay lived on the line after the run, which a
 # killed adapter never reaches, so those diagnostics were lost; the EXIT trap is
 # what this pins. What it does NOT pin is the runner's own deadline -- see below,
 # and adapters/agy.sh's trap, which carries the measurement.
