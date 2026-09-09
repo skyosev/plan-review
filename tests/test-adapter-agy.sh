@@ -741,11 +741,12 @@ LEG
   assert_contains "$(cat "$d/reason.txt")" "quota reached" "and the diagnosis is the account"
 }
 
-# The kernel's deadline sends TERM, and bash reaches the EXIT trap only after the
-# foreground CLI has died (measured 2026-09-07, rc=143) — never the statement
-# after the run. Until then the stderr replay lived there, so a timed-out round
-# lost the CLI's own diagnostics. Both captures must survive, on the streams they
-# came from.
+# Both captures must reach the log, on the streams they came from, when the
+# adapter is killed where it stands rather than allowed to run its last statement.
+# Until 2026-09-07 the stderr replay lived on the line after the run, which a
+# killed adapter never reaches, so those diagnostics were lost; the EXIT trap is
+# what this pins. What it does NOT pin is the runner's own deadline -- see below,
+# and adapters/agy.sh's trap, which carries the measurement.
 #
 # ONE TERM, delivered to the adapter's own process GROUP, and deliberately NOT
 # through `timeout -s TERM`: measured 2026-09-09 on bash 5.2.37, a shell that
@@ -764,15 +765,19 @@ LEG
 #
 # What this case therefore does NOT cover, stated because the gap is the
 # interesting part: the runner's real deadline, where the double signal usually
-# skips the trap and a timed-out round lands a log with neither capture.
-# adapters/agy.sh's trap carries that measurement beside the trap itself.
+# skips the trap and a timed-out round lands a log with neither capture. No caller
+# in this repo sends the single TERM this case does -- lib/adapter-exec.sh's
+# deadline is that two-TERM `timeout` and its own sweep is `kill -KILL` after
+# `wait`, which reaches no trap at all. So what this pins is the trap itself, and
+# the shape is the one that can pin it deterministically rather than the one the
+# runner uses. adapters/agy.sh's trap carries the same measurement beside the code.
 #
 # `set -m` is what gives the background adapter a group of its own, and stdin
 # comes from a FILE rather than a pipeline because with job control on a
 # pipeline's group leader is its FIRST process -- `kill -- -$!` would then
 # address the wrong group. Costs ~0.1s: the handshake is the stub's marker file,
 # the way pr_test_hold_lock's is, not a fixed sleep.
-test_both_captures_are_replayed_when_the_deadline_kills_the_adapter() {
+test_both_captures_are_replayed_when_a_single_group_term_kills_the_adapter() {
   local d log pid i; d="$(pr_test_tmpdir)"; install_stubs "$d/bin"; mkdir -p "$d/work"
   cat > "$d/bin/agy" <<STUB
 #!/usr/bin/env bash

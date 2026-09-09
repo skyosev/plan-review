@@ -305,14 +305,20 @@ err_file="${TMPDIR:-/tmp}/pr-agy-err.$$"
 # foreground child. A single TERM, to the group or to the shell alone, ran it 5/5.
 # So a timed-out agy round will USUALLY land a log with neither capture in it.
 #
-# The trap is still strictly better than the post-run placement it replaced: every
-# non-deadline exit reaches it, refusals included, and so does a single-TERM group
-# kill such as lib/adapter-exec.sh's own sweep. It buys nothing on the double
-# signal, and nothing here can -- a shell that dies from SIG_DFL runs no code.
-# tests/test-adapter-agy.sh's case measures the SINGLE-TERM group kill, and says so:
-# that is deliberately not the shape the runner sends, because a test built on the
-# runner's shape would be measuring coreutils' signalling and would pass or fail at
-# random.
+# The trap is still strictly better than the post-run placement it replaced, and
+# on ONE ground rather than two: every exit that is not the runner's deadline
+# reaches it -- every refusal above, every ordinary completion, every hand-run
+# invocation. Nothing in this repo sends the single TERM that would also reach it.
+# lib/adapter-exec.sh is the only caller and it has no such path: the deadline is
+# `timeout --kill-after=… "$deadline"` (the two-TERM shape above), and the group
+# sweep at lib/adapter-exec.sh:306 is `kill -KILL -- "-$pid"` fired AFTER `wait`
+# has already reaped the adapter -- SIGKILL runs no EXIT trap under any
+# circumstances, and there is nothing left alive to run one for. So the trap buys
+# nothing on the runner's deadline, and nothing here can: a shell that dies from
+# SIG_DFL or SIGKILL runs no code. tests/test-adapter-agy.sh's case measures a
+# single group TERM and is named for it -- a shape no caller in this repo produces,
+# chosen because a test built on the runner's shape would be measuring coreutils'
+# signalling and would pass or fail at random.
 #
 # What this does NOT buy, stated rather than implied: the log fills at exit, so
 # there is no live stream to watch during a stall, and a SIGKILL before or during

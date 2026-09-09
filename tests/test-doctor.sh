@@ -580,12 +580,22 @@ test_a_moved_print_timeout_flag_fails() {
 }
 
 # The case a whole-help substring match would miss, which is why the check reads
-# the --output-format LINE: at 1.1.27 the --input-format line names stream-json
-# too, so `stream-json` appearing SOMEWHERE proves nothing about output support.
+# the --output-format LINE: the --input-format line names stream-json too, so
+# `stream-json` appearing SOMEWHERE proves nothing about output support.
+#
+# The --input-format line here is the LIVE 1.1.28 wording, read off `agy --help`
+# on 2026-09-09, and the version matters: at 1.1.28 that line's prose contains the
+# literal string `--output-format stream-json` ("it requires --output-format
+# stream-json"). So it is not merely a stream-json mention -- it is a line an
+# unanchored first-mention read PICKS as the option-table line, and then reads
+# stream-json off. Carried 1.1.27's shorter sentence until this round, which
+# contained no `--output-format` at all and so left the anchor untested: the case
+# passed with the anchor and without it. This wording is what makes it a
+# regression net for `^[[:space:]]*--output-format`.
 test_stream_json_only_under_input_format_fails() {
   local d; d="$(pr_test_tmpdir)"
   pr_test_mkstub "$d/bin/agy" \
-    'printf "  --input-format                  Input format for print mode (text, stream-json). stream-json reads one NDJSON message per line from stdin\n  --output-format                 Output format for print mode (text, json) (default text)\n  --print-timeout                 Timeout for print mode wait (default 5m0s)\n"'
+    'printf "  --input-format                  Input format for print mode (text, stream-json). stream-json reads one NDJSON message per line from stdin and runs a turn for each; it requires --output-format stream-json (default text)\n  --output-format                 Output format for print mode (text, json) (default text)\n  --print-timeout                 Timeout for print mode wait (default 5m0s)\n"'
   stub_timeout "$d/bin"
   local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_help_flags')"
   assert_contains "$out" "no longer offers stream-json" "reads the right line"
