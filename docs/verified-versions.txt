@@ -103,7 +103,15 @@ agent 2026.08.25-3e8eec8
 #                     and every step_update carries conversation_id, state,
 #                     step_index and step_type, with tool_name and tool_info on the
 #                     tool steps. Nothing was re-captured, because nothing
-#                     contradicted the fixtures.
+#                     contradicted the fixtures. ONE field it reads is NOT covered
+#                     by that: none of the four legs produced an ERROR step, so all
+#                     four captures hold zero `state: ERROR` and zero
+#                     tool_info.error, and tool_info.error.message -- read on every
+#                     run by the first_fail selector -- still rests on the 1.1.24
+#                     leg B fixture alone. It fails open (no ERROR step, nothing to
+#                     quote), so the cost is the claim and not a round; whether a
+#                     DENIED tool call even surfaces as an ERROR step is its own
+#                     open item in docs/process/BACKLOG.md.
 #   agy-smoke         one doctor --smoke with agy and claude rostered, 16 passed /
 #                     2 warned / 0 failed with BOTH reviewers answering end to end,
 #                     under a ping that now asks for one `pwd` -- which it must,

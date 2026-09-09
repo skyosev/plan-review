@@ -201,9 +201,12 @@ round would send one — same sandbox layout, same stdin contract, same process-
 descendant sweep — under a short deadline (`PR_SMOKE_TIMEOUT_SECS`, default 90s) instead of the round's. It
 exists because the auth checks hit status endpoints, and the exec path is different code in a
 vendor's CLI: it can hang on an interactive login prompt the auth check never reaches, or die on
-flag drift the version check only warns about. Alive means the adapter produced a review file, the
-same rule the round judges by; a dead reviewer FAILs with the adapter's own reason and its work
-directory kept for diagnosis (`PR_KEEP_SANDBOX=1` keeps the passing ones too). It contradicts
+flag drift the version check only warns about. The prompt is **run `pwd`, then reply `SMOKE OK`**,
+and it asks for a command rather than only a reply because it has to: `adapters/claude.sh` and
+`adapters/agy.sh` both fail a reviewer that ran nothing, so a ping that ran no command would be
+rejected by the very adapters it is checking. The reply's *content* is never asserted. Alive
+means the adapter produced a review file, the same rule the round judges by; a dead reviewer
+FAILs with the adapter's own reason and its work directory kept for diagnosis (`PR_KEEP_SANDBOX=1` keeps the passing ones too). It contradicts
 `--offline` by definition, so the two together are refused.
 
 `--show-config` is the narrow companion to all that: it resolves and validates exactly as a round
@@ -616,6 +619,24 @@ because clearing it needs the same store that just refused a write.
 say why. Passed explicitly and strictly inside the outer deadline, its expiry arrives
 as a named error the adapter reports (`agy: print timeout expired`) instead of as a
 SIGKILL. The cost is a tenth of agy's budget.
+
+**agy diagnoses an exhausted account, and reads two streams to do it.** An empty response
+comes back either from a quota refusal or from the auto-deny signature, and the two get
+different messages. Since 2026-09-09 the strings are matched on **stderr and the stream's
+`result` line only** — never on stdout, which under `--output-format stream-json` also carries
+the output of every command the reviewer ran, so a reviewer that `cat`ed a build log saying
+"upgrade your subscription" would otherwise be reported as an exhausted account. The cost of
+that narrowing is stated in the adapter: a refusal that arrived anywhere else would now be
+reported as auto-deny instead, and no measurement says agy puts one there.
+
+**agy's own stdout and stderr reach `log-agy.txt` at exit, not while it runs.** The adapter
+captures both to files — a pipe was measured hanging it — and replays them from an `EXIT`
+trap. So there is nothing live to watch during a stall, and a round killed by
+`PR_TIMEOUT_SECS` **usually** lands a log with neither capture in it: GNU `timeout` sends two
+TERMs, and the second can kill the shell before any trap runs (measured 1/10 with the trap
+running, in this adapter's real shape). Every other exit replays both: an ordinary round, a
+hand-run invocation, and any refusal the adapter makes after it starts the CLI — its earlier
+argument and `bwrap` refusals exit before the trap exists, with nothing captured yet to lose.
 
 **claude says why a session ended.** When a claude round produces no review, the
 recorded reason carries the `terminal_reason` claude reported — `budget_exhausted`

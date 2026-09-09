@@ -888,9 +888,14 @@ pr_doctor_check_agy_auth() {
 # step_updates with it, and with them the permission_mode and ran-a-command
 # assertions. Offline: `agy --help` makes no network call.
 #
-# stream-json is matched on the --output-format LINE, not anywhere in the help: at
-# 1.1.27 the --input-format and --json-schema lines name it too, so a whole-help
-# substring would still pass after output support vanished. Builtins only, per
+# stream-json is matched on the --output-format LINE, not anywhere in the help: the
+# --input-format and --json-schema lines name it too, so a whole-help substring
+# would still pass after output support vanished. At 1.1.28 that is sharper than a
+# mention -- the --input-format line's own prose contains the LITERAL string
+# `--output-format stream-json` ("it requires --output-format stream-json"), so an
+# unanchored read does not merely find the word somewhere: it PICKS that line as
+# the option-table line and reads stream-json off it. The anchor is load-bearing
+# rather than tidy, and tests/test-doctor.sh pins that live wording as its net. Builtins only, per
 # this file's rule -- one walk over the lines, no grep.
 #
 # The line it takes is an OPTION-TABLE line -- indentation, then the flag -- and

@@ -613,7 +613,7 @@ test_a_synopsis_line_naming_output_format_does_not_shadow_the_option_table() {
   stub_timeout "$d/bin"
   local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_help_flags')"
   assert_contains "$out" "still offers stream-json" "read the option table, not the synopsis"
-  assert_contains "$out" "counts 2 0 0" "two passes, as on any healthy 1.1.27"
+  assert_contains "$out" "counts 2 0 0" "two passes, as on any healthy 1.1.28"
 }
 
 # No --output-format line at all is the same failure, and the info line has

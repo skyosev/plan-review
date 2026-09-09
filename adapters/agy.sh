@@ -311,8 +311,11 @@ err_file="${TMPDIR:-/tmp}/pr-agy-err.$$"
 #
 # The trap is still strictly better than the post-run placement it replaced, and
 # on ONE ground rather than two: every exit that is not the runner's deadline
-# reaches it -- every refusal above, every ordinary completion, every hand-run
-# invocation. Nothing in this repo sends the single TERM that would also reach it.
+# reaches it -- every refusal BELOW this point, every ordinary completion, every
+# hand-run invocation. The refusals ABOVE it (PR_TIMEOUT_SECS, PR_AGY_MODEL, a
+# missing bwrap, the argv cap, the state-dir mkdir, the .agents check) exit before
+# the trap is installed and lose nothing by it: $out_file and $err_file do not
+# exist yet, so there is no capture for a trap to replay. Nothing in this repo sends the single TERM that would also reach it.
 # lib/adapter-exec.sh is the only caller and it has no such path: the deadline is
 # `timeout --kill-after=… "$deadline"` (the two-TERM shape above), and the group
 # sweep at lib/adapter-exec.sh:306 is `kill -KILL -- "-$pid"` fired AFTER `wait`
@@ -429,9 +432,23 @@ if [[ -z "$response" ]]; then
   # nothing else. Under stream-json stdout also carries every tool_info.output, so
   # a reviewer that ran `cat build.log` on a file saying "upgrade your
   # subscription" and then hit a truncated stream would be reported as an
-  # exhausted account. The inputs are therefore stderr -- where octopus measured
-  # the refusal -- and the result line, which is where agy's own status and error
-  # text land. Nothing a tool printed is read.
+  # exhausted account. The inputs are therefore stderr and the result line,
+  # which is where agy's own status and error text land. Nothing a tool printed is
+  # read.
+  # WHICH STREAM octopus saw the refusal on is not in the record: the only
+  # provenance is "measured against a different agy version in a different output
+  # mode" (docs/process/specs/2026-08-19-borrowing-from-multica.md:883), and that
+  # mode is --print TEXT, where the model's own answer goes to STDOUT. So this pair
+  # is a decision about what must NOT be read, not a reconstruction of where the
+  # string was once seen -- saying otherwise would be a citation standing in for a
+  # measurement, which is the thing the comments in this repo refuse to do.
+  # The cost, stated rather than left to the diff: main grepped the whole of both
+  # streams, so a refusal printed as bare text on stdout, or one on a stream cut
+  # before the result line, is no longer matched here and falls to the else branch
+  # -- reported as the auto-deny signature, which would be a WRONG diagnosis, the
+  # one thing this classifier exists to avoid. Neither shape is measured for agy in
+  # the mode we run; reading tool output, which IS measured, would misdiagnose a
+  # quota-shaped string a reviewer merely cat'ed. That trade is the narrowing.
   if { cat "$err_file"; printf '%s\n' "$result_json"; } \
        | grep -qF -e 'individual quota reached' -e 'quota reached.' \
                   -e 'upgrade your subscription' 2>/dev/null; then

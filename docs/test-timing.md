@@ -118,7 +118,7 @@ that budget**, and how they were lost is the point. The readings were ~73-74s re
 Tasks 01-02 ran, then 75.0s, 75.6s, 76.9s, 78.2s and 81.2s in Task 03's session with 77s in
 its review -- climbing MONOTONICALLY. **The readings are the measurement; the cause is not.**
 That session was spawning live `doctor` probes between suite runs, which is the likeliest
-reading of the climb and is exactly what the 2026-08-31 row two paragraphs below would have
+reading of the climb and is exactly what the 2026-08-31 row in the paragraph below would have
 settled with a `/proc/loadavg` quote -- no load figure was recorded here, and by the time the
 pattern was visible the runs were over. A later run on a quieter host came in at 73.9s, at the
 bottom of the band, which is consistent with load and is n=1 rather than proof. So: every

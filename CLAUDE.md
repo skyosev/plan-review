@@ -199,11 +199,13 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   `docs/adapter-contract.md` states that exception. The quota classifier's inputs were
   narrowed to stderr and the `result` line in the same change, because stdout now carries
   every tool's output, and both captures are replayed by an EXIT trap. What that trap reaches
-  is every exit **but** the runner's own deadline — every refusal, every ordinary completion,
-  every hand-run invocation — and on the deadline it usually does not: GNU `timeout` sends two
-  TERMs and the second *can* kill the shell with no trap — shape- and timing-dependent rather
-  than a coin with one side, 1/10 in this adapter's real shape against 17/20 with a direct
-  child — so a timed-out round usually lands a log with neither capture. The trap comment in
+  is every exit **but** the runner's own deadline — every refusal *below* the trap (the ones
+  above it exit before it is installed, with nothing captured yet to lose), every ordinary
+  completion, every hand-run invocation — and on the deadline it usually does not: GNU
+  `timeout` sends two TERMs and the second *can* kill the shell with no trap — shape- and
+  timing-dependent rather than a coin with one side: the trap **ran** 1/10 in this adapter's
+  real shape against **ran** 17/20 with a direct child — so a timed-out round usually lands a
+  log with neither capture. The trap comment in
   `adapters/agy.sh` carries the measurement and `docs/process/BACKLOG.md` carries what is
   unbuilt; do not shorten either to "a TERM'd round keeps its diagnostics".
 - **`adapters/claude.sh` echoes `terminal_reason`** from the result frame into the

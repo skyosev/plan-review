@@ -13,9 +13,13 @@ some other mode; unless a row says otherwise, nobody here has run that mode, and
 capability nobody ran is not a capability this repo knows about.
 
 Versions the rows were measured at are the pins in `docs/verified-versions.txt`:
-`codex 0.150.1`, `agent 2026.08.25-3e8eec8`, `agy 1.1.28`, `claude 2.1.251` — with one
-row excepted. §3's "the CLI's own `--sandbox` was measured inert" predates the pin and
-`docs/verified-versions.txt` disclaims it in as many words: the early probes established
+`codex 0.150.1`, `agent 2026.08.25-3e8eec8`, `agy 1.1.28`, `claude 2.1.251` — with the
+exceptions the next three paragraphs name, every one of them `agy`'s, because `agy` is the
+pin this repo moved most recently.
+
+**The first exception is a single row.** §3's "the CLI's own `--sandbox` was measured
+inert" predates the pin and `docs/verified-versions.txt` disclaims it in as many words:
+the early probes established
 what that flag does not confine but **never recorded the version they ran against**, so
 that cell is not "measured at 1.1.28" and nothing here should be read as saying it is.
 It is also the one row nothing rests on — the jail `adapters/agy.sh` builds is what
@@ -25,11 +29,19 @@ confines agy, not the flag.
 §9's three closed-route bullets for macOS `agy` were measured at **`agy 1.1.24`**, and so
 was §2's account of the stream: 1.1.24 is where the 2026-09-03 probe ran, the binary having
 self-updated mid-probe on 2026-09-02. The pin has since moved past both, to 1.1.28, because
-that is the version the 2026-09-09 acceptance legs exercised — and those legs re-read every
-stream field the adapter parses and found none of them moved, which is what licenses reading
-§2 at the pin. The macOS bullets have no such re-reading: they say 1.1.24 where they stand,
-and a Mac is what it would take to move them. Everything else about `agy` here is still
-1.1.22's, from the 2026-08-28 matrix.
+that is the version the 2026-09-09 acceptance legs exercised — and those legs re-read the
+stream fields the adapter parses and found none of them moved, which is what licenses reading
+§2 at the pin — bar one field no leg exercised, named under §2's own table. The macOS
+bullets have no such re-reading: they say 1.1.24 where they stand, and a Mac is what it
+would take to move them.
+
+**And the rest of `agy`'s rows were measured at `agy 1.1.22`**, from the 2026-08-28 matrix —
+which is the header above read strictly: `agy 1.1.28` is the pin those rows are *carried
+forward to*, not a version they were measured at. The 2026-09-09 legs re-read the stream
+fields the adapter parses and nothing else, so everything outside §2 and §3 and the §9
+bullets is a 1.1.22 reading held at a 1.1.28 pin. That is exactly the state the rule at the
+bottom of this file describes rather than an error in it: a row is re-read by a probe, never
+by reasoning about a pin that moved underneath it.
 
 ## How to read the marks
 
@@ -51,13 +63,13 @@ chat client cares about have no expression here at all. Those rows are `offered`
 | | codex | agent (Cursor) | agy (Antigravity) | claude |
 | --- | --- | --- | --- | --- |
 | Resume a conversation by id | **used** — `exec resume <id>` | **used** — `--resume <id>` | **used** — `--conversation <id>` | **used** — `--resume <id>` |
-| Where the id comes from | banner `session id:` | `agent create-chat`, minted before round 1 | envelope `.conversation_id` | result frame `.session_id` |
+| Where the id comes from | banner `session id:` | `agent create-chat`, minted before round 1 | `result` line `.conversation_id` | result frame `.session_id` |
 | Prompt on stdin | **used** — trailing `-` | **used** | **absent** — `-p` takes the prompt as an argv value; a stream-input route exists and caps far below the argv limit, see §2 | **used** |
 | Effective model reported | **used** — banner `model:` | **absent** — pin is required, and a mid-run swap shows only as prose | **absent** — pin is required | **used** — `init` line, resolves aliases |
 | Effective reasoning effort reported | **used** — banner `reasoning effort:`, and asserted against the pin | **absent** — folded into the model id | **absent** — folded into the model id | **absent** — `--effort` is a real axis and is reported nowhere |
 | Version off the run's own output | **used** — banner | **absent** — read before the run | **absent** — read before the run | **used** — `init` line |
 | Inner deadline the adapter can set | **absent** | partial — bounds `create-chat` only | **used** — `--print-timeout`, 90% of ours | **absent** |
-| Review arrives as | file, `--output-last-message` | stdout | envelope `.response` | result frame `.result` |
+| Review arrives as | file, `--output-last-message` | stdout | `result` line `.response` | result frame `.result` |
 
 ## 2. Reporting and observability
 
@@ -79,8 +91,12 @@ Nothing in this column group reaches `round.json`. See §7.
 
 **The format this repo chose for `agy` is the stream now, and two of the cells above moved
 with it** (measured at `agy 1.1.24`, Linux, 2026-09-03,
-`docs/process/probes/2026-09-03-agy-stream-json/`, and re-read unchanged in every field the
-adapter parses at 1.1.28 on 2026-09-09, `docs/process/probes/2026-09-09-agy-stream-adapter/`).
+`docs/process/probes/2026-09-03-agy-stream-json/`, and re-read at 1.1.28 on 2026-09-09,
+`docs/process/probes/2026-09-09-agy-stream-adapter/`, unmoved in every field those four legs
+saw — **with one field excepted**, because none of the four produced an `ERROR` step at all:
+all four captures hold zero `state: ERROR` and zero `tool_info.error`, so
+`tool_info.error.message`, which the adapter reads on every run, still rests on 1.1.24's
+leg B alone).
 `--output-format stream-json` emits NDJSON keyed on `event`: an `init` line
 (`conversation_id`, model, cwd, the tool list, and **`permission_mode`** — the assertable
 counterpart to claude's `permissionMode`), one `step_update` per step transition carrying
@@ -165,7 +181,7 @@ no field of it in `round.json`.
 Two of the four report that the vendor cached anyway. claude's result frame carried
 `cache_read_input_tokens: 72671` against `cache_creation_input_tokens: 26665` in a live
 round (`docs/process/probes/2026-08-30-claude-macos-row1/artifacts/stream.json`), with
-the creation split across 5-minute and 1-hour ephemeral buckets. agy's envelope carries
+the creation split across 5-minute and 1-hour ephemeral buckets. agy's `result` line carries
 `.usage.cache_read_tokens`. codex and Cursor expose nothing of the kind in the formats
 run here.
 
@@ -178,13 +194,17 @@ notice if it stopped.
 
 **Nothing here counts tokens, prices a round, or budgets a context window.** The data
 is there for three of the four CLIs — codex prints `tokens used N` on the banner line
-the adapter already parses for the session id; agy's envelope carries a five-field
+the adapter already parses for the session id; agy's `result` line carries a five-field
 `usage` object (`input_tokens`, `output_tokens`, `thinking_tokens`,
 `cache_read_tokens`, `total_tokens`) beside `duration_seconds` and `num_turns` — and
 those seven keys plus `status`, `response`, `conversation_id` and `error` are the whole
-envelope, which is what makes §2's `agy` cost and context-window cells **absent** rather
-than unmeasured (captured at the pin,
-`docs/process/probes/2026-08-30-claude-macos-row9-agy/artifacts/leg{A,B,C,D}.json`); claude's result frame carries `usage`, `modelUsage` (with each model's
+line, which is what makes §2's `agy` cost and context-window cells **absent** rather
+than unmeasured (captured at **`agy 1.1.22`**, two pins back, when that object was the whole
+of the output and was still called the envelope,
+`docs/process/probes/2026-08-30-claude-macos-row9-agy/artifacts/leg{A,B,C,D}.json`; the
+2026-09-09 legs re-read the `result` line at 1.1.28 and it carries the same keys and no
+cost or context-window field either); claude's result frame carries `usage`, `modelUsage`
+(with each model's
 `contextWindow` and `maxOutputTokens`), and `total_cost_usd`. The adapters read none of
 it. `<meta_out>` is four lines by contract, and none of them is a number.
 
@@ -271,9 +291,14 @@ Read this section as the reason behind row `macOS` in §3.
     (`bin/agentapi`) byte-identical and three days old afterwards — and `agy` **cannot
     run behind it**. Its shell tool layer must write
     `~/.gemini/antigravity-cli/bin/agentapi` before a tool call can run: four attempts,
-    four denials, no tool call, under `rc=0` and a confident `"status":"SUCCESS"`. §2 is
-    what makes that possible: `agy` reports **absent** for both denied tool calls and
-    per-tool-call visibility, so an envelope cannot show a reviewer that ran nothing. The
+    four denials, no tool call, under `rc=0` and a confident `"status":"SUCCESS"`. The
+    **`--output-format json` envelope that leg ran under** is what makes that possible: it
+    carries `status`, `response`, `conversation_id`, `error` and a `usage` object, and nothing
+    per tool call, so an envelope cannot show a reviewer that ran nothing. Cite the format
+    and not §2's cells — they read **absent** when this was written and read **used**
+    now, because the adapter moved to the stream on 2026-09-09. The route is closed either
+    way; what the stream would have shown on this leg is unmeasured, because the leg was
+    never re-run. The
     decisive evidence was in neither stream nor envelope but in `agy`'s own brain store,
     at `antigravity-cli/brain/<conversation_id>/.system_generated/steps/<n>/output.txt`.
 
@@ -363,7 +388,8 @@ bounds it: a `cat` of a missing file reached `DONE` carrying `tool_info` keys
 conversation-level `status` read `SUCCESS` regardless. So the format cannot express
 "succeeded", `agy`'s assertion means *a command executed*, and `docs/adapter-contract.md`
 gained an exception naming it rather than the check being bent towards a field that is not
-there. The row this replaces caught less: "the envelope carries a response" catches an
+there. The check it was added beside catches less — and is kept rather than replaced,
+renamed in the table above to "the `result` line carries a response": that one catches an
 *empty* response and nothing more, which is how the 2026-09-02 leg that came back `rc=0`,
 `status: SUCCESS`, `num_turns: 1` and a real 12-character response having run **no tool call
 at all** walked past it — every attempt denied, four times at the same path, with the
