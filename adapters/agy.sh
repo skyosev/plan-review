@@ -312,10 +312,12 @@ err_file="${TMPDIR:-/tmp}/pr-agy-err.$$"
 # The trap is still strictly better than the post-run placement it replaced, and
 # on ONE ground rather than two: every exit that is not the runner's deadline
 # reaches it -- every refusal BELOW this point, every ordinary completion, every
-# hand-run invocation. The refusals ABOVE it (PR_TIMEOUT_SECS, PR_AGY_MODEL, a
-# missing bwrap, the argv cap, the state-dir mkdir, the .agents check) exit before
-# the trap is installed and lose nothing by it: $out_file and $err_file do not
-# exist yet, so there is no capture for a trap to replay. Nothing in this repo sends the single TERM that would also reach it.
+# hand-run invocation. Every refusal ABOVE it -- PR_TIMEOUT_SECS, PR_AGY_MODEL, a
+# missing bwrap, the bind-destination mkdir under $HOME/.gemini, the argv cap, the
+# state-dir mkdir and the .agents check, which is the list as it stands rather than
+# a closed one -- exits before the trap is installed and loses nothing by it:
+# $out_file and $err_file do not exist yet, so there is no capture for a trap to
+# replay. Nothing in this repo sends the single TERM that would also reach it.
 # lib/adapter-exec.sh is the only caller and it has no such path: the deadline is
 # `timeout --kill-after=… "$deadline"` (the two-TERM shape above), and the group
 # sweep at lib/adapter-exec.sh:306 is `kill -KILL -- "-$pid"` fired AFTER `wait`
@@ -351,8 +353,10 @@ trap pr_replay_and_clean EXIT
 # "measured at version X" claim -- including the drift warning in
 # docs/verified-versions.txt. adapters/codex.sh and adapters/claude.sh are immune
 # because they take the version off the run's OWN output (the banner and the init
-# frame); agy's JSON envelope carries no such field, so reading it while the binary
-# about to answer is still the one on disk is the nearest equivalent. It narrows
+# frame); agy's stream carries no version field on ANY line -- not the `init` line
+# (cwd/model/permission_mode/tools), not the `result` line, not a step_update, read
+# across all four 1.1.28 legs on 2026-09-09 -- so reading it while the binary about
+# to answer is still the one on disk is the nearest equivalent. It narrows
 # the window from the whole review to the gap between two adjacent commands; it
 # does not close it, and nothing here detects the remainder.
 version="$(agy --version 2>/dev/null | head -1 | tr -d '[:space:]')"

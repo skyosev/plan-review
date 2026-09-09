@@ -92,21 +92,31 @@ Nothing in this column group reaches `round.json`. See §7.
 **The format this repo chose for `agy` is the stream now, and two of the cells above moved
 with it** (measured at `agy 1.1.24`, Linux, 2026-09-03,
 `docs/process/probes/2026-09-03-agy-stream-json/`, and re-read at 1.1.28 on 2026-09-09,
-`docs/process/probes/2026-09-09-agy-stream-adapter/`, unmoved in every field those four legs
-saw — **with one field excepted**, because none of the four produced an `ERROR` step at all:
-all four captures hold zero `state: ERROR` and zero `tool_info.error`, so
+`docs/process/probes/2026-09-09-agy-stream-adapter/`, unmoved in every field the **adapter
+reads** — **bar one it never exercised**, because none of the four legs produced an `ERROR`
+step at all: all four captures hold zero `state: ERROR` and zero `tool_info.error`, so
 `tool_info.error.message`, which the adapter reads on every run, still rests on 1.1.24's
-leg B alone).
+leg B alone. One field the adapter does **not** read did move against the fixtures, and it
+is below rather than here: a tool step's `duration_seconds`).
 `--output-format stream-json` emits NDJSON keyed on `event`: an `init` line
 (`conversation_id`, model, cwd, the tool list, and **`permission_mode`** — the assertable
 counterpart to claude's `permissionMode`), one `step_update` per step transition carrying
 `step_type`, `tool_name`, `tool_info.parameters`, `tool_info.output` on `DONE` and
-`tool_info.error` on `ERROR`, plus per-step `duration_seconds` and `usage` — and finally a
+`tool_info.error` on `ERROR`, plus a per-step `duration_seconds` on most steps that reached a
+terminal state and a per-step `usage` on the `agent_response` ones only — and finally a
 `result` line identical in shape to the envelope the adapter used to parse whole.
 `adapters/agy.sh` runs that invocation and reads it, so denied tool calls and per-tool-call
 visibility are **used** where they said `absent`, and §10 is where the two assertions they
 pay for land. Per-step `duration_seconds` and `usage` stay **offered** and unread: the rows
-say what the shipped invocation gets, and nothing here counts a step's timing.
+say what the shipped invocation gets, and nothing here counts a step's timing. Neither is
+uniform, which is why neither is stated as though it were. **No** tool step in any capture or
+fixture carries `usage` at all — it appears on `agent_response` steps in `DONE` and nowhere
+else. And `duration_seconds` is on the terminal tool step of every leg **but** the
+nonzero-exit one, whose `DONE` carries `conversation_id`/`state`/`step_index`/`step_type`/
+`tool_info`/`tool_name` and no timing, where the 1.1.24 fixture's `DONE` does carry it. Three
+1.1.28 legs have it and one does not, so that gap reads as outcome-dependent rather than a
+version move, and neither reading is measured: nothing here reads the field, so nothing was
+spent to tell them apart.
 
 The same probe measured the stream-input route the §1 cell points at: the prompt does
 arrive on stdin as `{"event":"user","message":{"content":"…"}}` under
@@ -202,7 +212,12 @@ line, which is what makes §2's `agy` cost and context-window cells **absent** r
 than unmeasured (captured at **`agy 1.1.22`**, two pins back, when that object was the whole
 of the output and was still called the envelope,
 `docs/process/probes/2026-08-30-claude-macos-row9-agy/artifacts/leg{A,B,C,D}.json`; the
-2026-09-09 legs re-read the `result` line at 1.1.28 and it carries the same keys and no
+2026-09-09 legs re-read the `result` line at 1.1.28 and it carries **the same keys minus
+`error`, which no successful leg carries** — all four hold exactly `conversation_id`,
+`duration_seconds`, `num_turns`, `response`, `status`, `usage`, and so does 1.1.22's
+`legD.json`, the one leg of the four that came back `status: SUCCESS`; `error` is on
+`legA`/`B`/`C` and on those only, all three `status: ERROR`. So the key is present on a
+failed result and absent from a successful one, at both versions, rather than gone — and no
 cost or context-window field either); claude's result frame carries `usage`, `modelUsage`
 (with each model's
 `contextWindow` and `maxOutputTokens`), and `total_cost_usd`. The adapters read none of
