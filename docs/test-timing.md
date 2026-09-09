@@ -110,14 +110,20 @@ tests it added are stub-only. It is still not a licence. The one thing on this b
 real per-round cost is the Keychain read, which is one `security` fork per `claude` round on
 the builtin half and never runs on Linux at all. The row below it is the same tree plus row L3's fix, and its 543rd test — the
 adapter's Linux refusal — is likewise free (two runs identical to the centisecond).
-**Budget against 568/~73-77s Linux and 542/4m34.2s Darwin**; the Darwin row predates the
+**Budget against 568 tests Linux and 542/4m34.2s Darwin**; the Darwin row predates the
 row-L3 fix and the private-`HOME` branch both, and nobody has re-timed a Mac since. The Linux
 figure moved on 2026-09-09 with `backlog-clearing-5`, which took the suite to **568** tests
-(the `agy` stream adapter's cases, all stub-only) and measured 73-77s across four whole-suite
-runs on this host. It gets **no row in the table above**, deliberately: nobody ran the
-same-session `main` control this file's method requires, so the delta cannot be attributed and
-a row that implied otherwise would be worse than the gap. The test count is exact; the seconds
-are a budget, and a faster host than 2026-08-31's is the likeliest reading.
+(the `agy` stream adapter's cases, all stub-only). **The seconds are deliberately gone from
+that budget**, and how they were lost is the point. The readings were ~73-74s repeatedly while
+Tasks 01-02 ran, then 75.0s, 75.6s, 76.9s, 78.2s and 81.2s in Task 03's session with 77s in
+its review -- climbing MONOTONICALLY as that session spawned live `doctor` probes between
+runs. Every widening of the stated range was overtaken by the next run, which is this file's
+own rule ("a whole-suite clock read on a loaded host is worse than no clock") firing on the
+person writing it down. So there is **no row in the table above** and no second figure in the
+budget: nobody ran the same-session `main` control this file's method requires, the delta
+cannot be attributed, and a number that a reader's own run beats is worse than no number.
+**568** is exact and is what regresses visibly. Re-time it properly -- a `git worktree` at
+`main`, two back-to-back runs, an otherwise quiet host -- and give it a row then.
 
 **The last two rows are a pair and only mean anything read together.** The ~78s of the
 row-L3 tree was measured 2026-08-30; the same tree re-timed on 2026-08-31 — a `git worktree`

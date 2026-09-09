@@ -141,8 +141,12 @@ agent 2026.08.25-3e8eec8
 # in agy's help. What is NOT re-measured here is agy HONOURING it: the expiry
 # classification -- exit 1 with .status ERROR and .error "timeout waiting for
 # response" -- was measured once, in probe P1 at agy 1.1.15, and has not been
-# re-provoked live since. The matrix proves only that the installed CLI accepts
-# the argv, since a rejected flag would have failed the envelope row outright.
+# re-provoked live since. What the four legs above prove is only that the
+# installed CLI accepts the argv -- the adapter passes the flag on every run, so a
+# rejected flag would have failed every one of them outright. (This sentence used
+# to point at the 2026-08-28 matrix and its envelope row, both of which the
+# re-pin deleted; repointing a reference is not a re-measurement, and nothing
+# else in this paragraph changed.)
 agy 1.1.28
 
 # Verified 2026-08-31 on Linux, by the L1 set: the repaired resume leg plus the

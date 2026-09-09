@@ -72,7 +72,7 @@ Nothing in this column group reaches `round.json`. See §7.
 | Context *remaining* | **absent** | **absent** | **absent** | **absent** |
 | Turn count | **unmeasured** | **absent** | **offered** — `.num_turns` | **offered** — `.num_turns` |
 | Wall-clock duration | **unmeasured** | **absent** | **offered** — `.duration_seconds` | **offered** — `.duration_api_ms` |
-| Denied tool calls | **absent** | **absent** (a denial shows as exit 2) | **used** — `tool_info.error.message` on an `ERROR` step, quoted into the round's `detail` | **used** — `.permission_denials`, surfaced as the round's `detail` |
+| Denied tool calls | **absent** | **absent** (a denial shows as exit 2) | **used** — `tool_info.error.message` on an `ERROR` step, read every run and quoted into the round's `detail` on the branch that fails the reviewer | **used** — `.permission_denials`, surfaced as the round's `detail` |
 | Per-tool-call visibility | **absent** | **absent** | **used** — one `step_update` per step transition; `run_command` steps in `DONE` are counted | **used** — the stream's `tool_use` / `tool_result` pairs |
 | Why the session ended | **absent** | **absent** | partial — `.status` / `.error` | **used** — `.terminal_reason`, echoed verbatim |
 | Compaction | **unmeasured** | **unmeasured** | **unmeasured** | **unmeasured** |
@@ -145,7 +145,7 @@ The four differ in ways that cost real work:
   **rc=0 for a UUID that was never a chat id**, so nothing about resume can be judged
   on an exit code; both probes that establish carry-forward judge it on reproduced
   content instead.
-- **agy** reads `.conversation_id` off the JSON envelope. State lives in the private
+- **agy** reads `.conversation_id` off the stream's `result` line. State lives in the private
   `~/.gemini` bind, so history from other sessions is out of scope by construction —
   resume is per-session and the session map holds the handles.
 - **claude** reads `.session_id` off the result frame.

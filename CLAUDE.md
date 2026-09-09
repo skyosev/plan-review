@@ -20,8 +20,13 @@ complete — read the relevant section before changing behaviour it documents.
 
 The suite is offline and takes seconds: every test drives the runner with fake adapters
 from `tests/fixtures/adapters/` via `PR_ADAPTER_MAP`, so nothing costs tokens. **Budget
-against 568 tests / ~73-77s on Linux and 542 / 4m34s on Darwin** (this Mac's run-to-run spread
-is ~7s, Linux's ~2.5s; nothing smaller is measurable). The full record — every row of the
+against 568 tests on Linux — the count is exact; the seconds read 73-81s across the day it
+moved and are NOT a budget from that session — and 542 / 4m34s on Darwin** (this Mac's
+run-to-run spread is ~7s; nothing smaller is measurable). The Linux seconds climbed
+monotonically as that session's own load grew, which is this file's own "a clock read on a
+loaded host is worse than no clock" firing on the person writing the rule down: treat 568 as
+the thing that regresses visibly, and re-time against a same-session `main` control before
+quoting any second figure. The full record — every row of the
 timing table, what each branch cost and why — is `docs/test-timing.md`; read it before
 adding a per-adapter fork or an always-waited probe window. The rules it distils to:
 
@@ -125,9 +130,14 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   first leg, invalidating a static read taken ten minutes earlier — that read was re-run and
   was identical, so nothing was stranded, which is luck rather than a mechanism. The
   one-binary-per-probe stamp cannot catch an update that lands before leg one; re-reading
-  after the last leg can. The 2026-09-09 `agy` legs are the first probe run under it
-  (1.1.28 before and after, `docs/process/probes/2026-09-09-agy-stream-adapter/`), and they
-  caught the same CLI having moved 1.1.27 → 1.1.28 while the adapter was being written.
+  after the last leg can. The 2026-09-09 `agy` legs are the first probe run under it, and
+  what they establish is the **pin** and nothing more: 1.1.28 before the first leg and after
+  the last, where the spec written two days earlier expected 1.1.27
+  (`docs/process/probes/2026-09-09-agy-stream-adapter/`). That is a discrepancy against this
+  repo's own prose, not an observed transition — only the 1.1.28 end is measured, no capture
+  anywhere holds a 1.1.27, and the move off it is *inferred* from two sentences in the spec.
+  Which is the rule's own shape: re-reading closes the far end of the window and can do
+  nothing about the near one.
 - **Roster precedence**: `PR_ADAPTER_MAP` > config `reviewers` > shipped adapters minus
   the orchestrator. A stated roster is obeyed exactly, including one naming the
   orchestrator's own CLI — that check was removed on purpose (see `lib/roster.sh`).
@@ -184,8 +194,13 @@ is double-gated (flag, then `docker`) because it pulls the `bash:3.2` image.
   measured 2026-09-09 and pinned as `tests/fixtures/agy/leg-n.ndjson` — and
   `docs/adapter-contract.md` states that exception. The quota classifier's inputs were
   narrowed to stderr and the `result` line in the same change, because stdout now carries
-  every tool's output, and both captures are replayed by an EXIT trap so a TERM'd round keeps
-  the CLI's diagnostics.
+  every tool's output, and both captures are replayed by an EXIT trap. What that trap reaches
+  is every exit **but** the runner's own deadline — every refusal, every ordinary completion,
+  every hand-run invocation — and on the deadline it usually does not: GNU `timeout` sends two
+  TERMs and the second kills the shell with no trap, measured 1/10 in this adapter's real
+  shape, so a timed-out round usually lands a log with neither capture. The trap comment in
+  `adapters/agy.sh` carries the measurement and `docs/process/BACKLOG.md` carries what is
+  unbuilt; do not shorten either to "a TERM'd round keeps its diagnostics".
 - **`adapters/claude.sh` echoes `terminal_reason`** from the result frame into the
   failure reason. It does not match against a list of values — probe P4 verified the
   field exists on every frame in 2.1.235 but never reproduced `prompt_too_long`, so
