@@ -61,19 +61,38 @@ STUB
   chmod +x "$bindir/bwrap" "$bindir/agy"
 }
 
+# The healthy three-line stream, emitted verbatim by every hand-built stub that
+# needs one: the init line carrying the permission_mode the adapter asserts, one
+# run_command step at DONE, and a result line. Interpolated into the stubs'
+# unquoted heredocs, so a shape change -- a new event, a field the jq filter
+# starts requiring, a rename -- is ONE edit and not three hand-written copies
+# inside heredocs where nothing checks them. install_stubs builds its own with
+# `--arg` because its three values are parameters; these callers assert on the
+# text above and cannot take them.
+AGY_STREAM_OK=$(cat <<'LINES'
+jq -nc '{event:"init",conversation_id:"conv-abc-123",init:{permission_mode:"always-proceed"}}'
+jq -nc '{event:"step_update",step_update:{state:"DONE",step_type:"tool",tool_name:"run_command",tool_info:{name:"run_command",output:"/work\n"}}}'
+jq -nc '{event:"result",result:{conversation_id:"conv-abc-123",status:"SUCCESS",response:"# r\n<!-- VERDICT: MINOR -->"}}'
+LINES
+)
+
 # A stub that replays a captured leg verbatim. Call it AFTER install_stubs, which
 # is what puts the bwrap stub in place; this one only replaces `agy`.
 install_leg_stub() {  # install_leg_stub <bindir> <ndjson-file>
   local bindir="$1" leg="$2"
-  cat > "$bindir/agy" <<STUB
-#!/usr/bin/env bash
+  # Through pr_test_mkstub for its shebang: `#!$BASH` rather than `#!/usr/bin/env
+  # bash`, which needs `bash` on PATH. These callers keep the real PATH, so both
+  # start today -- but an agy case that trims PATH the way test-doctor.sh and
+  # test-init.sh do would inherit a stub that cannot run, for a reason already
+  # written down beside the helper.
+  pr_test_mkstub "$bindir/agy" "$(cat <<STUB
 printf '%s\n' "\$@" >> "$bindir/agy-argv.txt"
 if [[ "\$1" == "--version" ]]; then echo "1.1.24"; exit 0; fi
 cat > /dev/null
 cat "$leg"
 exit 0
 STUB
-  chmod +x "$bindir/agy"
+)"
 }
 
 export PR_AGY_MODEL=gemini-3.1-pro-high
@@ -471,9 +490,7 @@ cat > /dev/null
 # Inherits this process's stdout and keeps it open for five minutes.
 ( sleep 300 ) &
 echo \$! > "$d/child.pid"
-jq -nc '{event:"init",conversation_id:"conv-abc-123",init:{permission_mode:"always-proceed"}}'
-jq -nc '{event:"step_update",step_update:{state:"DONE",step_type:"tool",tool_name:"run_command",tool_info:{name:"run_command",output:"/work\n"}}}'
-jq -nc '{event:"result",result:{conversation_id:"conv-abc-123",status:"SUCCESS",response:"# r\n<!-- VERDICT: MINOR -->"}}'
+$AGY_STREAM_OK
 exit 0
 STUB
   chmod +x "$d/bin/agy"
@@ -553,9 +570,7 @@ if [[ "\$1" == "--version" ]]; then
   exit 0
 fi
 : > "$d/ran"
-jq -nc '{event:"init",conversation_id:"conv-abc-123",init:{permission_mode:"always-proceed"}}'
-jq -nc '{event:"step_update",step_update:{state:"DONE",step_type:"tool",tool_name:"run_command",tool_info:{name:"run_command",output:"/work\n"}}}'
-jq -nc '{event:"result",result:{conversation_id:"conv-abc-123",status:"SUCCESS",response:"# r\n<!-- VERDICT: MINOR -->"}}'
+$AGY_STREAM_OK
 exit 0
 STUB
   chmod +x "$d/bin/agy"

@@ -898,7 +898,15 @@ pr_doctor_check_agy_auth() {
 # rather than tidy, and tests/test-doctor.sh pins that live wording as its net. Builtins only, per
 # this file's rule -- one walk over the lines, no grep.
 #
-# The line it takes is an OPTION-TABLE line -- indentation, then the flag -- and
+# BOTH flags are read that way, off the same walk. --print-timeout was a
+# whole-help substring until 2026-09-09 while --output-format was anchored, which
+# taught two standards for one question and left the weaker one guarding the
+# deadline -- the half whose false pass is the SILENT one (agy falls back to its
+# own 5m0s and cuts long reviews short with no signal). A deprecation note naming
+# the flag, or any prose that mentions it, would have kept that half green after
+# support moved. Anchoring both costs one `=~` and no extra `agy --help` spawn.
+#
+# The line each takes is an OPTION-TABLE line -- indentation, then the flag -- and
 # not merely the first line mentioning the flag. A help text that grows a
 # `Usage: agy -p --output-format <fmt>` synopsis above the table would otherwise
 # hand this check a line that names no formats at all, and since it FAILS rather
@@ -907,14 +915,18 @@ pr_doctor_check_agy_auth() {
 # vendor writing the formats into a synopsis and nowhere else.
 pr_doctor_check_agy_help_flags() {
   pr_doctor_have agy || return 0
-  local out line ofmt="" rc=0
+  local out line ofmt="" ptmo="" rc=0
   out="$(pr_doctor_run 15 agy --help 2>&1)"
   while IFS= read -r line; do
-    [[ "$line" =~ ^[[:space:]]*--output-format ]] || continue
-    ofmt="$line"; break
+    if [[ -z "$ofmt" && "$line" =~ ^[[:space:]]*--output-format ]]; then
+      ofmt="$line"
+    elif [[ -z "$ptmo" && "$line" =~ ^[[:space:]]*--print-timeout ]]; then
+      ptmo="$line"
+    fi
+    [[ -n "$ofmt" && -n "$ptmo" ]] && break
   done <<< "$out"
 
-  if [[ "$out" == *"--print-timeout"* ]]; then
+  if [[ -n "$ptmo" ]]; then
     pr_d_pass "agy still accepts --print-timeout (adapters/agy.sh derives it from PR_TIMEOUT_SECS)"
   else
     pr_d_fail "agy no longer lists --print-timeout in its help"
@@ -1381,6 +1393,17 @@ pr_doctor_check_rounds() {
 # check wants to know. The reply's CONTENT is never asserted: alive means
 # "produced output", same as the round -- a model that answers in its own words
 # is still alive.
+#
+# What this cannot do is ENFORCE the command: the tripwire is satisfied by asking
+# the model nicely, so a reviewer that replies `SMOKE OK` without calling the
+# shell fails the smoke on a perfectly healthy transport, and the failure text
+# names the assertion rather than this prompt as the cause. It is also asymmetric
+# across the roster -- codex and agent have no ran-no-command clause
+# (docs/feature-matrix.md, the "At least one Bash tool call" row). The honest
+# alternative is telling the adapter this invocation is a ping, and the kernel
+# exports exactly PR_TIMEOUT_SECS and TMPDIR by deliberate design: the variadic
+# environment channel was deleted for a measured reason (2026-08-26), so buying
+# enforcement here means re-opening it. Left as prose, with the residual stated.
 PR_DOCTOR_SMOKE_PROMPT='plan-review doctor connectivity check.
 Run the shell command `pwd`, then reply with exactly: SMOKE OK
 Read no files and write nothing else.'

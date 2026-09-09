@@ -375,33 +375,48 @@ rc=$?
 #
 # `response` is LAST because it is the only multi-line value: the six scalars
 # come off `read -r` in order and the rest of the pipe is the review. Which makes
-# the FRAMING load-bearing, and it is enforced rather than assumed: every scalar
-# goes through `line`, which squashes newlines, because ONE embedded newline
-# above shifts every field after it. Measured 2026-09-09 against this exact
-# filter, with a result line carrying `status: "SUCCESS\nextra-line"`: the
-# conversation id landed in `ran_ok`, `[[ "$ran_ok" == 0 ]]` was false, and a
-# reviewer that ran nothing walked past the ran-a-command assertion. `tojson` on
-# the result object escapes newlines by construction; `line` on it is the belt to
-# that brace.
+# the FRAMING load-bearing, and it is enforced STRUCTURALLY rather than per field:
+# the six are built as one array and `map(line)` squashes newlines across all of
+# them at once, because ONE embedded newline above shifts every field after it.
+# Measured 2026-09-09 against this filter's per-field ancestor, with a result line
+# carrying `status: "SUCCESS\nextra-line"`: the conversation id landed in
+# `ran_ok`, `[[ "$ran_ok" == 0 ]]` was false, and a reviewer that ran nothing
+# walked past the ran-a-command assertion. One application rather than six is the
+# point: a seventh scalar cannot be added without the guard, because there is
+# nowhere inside the array to put it that `map` does not reach. `tojson` on the
+# result object escapes newlines by construction; `line` on it is the belt to that
+# brace.
+#
+# `$r` and `$cmds` are bound once. Four of the six scalars come off the `result`
+# line and two off the same `run_command` step filter, and stating either selector
+# twice is how a narrowing gets applied to one copy and not the other -- the
+# `run_command` predicate in particular is the whole assertion leg B exists to
+# protect (tests/fixtures/agy/leg-b.ndjson).
+#
+# `del(.response)` because $result_json feeds ONLY the quota classifier below,
+# which runs when the response is empty by definition. Without it the full review
+# is serialized by `tojson`, regex-scanned by `line`, and held a second time in a
+# shell variable beside `$response` -- three linear passes over the largest value
+# this adapter touches, on every run, for a branch that cannot see it.
 { IFS= read -r perm; IFS= read -r status; IFS= read -r session
   IFS= read -r ran_ok; IFS= read -r first_fail; IFS= read -r result_json
   response="$(cat)"; } < <(jq -Rrn '
   def line: tostring | gsub("[\r\n]+"; " ");
   [inputs | fromjson? // empty] as $s
-  | ([ $s[] | select(.event == "init")   | .init.permission_mode   // empty ][0] // "MISSING" | line),
-    ([ $s[] | select(.event == "result") | .result.status          // empty ][0] // "MISSING" | line),
-    ([ $s[] | select(.event == "result") | .result.conversation_id // empty ][0] // ""        | line),
-    ([ $s[] | select(.event == "step_update") | .step_update
-       | select(.step_type == "tool" and .tool_name == "run_command"
-                and .state == "DONE") ] | length | tostring),
-    ([ $s[] | select(.event == "step_update") | .step_update
-       | select(.step_type == "tool" and .tool_name == "run_command"
-                and .state == "ERROR")
-       | .tool_info.error.message // empty ][0] // "" | line),
-    ([ $s[] | select(.event == "result") | .result | tojson ][0] // "" | line),
-    ([ $s[] | select(.event == "result") | .result.response // empty ][0] // "")' \
+  | ([ $s[] | select(.event == "result") | .result ][0]) as $r
+  | [ $s[] | select(.event == "step_update") | .step_update
+      | select(.step_type == "tool" and .tool_name == "run_command") ] as $cmds
+  | ([ ([ $s[] | select(.event == "init") | .init.permission_mode // empty ][0] // "MISSING"),
+       ($r.status          // "MISSING"),
+       ($r.conversation_id // ""),
+       ([ $cmds[] | select(.state == "DONE") ] | length),
+       ([ $cmds[] | select(.state == "ERROR")
+          | .tool_info.error.message // empty ][0] // ""),
+       (if $r then $r | del(.response) | tojson else "" end)
+     ] | map(line) | .[]),
+    ($r.response // "")' \
   < "$out_file" 2>/dev/null)
-: "${perm:=MISSING}" "${status:=MISSING}" "${ran_ok:=0}" "${first_fail:=}" "${result_json:=}"
+: "${perm:=MISSING}" "${status:=MISSING}"
 # A count is digits, or the framing moved under us. Either way the round is not
 # trustworthy, and reading a shifted field as "commands ran" is the one failure
 # this block exists to prevent.
@@ -453,11 +468,18 @@ if [[ -z "$response" ]]; then
   # one thing this classifier exists to avoid. Neither shape is measured for agy in
   # the mode we run; reading tool output, which IS measured, would misdiagnose a
   # quota-shaped string a reviewer merely cat'ed. That trade is the narrowing.
-  if { cat "$err_file"; printf '%s\n' "$result_json"; } \
-       | grep -qF -e 'individual quota reached' -e 'quota reached.' \
-                  -e 'upgrade your subscription' 2>/dev/null; then
-    window="$( { cat "$err_file"; printf '%s\n' "$result_json"; } \
-      | grep -ohE 'Resets in [0-9]+h[0-9]+m' 2>/dev/null | head -1)"
+  # Composed ONCE. The narrowed input set is this block's whole subject, and
+  # stating it twice -- once to match, once to read the window off -- is how the
+  # matcher and the window reader drift into a match with no window, or a window
+  # with no match. Bash pattern matching keeps the deliberate FIXED-string
+  # semantics grep -F had (issues #516/#536) with no fork; adapters are not bound
+  # by lib/doctor.sh's builtins-only rule, but here the builtin is also the
+  # cheaper spelling.
+  quota_hay="$(<"$err_file")"$'\n'"$result_json"
+  if [[ "$quota_hay" == *'individual quota reached'* ||
+        "$quota_hay" == *'quota reached.'*           ||
+        "$quota_hay" == *'upgrade your subscription'* ]]; then
+    window="$(grep -oE 'Resets in [0-9]+h[0-9]+m' <<< "$quota_hay" 2>/dev/null | head -1)"
     echo "agy adapter: the account's quota is exhausted, so nothing was reviewed." >&2
     [[ -n "$window" ]] && echo "agy said: $window" >&2
     echo "This is account-wide, not per-model: rerunning now will fail the same way." >&2
