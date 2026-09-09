@@ -213,7 +213,7 @@ else
   # holds names from PR_ROSTER_ADAPTERS, so the convention is the dispatch.
   for cli in $shipped; do "pr_doctor_check_${cli}_auth"; done
 fi
-[[ " $shipped " == *" agy "* ]] && pr_doctor_check_agy_print_timeout
+[[ " $shipped " == *" agy "* ]] && pr_doctor_check_agy_help_flags
 # The effort checks exist for exactly the CLIs with a PR_EFFORTS_<CLI> enum.
 for cli in $shipped; do
   enum="PR_EFFORTS_${cli^^}"

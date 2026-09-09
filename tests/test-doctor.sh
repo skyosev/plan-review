@@ -556,24 +556,54 @@ test_agy_progress_line_is_not_counted_as_a_model() {
 
 # The adapter passes --print-timeout now, so the doctor asserts the flag still
 # exists rather than reporting a default the adapter no longer relies on.
-test_agy_still_accepting_print_timeout_is_a_pass() {
+# The adapter passes --print-timeout and parses --output-format stream-json, so
+# the doctor asserts both are still there rather than reporting a default the
+# adapter no longer relies on.
+test_agy_help_listing_both_flags_is_two_passes() {
   local d; d="$(pr_test_tmpdir)"
   pr_test_mkstub "$d/bin/agy" \
-    'printf "  --print-timeout                 Timeout for print mode wait (default 5m0s)\n"'
+    'printf "  --output-format                 Output format for print mode (text, json, stream-json) (default text)\n  --print-timeout                 Timeout for print mode wait (default 5m0s)\n"'
   stub_timeout "$d/bin"
-  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_print_timeout')"
-  assert_contains "$out" "still accepts --print-timeout" "the flag is there"
-  assert_contains "$out" "counts 1 0 0" "a pass, not context"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_help_flags')"
+  assert_contains "$out" "still accepts --print-timeout" "the deadline flag is there"
+  assert_contains "$out" "still offers stream-json" "and the output format is"
+  assert_contains "$out" "counts 2 0 0" "two passes, not context"
 }
 
 # A dropped flag is a failure, not a warning: agy silently falls back to 5m0s.
 test_a_moved_print_timeout_flag_fails() {
   local d; d="$(pr_test_tmpdir)"
-  pr_test_mkstub "$d/bin/agy" 'printf "  --print                 Run a single prompt\n"'
+  pr_test_mkstub "$d/bin/agy" \
+    'printf "  --output-format                 Output format for print mode (text, json, stream-json) (default text)\n  --print                 Run a single prompt\n"'
   stub_timeout "$d/bin"
-  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_print_timeout')"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_help_flags')"
   assert_contains "$out" "no longer lists --print-timeout" "says what it lost"
-  assert_contains "$out" "counts 0 0 1" "a failure"
+  assert_contains "$out" "counts 1 0 1" "one pass, one failure"
+}
+
+# The case a whole-help substring match would miss, which is why the check reads
+# the --output-format LINE: at 1.1.27 the --input-format line names stream-json
+# too, so `stream-json` appearing SOMEWHERE proves nothing about output support.
+test_stream_json_only_under_input_format_fails() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agy" \
+    'printf "  --input-format                  Input format for print mode (text, stream-json). stream-json reads one NDJSON message per line from stdin\n  --output-format                 Output format for print mode (text, json) (default text)\n  --print-timeout                 Timeout for print mode wait (default 5m0s)\n"'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_help_flags')"
+  assert_contains "$out" "no longer offers stream-json" "reads the right line"
+  assert_contains "$out" "counts 1 0 1" "one pass, one failure"
+}
+
+# No --output-format line at all is the same failure, and the info line has
+# nothing to quote.
+test_a_help_text_with_no_output_format_line_fails() {
+  local d; d="$(pr_test_tmpdir)"
+  pr_test_mkstub "$d/bin/agy" \
+    'printf "  --print-timeout                 Timeout for print mode wait (default 5m0s)\n"'
+  stub_timeout "$d/bin"
+  local out; out="$(doctor_run "$d/bin:$PATH" 'pr_doctor_check_agy_help_flags')"
+  assert_contains "$out" "no longer offers stream-json" "fails on the absence"
+  assert_contains "$out" "counts 1 0 1" "one pass, one failure"
 }
 
 test_agy_failure_says_there_is_no_login_subcommand() {
@@ -1490,6 +1520,8 @@ test_smoke_delivers_the_prompt() {
   assert_file_exists "${review[0]}" "PR_KEEP_SANDBOX kept the workdir"
   assert_contains "$(cat "${review[0]}")" "SMOKE OK" \
     "the smoke prompt actually reached the adapter's stdin"
+  assert_contains "$(cat "${review[0]}")" "pwd" \
+    "and it still asks for the one command the ran-a-command clause needs"
 }
 
 # The smoke needs lib/adapter-exec.sh the way pr_doctor_check_rounds needs

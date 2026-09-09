@@ -55,11 +55,15 @@ esac"
 }
 stub_agy() {
   local models="${3:-gemini-3.1-pro-high	Gemini 3.1 Pro (High)}"
-  # --help lists --print-timeout because pr_doctor_check_agy_print_timeout now
-  # FAILS when it does not -- adapters/agy.sh passes that flag.
+  # --help lists BOTH flags pr_doctor_check_agy_help_flags now FAILS without:
+  # adapters/agy.sh passes --print-timeout and parses the stream --output-format
+  # offers. The output-format line carries the real 1.1.27 wording, because the
+  # check reads that LINE rather than the whole help.
   pr_test_mkstub "$1/agy" "printf '%s\n' \"\$*\" >> '$2'
 [[ \"\$1\" == models ]] && printf '%s\n' 'Fetching available models...' '$models'
-[[ \"\$1\" == --help ]] && printf '%s\n' '  --print-timeout   Timeout for print mode wait (default 5m0s)'
+[[ \"\$1\" == --help ]] && printf '%s\n' \
+  '  --output-format   Output format for print mode (text, json, stream-json) (default text)' \
+  '  --print-timeout   Timeout for print mode wait (default 5m0s)'
 exit 0"
 }
 stub_claude() {
